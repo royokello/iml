@@ -7,8 +7,6 @@ from diffusers import AutoencoderKL, UNet2DConditionModel, PNDMScheduler
 from transformers import CLIPTextModel, CLIPTokenizer
 import torchvision
 
-from sd15.models import Int8UNet
-
 # ================================ MAIN ==================================
 
 def main():
@@ -46,13 +44,9 @@ def main():
     scheduler.set_timesteps(steps)
 
     # 3) ---------- UNet ----------------------
-    #
-    # Instantiate the on-GPU row-wise-INT8 UNet, generate the noisy latents
-    # and run the denoising loop.  Nothing else in the pipeline changes.
 
     # --- load quantised UNet ---
-    unet = Int8UNet.from_quantised(args.model, device)  # fp16 activations, int8 weights
-    unet.eval()
+    unet = 
 
     # --- prepare latent noise ---
     latents = torch.randn(
@@ -67,7 +61,6 @@ def main():
             noise_pred = unet(latents, t, encoder_hidden_states=text_emb).sample
             latents    = scheduler.step(noise_pred, t, latents).prev_sample
 
-    # free UNet VRAM before VAE decode (6 GB card safety)
     del unet
     torch.cuda.empty_cache()
 
@@ -78,8 +71,8 @@ def main():
     ).to(device).eval()
 
     with torch.no_grad():
-        images = vae.decode(latents / 0.18215).sample        # scale per SD-1.5 spec
-        images = (images.clamp(-1, 1) + 1) / 2               # → [0, 1] float
+        images = vae.decode(latents / 0.18215).sample
+        images = (images.clamp(-1, 1) + 1) / 2 
 
     # 5) ---------- Save output --------------------------------------
     os.makedirs(args.output, exist_ok=True)
