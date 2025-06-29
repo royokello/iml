@@ -1,36 +1,69 @@
 # Image Machine Learning (IML) Project
 
-The Image Machine Learning (IML) Project comprises a suite of Python tools tailored for comprehensive image processing and analysis. Each tool addresses a specific aspect of the image preparation pipeline, from data aggregation to quality assessment, cropping, and ranking.
+The **Image Machine Learning (IML)** mono‑repo houses several standalone tools that can be chained together to prepare, clean, and rank large image datasets **and** a lightweight Stable‑Diffusion 1.5 pipeline that fits on modest GPUs (e.g. GTX 1060 6 GB).
 
-## Components
+---
 
-1. **[IML Aggregator](https://github.com/royokello/iml-aggregator)**  
-   A Python script that retrieves all image files from a specified directory and its subdirectories, converts them to PNG format, and saves them to a designated output folder. Additionally, the script collects any caption text files that share the same filename as the images.
+## Table of Contents
+1. [IML Toolkit](#iml-toolkit)
+2. [Stable‑Diffusion 1.5 — FP8 Quant + INT8 Inference](#stable‑diffusion-15)
+3. [CUDA INT8 Extension](#cuda-int8-extension)
+4. [End‑to‑End Examples](#end‑to‑end-examples)
 
-2. **[IML Extractor](https://github.com/royokello/iml-extractor)**  
-   A Python library designed to efficiently extract a specified number of frames from all videos within a given directory. It supports both sequential and random frame selection, making it ideal for tasks such as video analysis, machine learning, and data preprocessing.
+---
 
-3. **[IML Cull](https://github.com/royokello/iml-cull)**  
-   A simple image culling toolkit with manual labeling built on Flask, AI-assisted culling recommendations based on Google ViT, and automated image management.
+## IML Toolkit
 
-4. **[IML Cropper](https://github.com/royokello/iml-cropper)**  
-   A Python app for training an image cropping model, predicting crop boxes, and batch cropping images in a directory.
+### Components
+| Tool | Purpose |
+|------|---------|
+| **iml‑aggregator** | Recursively collect images, convert to PNG, copy matching captions |
+| **iml‑extractor** | Extract `n` frames per video (sequential or random) |
+| **iml‑cull** | Flask UI + ViT helper for manual / AI‑assisted culling |
+| **iml‑cropper** | Train a crop model, predict boxes, or batch‑crop images |
+| **iml‑ranker** | Gather pairwise preferences, train an Elo‑style ranker |
 
-5. **[IML Ranker](https://github.com/royokello/iml-ranker)**  
-   A Python app for ranking images using machine learning and the Elo rating system. It collects user preferences via pairwise comparisons, extracts image features, and trains models to predict preferences, enabling efficient identification of top-rated images.
+Suggested workflow → *Aggregator → Cull → Cropper → Ranker*.
 
-## Suggested Workflow for Preparing Images for Training
+---
 
-To effectively prepare images for training purposes, consider the following sequence:
+## Stable‑Diffusion 1.5
 
-1. **Data Collection**:  
-   Use [IML Aggregator](https://github.com/royokello/iml-aggregator) to gather and standardize images from various directories, or [IML Extractor](https://github.com/royokello/iml-extractor) to capture frames from video files.
+### 1 – Quantise the UNet to FP8 (E5M2)
+```bash
+python sd15/quant.py -i "models/stable-diffusion-v1-5" -o "models/stable-diffusion-v1-5-fp8-e5m2"
+```
 
-2. **Quality Assessment**:  
-   Apply [IML Cull](https://github.com/royokello/iml-cull) to review and filter the collected images, removing those that are unsuitable or of low quality.
+### 2 – Build the CUDA INT8 extension
+```bash
+python setup.py install
+```
 
-3. **Image Cropping**:  
-   Use [IML Cropper](https://github.com/royokello/iml-cropper) to generate cropped versions of the images with your desired aspect ratio.
+### 3 – Run inference
+```bash
+python sd15/infer.py --model "/models/stable-diffusion-v1-5-fp8-e5m2" --prompt "A scenic mountain landscape" --output "/pictures/out.png"
+```
+---
 
-4. **Image Ranking**:  
-   Use [IML Ranker](https://github.com/royokello/iml-ranker) to evaluate and rank the processed images based on learned user preferences.
+## CUDA INT8 Extension
+* **Kernel:** naïve DP4A GEMM (row‑major) ⇒ replace with CUTLASS for >2× speed.
+* **Architecture flag:** `-gencode arch=compute_61,code=sm_61` (Pascal).
+* **Interface:** `int32 = int8_gemm(a_int8, b_int8)`; used by custom `Int8Linear / Int8Conv2d` layers in `sd15/model.py`.
+
+---
+
+## End‑to‑End Examples
+| Task | Command |
+|------|---------|
+| Quantise SD1.5 | `python sd15/quant.py -i /models/v1-5 -o /models/v1-5-fp8` |
+| Build CUDA op  | `python setup.py install` |
+| 512×512 image  | `python sd15/infer.py --model /models/v1-5-fp8 --prompt "cat" --output cat.png` |
+| 768×512 wide   | `python sd15/infer.py --model /models/v1-5-fp8 --prompt "sunset" --output sunset.png --size 768,512` |
+
+---
+
+### Requirements
+* Python ≥3.10, PyTorch ≥2.2 with CUDA, Diffusers ≥0.27
+* A Pascal‑class GPU (`sm_61`) or newer. For other arches adjust `-gencode` in **setup.py**.
+
+> **Tip** If you only need CPU preprocessing (IML toolkit) you can skip the CUDA build.
