@@ -1,6 +1,6 @@
 # Image Machine Learning (IML) Project
 
-The **Image Machine Learning (IML)** mono‑repo houses several standalone tools that can be chained together to prepare, clean, and rank large image datasets **and** a lightweight Stable‑Diffusion 1.5 pipeline that fits on modest GPUs (e.g. GTX 1060 6 GB).
+The **Image Machine Learning (IML)** mono‑repo houses several standalone tools that can be chained together to prepare, clean, and rank large image datasets **and** a lightweight Stable‑Diffusion 1.5 pipeline.
 
 ---
 
@@ -17,11 +17,11 @@ The **Image Machine Learning (IML)** mono‑repo houses several standalone tools
 ### Components
 | Tool | Purpose |
 |------|---------|
-| **iml‑aggregator** | Recursively collect images, convert to PNG, copy matching captions |
-| **iml‑extractor** | Extract `n` frames per video (sequential or random) |
+| **iml‑aggregate** | Recursively collect images, convert to PNG, copy matching captions |
+| **iml‑extract** | Extract `n` frames per video (sequential or random) |
 | **iml‑cull** | Flask UI + ViT helper for manual / AI‑assisted culling |
-| **iml‑cropper** | Train a crop model, predict boxes, or batch‑crop images |
-| **iml‑ranker** | Gather pairwise preferences, train an Elo‑style ranker |
+| **iml‑crop** | Train a crop model, predict boxes, or batch‑crop images |
+| **iml‑rank** | Gather pairwise preferences, train an Elo‑style ranker |
 
 Suggested workflow → *Aggregator → Cull → Cropper → Ranker*.
 
