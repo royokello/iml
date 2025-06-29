@@ -1,85 +1,48 @@
-import argparse
-import os
-from datetime import datetime
-import torch
-import safetensors
-from diffusers import AutoencoderKL, UNet2DConditionModel, PNDMScheduler
-from transformers import CLIPTextModel, CLIPTokenizer
-import torchvision
+import argparse, os, time, torch
+from diffusers import AutoencoderKL, DDIMScheduler, CLIPTextModel, CLIPTokenizer
+from PIL import Image
+from .model import load_quant_unet
 
-# ================================ MAIN ==================================
-
+@torch.inference_mode()
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model",  required=True)
+    ap.add_argument("--model", required=True)
     ap.add_argument("--prompt", required=True)
     ap.add_argument("--output", required=True)
-    ap.add_argument("--steps",  choices=["low", "med", "high"], default="med")
-    ap.add_argument("--size",   choices=["square", "portrait", "landscape"], default="square")
+    ap.add_argument("--steps", type=int, default=24)
+    ap.add_argument("--size", default="384,384")
     args = ap.parse_args()
 
-    STEP_CHOICES = {"low":16, "med":24, "high":32}
-    SIZE_CHOICES = {"square":(512,512), "portrait":(384,512), "landscape":(512,384)}
-    steps = STEP_CHOICES[args.steps]
-    height, width = SIZE_CHOICES[args.size]
+    H,W = map(int, args.size.split(","))
+    device = "cuda"
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"[INFO] device: {device}")
+    # 1. tokenizer / text encoder on CPU
+    tok = CLIPTokenizer.from_pretrained(os.path.join(args.model, "text_encoder"))
+    txtenc = CLIPTextModel.from_pretrained(os.path.join(args.model, "text_encoder")).eval()
+    # 2. quantised UNet on GPU
+    unet = load_quant_unet(args.model, device)
+    # 3. VAE on GPU (FP16)
+    vae  = AutoencoderKL.from_pretrained(os.path.join(args.model, "vae")).half().to(device).eval()
+    # 4. scheduler
+    sched = DDIMScheduler.from_pretrained(args.model, subfolder="scheduler")
+    sched.set_timesteps(args.steps)
 
-    # 1) ---------- Tokeniser + text encoder run on CPU --------------
-    tokenizer = CLIPTokenizer.from_pretrained(args.model, subfolder="tokenizer", local_files_only=True)
-    tokens = tokenizer([args.prompt], padding="max_length", max_length=77, return_tensors="pt")
+    # prompt → embeddings
+    emb = txtenc(tok([args.prompt], return_tensors="pt").input_ids)[0].to(device, dtype=torch.float16)
 
-    text_enc = CLIPTextModel.from_pretrained(
-        args.model, subfolder="text_encoder", torch_dtype=torch.float16, local_files_only=True, device_map="cpu"
-    )
-    with torch.no_grad():
-        text_emb = text_enc(**tokens).last_hidden_state
-    # Free text‑encoder weights from RAM
-    del text_enc;  torch.cuda.empty_cache()
-    text_emb = text_emb.to(device)
+    # latents
+    lat = torch.randn(1, 4, H//8, W//8, device=device, dtype=torch.float16)
 
-    # 2) ---------- Scheduler ----------------------------------------
-    scheduler = PNDMScheduler.from_pretrained(args.model, subfolder="scheduler", local_files_only=True)
-    scheduler.set_timesteps(steps)
-
-    # 3) ---------- UNet ----------------------
-
-    # --- load quantised UNet ---
-    unet = 
-
-    # --- prepare latent noise ---
-    latents = torch.randn(
-        (1, unet.config.in_channels, height // 8, width // 8),
-        dtype=torch.float16, device=device
-    )
-    latents = latents * scheduler.init_noise_sigma
-
-    # --- denoise ---
-    with torch.no_grad():
-        for t in scheduler.timesteps:
-            noise_pred = unet(latents, t, encoder_hidden_states=text_emb).sample
-            latents    = scheduler.step(noise_pred, t, latents).prev_sample
-
-    del unet
-    torch.cuda.empty_cache()
-
-    # 4) ---------- Load VAE ---------------------
-    vae = AutoencoderKL.from_pretrained(
-        args.model, subfolder="vae",
-        torch_dtype=torch.float16, low_cpu_mem_usage=True
-    ).to(device).eval()
-
-    with torch.no_grad():
-        images = vae.decode(latents / 0.18215).sample
-        images = (images.clamp(-1, 1) + 1) / 2 
-
-    # 5) ---------- Save output --------------------------------------
-    os.makedirs(args.output, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    out_path  = os.path.join(args.output, f"{timestamp}.png")
-    torchvision.utils.save_image(images, out_path)
-    print(f"[INFO] saved image to {out_path}")
+    t0 = time.time()
+    for t in sched.timesteps:
+        inp = torch.cat([lat]*2)
+        noise_pred = unet(inp, t, encoder_hidden_states=emb)["sample"]
+        lat = sched.step(noise_pred, t, lat).prev_sample.half()
+    img = vae.decode(lat / 0.18215)["sample"][0]
+    img = (img.clamp(-1,1)+1)/2
+    img = (img.cpu().permute(1,2,0).numpy()*255).round().astype("uint8")
+    Image.fromarray(img).save(args.output)
+    print(f"done in {time.time()-t0:.1f}s, peak VRAM {torch.cuda.max_memory_allocated()/1e6:.0f} MB")
 
 if __name__ == "__main__":
     main()
