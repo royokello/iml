@@ -55,9 +55,9 @@ python sd15/infer.py --model "/models/stable-diffusion-v1-5-fp8-e5m2" --prompt "
 ## End‑to‑End Examples
 | Task | Command |
 |------|---------|
-| Quantise SD1.5 | `python sd15/quant.py -i /models/v1-5 -o /models/v1-5-fp8` |
+| Quantise SD1.5 | `py -m sd15.quant -i /models/v1-5 -o /models/v1-5-fp8` |
 | Build CUDA op  | `python setup.py install` |
-| 512×512 image  | `python sd15/infer.py --model /models/v1-5-fp8 --prompt "cat" --output cat.png` |
+| 512×512 image  | `py -m sd15.infer.py --model /models/v1-5-fp8 --prompt "cat" --output cat.png` |
 | 768×512 wide   | `python sd15/infer.py --model /models/v1-5-fp8 --prompt "sunset" --output sunset.png --size 768,512` |
 
 ---
