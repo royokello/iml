@@ -23,18 +23,7 @@ def get_dimensions(path: Path, ffprobe: str) -> tuple[int | None, int | None]:
     """Return (width, height) of *path* via *ffprobe*, or (None, None) on error."""
     try:
         out = subprocess.run(
-            [
-                ffprobe,
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-show_entries",
-                "stream=width,height",
-                "-of",
-                "csv=p=0:s=x",
-                str(path),
-            ],
+            [ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
             capture_output=True,
             text=True,
             check=True,
@@ -55,16 +44,16 @@ def size_bucket(shorter: int, thresholds: list[int]) -> int:
 
 
 def build_prefix(path: Path, root: Path) -> str:
-    """Return a filename prefix like ``video__cats__`` reflecting directory depth."""
+    """Return a clean prefix (root + non‑group folders) ending with '__'."""
     rel_parent = path.parent.relative_to(root)
     parts: list[str] = [root.name]
     if rel_parent != Path('.'):
-        parts.extend(rel_parent.parts)
+        parts.extend(p for p in rel_parent.parts if not p.startswith("_"))  # skip _horizontal/_512
     return "__".join(parts) + "__"
 
 
 def organise(root: Path, thresholds: list[int], ffprobe: str, *, dry_run: bool) -> None:
-    """Scan *root*, grouping videos by orientation + size. Respects *dry_run*."""
+    """Scan *root*, group videos, rename with non‑duplicated prefix."""
     for src in root.rglob("*"):
         if not src.is_file() or src.suffix.lower() not in VIDEO_EXTS:
             continue
@@ -80,12 +69,9 @@ def organise(root: Path, thresholds: list[int], ffprobe: str, *, dry_run: bool) 
         dst_dir = root / f"_{orientation}" / f"_{bucket}"
         dst_dir.mkdir(parents=True, exist_ok=True)
 
-        # build deduplicated filename
-        prefix = build_prefix(src, root)
-        name = src.name
-        if name.startswith(prefix):
-            name = name[len(prefix):]
-        dst = dst_dir / f"{prefix}{name}"
+        # --- create filename with single prefix -------------------------
+        dst = dst_dir / f"{build_prefix(src, root)}{src.name}"
+        # ----------------------------------------------------------------
 
         if dst.exists():
             print(f"– duplicate, skipping: {dst}")
@@ -98,35 +84,14 @@ def organise(root: Path, thresholds: list[int], ffprobe: str, *, dry_run: bool) 
 
 def parse_args() -> argparse.Namespace:  # noqa: D401 – argparse style
     p = argparse.ArgumentParser(description="Group videos by orientation and size.")
-    p.add_argument(
-        "--root",
-        required=True,
-        type=Path,
-        help="Directory to scan (and where groups are created).",
-    )
-    p.add_argument(
-        "--sizes",
-        nargs="*",
-        type=int,
-        metavar="N",
-        default=[256, 384, 512, 768, 1024],
-        help="Optional short‑side thresholds (default: 256 384 512 768 1024).",
-    )
-    p.add_argument(
-        "--ffprobe",
-        required=True,
-        type=Path,
-        help="Full path to ffprobe executable.",
-    )
-    p.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show planned moves without changing any files.",
-    )
+    p.add_argument("--root", required=True, type=Path, help="Directory to scan (and where groups are created).")
+    p.add_argument("--sizes", nargs="*", type=int, metavar="N", default=[256, 384, 512, 768, 1024], help="Short‑side thresholds (default: 256 384 512 768 1024).")
+    p.add_argument("--ffprobe", required=True, type=Path, help="Full path to ffprobe executable.")
+    p.add_argument("--dry-run", action="store_true", help="Show planned moves without changing any files.")
     return p.parse_args()
 
 
-def main() -> None:  # noqa: D401 – entry point style
+def main() -> None:
     args = parse_args()
 
     root: Path = args.root.expanduser().resolve()
