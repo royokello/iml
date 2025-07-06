@@ -55,7 +55,7 @@ def size_bucket(shorter: int, thresholds: list[int]) -> int:
 
 
 def build_prefix(path: Path, root: Path) -> str:
-    """Return a filename prefix like ``video_cats_`` reflecting directory depth."""
+    """Return a filename prefix like ``video__cats__`` reflecting directory depth."""
     rel_parent = path.parent.relative_to(root)
     parts: list[str] = [root.name]
     if rel_parent != Path('.'):
@@ -80,14 +80,20 @@ def organise(root: Path, thresholds: list[int], ffprobe: str, *, dry_run: bool) 
         dst_dir = root / f"_{orientation}" / f"_{bucket}"
         dst_dir.mkdir(parents=True, exist_ok=True)
 
-        dst = dst_dir / f"{build_prefix(src, root)}{src.name}"
+        # build deduplicated filename
+        prefix = build_prefix(src, root)
+        name = src.name
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+        dst = dst_dir / f"{prefix}{name}"
+
         if dst.exists():
             print(f"– duplicate, skipping: {dst}")
             continue
 
         print(f"{src}  →  {dst}")
         if not dry_run:
-            shutil.move(src, dst)
+            shutil.move(str(src), str(dst))
 
 
 def parse_args() -> argparse.Namespace:  # noqa: D401 – argparse style
