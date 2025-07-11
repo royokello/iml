@@ -69,9 +69,9 @@ def organise(root: Path, thresholds: list[int], ffprobe: str, *, dry_run: bool) 
         dst_dir = root / f"_{orientation}" / f"_{bucket}"
         dst_dir.mkdir(parents=True, exist_ok=True)
 
-        # --- create filename with single prefix -------------------------
-        dst = dst_dir / f"{build_prefix(src, root)}{src.name}"
-        # ----------------------------------------------------------------
+        prefix = build_prefix(src, root)
+        new_name = src.name if src.name.startswith(prefix) else prefix + src.name
+        dst = dst_dir / new_name
 
         if dst.exists():
             print(f"– duplicate, skipping: {dst}")
