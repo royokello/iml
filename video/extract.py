@@ -165,7 +165,7 @@ def main(args):
     # Otherwise walk directory
     for root, _, files in os.walk(input_path):
         for file in files:
-            if not file.lower().endswith((".mp4", ".avi", ".mov", ".mkv")):
+            if not file.lower().endswith((".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv")):
                 continue
             vid_path = os.path.join(root, file)
             if args.collate:
