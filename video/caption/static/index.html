@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>IML Caption</title>
+  <link rel="stylesheet" href="/static/index.css" />
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────────────── -->
+<header>
+  <h1>IML Caption</h1>
+</header>
+
+<!-- ── Nav bar ─────────────────────────────────────────────────────────── -->
+<nav class="toolbar">
+  <button id="prevBtn">⟵ Prev</button>
+  <button id="nextBtn">Next ⟶</button>
+  <button id="randBtn">🎲 Random</button>
+  <button id="saveBtn" class="primary">💾 Save</button>
+  <span id="status" class="status"></span>
+</nav>
+
+<!-- ── Main panel ──────────────────────────────────────────────────────── -->
+<main class="flex">
+  <!-- GIF preview (capped to 384 px height) -->
+  <section class="gifPane">
+    <img id="gifPrev" alt="loop gif" />
+  </section>
+
+  <!-- caption / tags -->
+  <aside class="captionBox">
+    <label for="tags">Caption</label>
+    <textarea id="tags" rows="6" placeholder="caption, goes, here"></textarea>
+  </aside>
+</main>
+
+<!-- ── Tag histogram footer ────────────────────────────────────────────── -->
+<footer>
+  <h3>Tags</h3>
+  <ul id="tagStats" class="tagList"></ul>
+</footer>
+
+<script src="/static/index.js"></script>
+</body>
+</html>

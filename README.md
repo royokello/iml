@@ -1,69 +1,50 @@
-# Image Machine Learning (IML) Project
+# ILM
 
-The **Image Machine Learning (IML)** mono‑repo houses several standalone tools that can be chained together to prepare, clean, and rank large image datasets **and** a lightweight Stable‑Diffusion 1.5 pipeline.
+**Author:** Roy Okello, Stelar Labs
 
----
+## Features
 
-## Table of Contents
-1. [IML Toolkit](#iml-toolkit)
-2. [Stable‑Diffusion 1.5 — FP8 Quant + INT8 Inference](#stable‑diffusion-15)
-3. [CUDA INT8 Extension](#cuda-int8-extension)
-4. [End‑to‑End Examples](#end‑to‑end-examples)
+ILM is a Python library designed for video processing and management. It includes modules for extracting frames, grouping videos based on attributes, detecting seamless loops in videos, and labeling these loops through an interactive web interface.
 
----
+### Current Modules:
 
-## IML Toolkit
+* **extract.py**: Extract frames from videos, either at regular intervals or randomly, while preserving the aspect ratio.
+* **group.py**: Organize videos into directories based on resolution and orientation, ensuring structured storage and easy retrieval.
+* **loop.py**: Detect seamless loops in videos using GPU-accelerated methods and structural similarity (SSIM) metrics, optimizing for efficient processing.
+* **label.py**: A lightweight Flask application providing a simple web UI for tagging and captioning detected video loops, storing metadata conveniently alongside content.
 
-### Components
-| Tool | Purpose |
-|------|---------|
-| **iml‑aggregate** | Recursively collect images, convert to PNG, copy matching captions |
-| **iml‑extract** | Extract `n` frames per video (sequential or random) |
-| **iml‑cull** | Flask UI + ViT helper for manual / AI‑assisted culling |
-| **iml‑crop** | Train a crop model, predict boxes, or batch‑crop images |
-| **iml‑rank** | Gather pairwise preferences, train an Elo‑style ranker |
+## Usage
 
-Suggested workflow → *Aggregator → Cull → Cropper → Ranker*.
+### Extract Frames
 
----
+Extract frames from videos at specified intervals or randomly.
 
-## Stable‑Diffusion 1.5
-
-### 1 – Quantise the UNet to FP8 (E5M2)
 ```bash
-python sd15/quant.py -i "models/stable-diffusion-v1-5" -o "models/stable-diffusion-v1-5-fp8-e5m2"
+python extract.py --input "videos/" --output "frames/" --frames 1 --time second --resolution 512 --random
 ```
 
-### 2 – Build the CUDA INT8 extension
+### Group Videos
+
+Organize videos by resolution and orientation.
+
 ```bash
-python setup.py install
+python group.py --root "videos/" --ffprobe "path/to/ffprobe" --dry-run
 ```
 
-### 3 – Run inference
+### Detect Loops
+
+Detect seamless loops in videos using GPU acceleration.
+
 ```bash
-python sd15/infer.py --model "/models/stable-diffusion-v1-5-fp8-e5m2" --prompt "A scenic mountain landscape" --output "/pictures/out.png"
+python loop.py --input "videos/" --output "loops/" --lengths 33 --fps 30 --in-res 64 --ffmpeg "path/to/ffmpeg"
 ```
----
 
-## CUDA INT8 Extension
-* **Kernel:** naïve DP4A GEMM (row‑major) ⇒ replace with CUTLASS for >2× speed.
-* **Architecture flag:** `-gencode arch=compute_61,code=sm_61` (Pascal).
-* **Interface:** `int32 = int8_gemm(a_int8, b_int8)`; used by custom `Int8Linear / Int8Conv2d` layers in `sd15/model.py`.
+### Label Loops
 
----
+Start the Flask UI to label and tag video loops interactively.
 
-## End‑to‑End Examples
-| Task | Command |
-|------|---------|
-| Quantise SD1.5 | `py -m sd15.quant -i /models/v1-5 -o /models/v1-5-fp8` |
-| Build CUDA op  | `python setup.py install` |
-| 512×512 image  | `py -m sd15.infer.py --model /models/v1-5-fp8 --prompt "cat" --output cat.png` |
-| 768×512 wide   | `python sd15/infer.py --model /models/v1-5-fp8 --prompt "sunset" --output sunset.png --size 768,512` |
+```bash
+python label.py --input "loops/" --port 7860
+```
 
----
-
-### Requirements
-* Python ≥3.10, PyTorch ≥2.2 with CUDA, Diffusers ≥0.27
-* A Pascal‑class GPU (`sm_61`) or newer. For other arches adjust `-gencode` in **setup.py**.
-
-> **Tip** If you only need CPU preprocessing (IML toolkit) you can skip the CUDA build.
+Visit `http://localhost:7860` to access the labeling interface.

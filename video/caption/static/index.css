@@ -1,0 +1,57 @@
+/* ───────── Base & layout ───────── */
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.4 system-ui, sans-serif; }
+
+/* Header */
+header {
+  background: #232323;
+  color: #fff;
+  padding: 0.5rem 1rem;
+}
+
+/* Toolbar (nav + save) */
+.toolbar {
+  display: flex;
+  gap: .5rem;
+  padding: .6rem 1rem;
+  background: #eee;
+  border-bottom: 1px solid #ddd;
+}
+.toolbar button { padding: .4rem .8rem; border: 1px solid #bbb; background: #fff; cursor: pointer; }
+.toolbar button.primary { background: #0a74ff; color:#fff; border-color:#0a74ff; }
+.status { margin-left: auto; font-size: 0.9em; color:#555; }
+
+/* Main area */
+main.flex { display: flex; padding: 1rem; gap: 1rem; }
+
+.images { flex: 1 1 65%; display:flex; gap:1rem; }
+.images img {
+  flex:1 1 50%;
+  max-height: 70vh;
+  object-fit: contain;
+  border:1px solid #ccc;
+}
+
+.captionBox {
+  flex: 0 0 320px;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+.captionBox textarea {
+  flex: 1;
+  resize: vertical;
+  width: 100%;
+  min-height: 6rem;
+  padding: .5rem;
+  font-family: inherit;
+}
+
+/* Footer – tag histogram */
+footer {
+  background: #f8f8f8;
+  border-top: 1px solid #ddd;
+  padding: .5rem 1rem;
+}
+.tagList { list-style:none; margin:0; padding:0; columns: 4 100px; }
+.tagList li { padding:.2rem 0; font-size:.9em; cursor:pointer; } 
