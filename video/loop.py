@@ -16,8 +16,8 @@ from skimage.metrics import structural_similarity as ssim
 
 # ── hyper‑params ──────────────────────────────────────────────────────────
 ENDPOINT_THRESH = 0.618   # min SSIM(first,last)
-MID_SEP_THRESH  = 0.999   # max SSIM(mid,first/last)
-VAR_THRESH      = 0.010   # motion floor (set >0 to skip near‑static)
+MID_SEP_THRESH  = 0.900   # max SSIM(mid,first/last)
+VAR_THRESH      = 0.100  # motion floor (set >0 to skip near‑static)
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -70,17 +70,15 @@ def find_loops(
             if seam < ENDPOINT_THRESH:
                 continue
 
-            # m = (s + e) // 2
-            # mid = max(ssim(thumbs[m], thumbs[s]),
-            #           ssim(thumbs[m], thumbs[e]))
-            # if mid > MID_SEP_THRESH:
-            #     continue
+            m = (s + e) // 2
+            mid = max(ssim(thumbs[m], thumbs[s]),
+                      ssim(thumbs[m], thumbs[e]))
+            if mid > MID_SEP_THRESH:
+                continue
 
-            # var = mean_var(thumbs, s, e)
-            # if var < VAR_THRESH:
-            #     continue
-
-            var = 0.0
+            var = mean_var(thumbs, s, e)
+            if var < VAR_THRESH:
+                continue
 
             raw_loops.append((s, e, seam, var))
 
@@ -214,7 +212,7 @@ def process_single_video(vpath: Path, args, out_dir: Path, idx_offset: int) -> i
     for loop_id, s, e, seam, var in loops:
         label = f"v{loop_id}"
         if args.verbose:
-            print(f"  • loop {loop_id}: frames {s}-{e}, seam={seam:.4f}")
+            print(f"  • loop {loop_id}: frames {s}-{e}, seam={seam:.4f}, var={var:.4f}")
         filter_line = (
             f"[0:v]fps={args.fps},"
             f"trim=start_frame={s}:end_frame={e},"
