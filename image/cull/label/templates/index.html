@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>IML Cull</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="header">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+            <div class="flash-messages">
+                {% for category, message in messages %}
+                <div class="flash-{{ category }}">{{ message }}</div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        {% endwith %}
+        <h1 class="title">IML Cull</h1>
+        <p class="subtitle">royokello</p>
+    </div>
+
+    <div class="main-content">
+        <div class="image-section">
+            <div class="image-container">
+                <h2>Image {{ index + 1 }} of {{ total }}</h2>
+                <img src="{{ image_url }}" alt="Image {{ images[index] if images and index < images|length else 'N/A' }}">
+                <p><small>{{ images[index] if images and index < images|length else 'N/A' }}</small></p>
+            </div>
+        </div>
+
+        <div class="controls-section">
+            <div class="stats">
+                <div class="stat-item">
+                    <div class="stat-count">{{ stats.get("keep_total", 0) }}</div>
+                    <div>Keep (Total)</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-count">{{ stats.get("cull_total", 0) }}</div>
+                    <div>Cull (Total)</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-count">{{ stats.get("labeled_total", 0) }}</div>
+                    <div>Labeled (Any)</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-count">{{ stats.get("unlabeled_total", 0) }}</div>
+                    <div>Unlabeled</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-count">{{ stats.get("total_images", 0) }}</div>
+                    <div>Total Images</div>
+                </div>
+            </div>
+
+            <p>Current label: <strong>{{ current_display_label if current_display_label else "None" }}</strong></p>
+
+            <form method="post">
+                <div class="buttons nav-buttons">
+                    <button name="action" value="prev">← Previous</button>
+                    <button name="action" value="next">Next →</button>
+                    <button name="action" value="random">Random</button>
+                </div>
+                <div class="manual-nav">
+                    <input type="number" name="goto_index" min="1" max="{{ total if total > 0 else 1 }}" placeholder="Enter image #">
+                    <button name="action" value="goto">Go</button>
+                </div>
+                <div class="manual-nav">
+                    <input type="text" name="search_query" placeholder="Enter image name/part">
+                    <button name="action" value="search_by_name">Search</button>
+                </div>
+                <div class="buttons action-buttons">
+                    <!-- Keep Label Buttons -->
+                    {% for label_opt in keep_labels_opts %}
+                    <button name="action" value="keep_{{ label_opt }}" class="keep-label-button">Keep: {{ label_opt.replace('_', ' ').title() }} ({{ stats.get("keep_" + 
+label_opt, 0) }})</button>
+                    {% endfor %}
+
+                    <!-- Cull Label Buttons -->
+                    {% for label_opt in cull_labels_opts %}
+                    <button name="action" value="cull_{{ label_opt }}" class="cull-label-button">Cull: {{ label_opt.replace('_', ' ').title() }} ({{ stats.get("cull_" + 
+label_opt, 0) }})</button>
+                    {% endfor %}
+                    <button name="action" value="remove">Remove Label</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

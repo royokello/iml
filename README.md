@@ -20,7 +20,7 @@ ILM is a Python library designed for video processing and management. It include
 Extract frames from videos at specified intervals or randomly.
 
 ```bash
-python extract.py --input "videos/" --output "frames/" --frames 1 --time second --resolution 512 --random
+python extract.py --input "videos/" --output "frames/" --frames 2 --time second --resolution 768 --random
 ```
 
 ### Group Videos
@@ -48,3 +48,15 @@ python label.py --input "loops/" --port 7860
 ```
 
 Visit `http://localhost:7860` to access the labeling interface.
+
+
+## Image
+
+### Cull
+
+`python3 -m image.cull.label.main --project /path/to/project/` - label images
+
+`python3 -m image.cull.train --project /path/to/project/` - train resnet18 on task
+
+`python3 -m image.cull.main --project /path/to/project/` - copy images to keep into a new directory
+

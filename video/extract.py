@@ -31,6 +31,7 @@ def extract_frames(
     time_unit: str,
     start_count: int,
     random_mode: bool,
+    video_counter: int
 ):
     """Extract frames from *video_path* and write them into *output_dir*.
 
@@ -98,7 +99,7 @@ def extract_frames(
     interval = max(int(round(frames_in_unit / frames_per_unit)), 1)
 
     print(
-        f" * Processing {video_path} – {frames_per_unit} frame(s) per {time_unit} (fps={fps:.2f}) → interval {interval}"
+        f"[{video_counter}] {video_path} – {frames_per_unit} frame(s) per {time_unit} (fps={fps:.2f}) → interval {interval}"
     )
 
     frame_count = 0
@@ -140,7 +141,7 @@ def main(args):
         global_counter = 1
 
     # Helper to process a single video path
-    def _process_video(path: str, out_dir: str, start_idx: int):
+    def _process_video(path: str, out_dir: str, start_idx: int, video_counter: int):
         return extract_frames(
             video_path=path,
             output_dir=out_dir,
@@ -149,6 +150,7 @@ def main(args):
             time_unit=args.time,
             start_count=start_idx,
             random_mode=args.random,
+            video_counter=video_counter
         )
 
     # If the input is a single file, handle directly
@@ -162,6 +164,8 @@ def main(args):
             _process_video(input_path, vid_out, 1)
         return
 
+    video_counter = 1
+
     # Otherwise walk directory
     for root, _, files in os.walk(input_path):
         for file in files:
@@ -169,8 +173,9 @@ def main(args):
                 continue
             vid_path = os.path.join(root, file)
             if args.collate:
-                new_count = _process_video(vid_path, output_root, global_counter)
+                new_count = _process_video(vid_path, output_root, global_counter, video_counter)
                 global_counter = new_count  # update for next clip
+                video_counter += 1
             else:
                 vid_name = os.path.splitext(file)[0]
                 vid_out = os.path.join(output_root, vid_name)
