@@ -38,7 +38,7 @@ def perform_culling(project_dir, stage=None, batch_size=64):
     print(f"Loading model from {model_path}")
     print(f"Using device: {device}")
     try:
-        model = IMLCullModel(pretrained=False).to(device)
+        model = IMLCullModel().to(device)
         state = torch.load(model_path, map_location=device)
         model.load_state_dict(state)
         model.eval()
@@ -52,7 +52,7 @@ def perform_culling(project_dir, stage=None, batch_size=64):
     print(f"Processing {total_images} images in batches of {batch_size}...")
 
     transform = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((384, 384)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
@@ -84,9 +84,8 @@ def perform_culling(project_dir, stage=None, batch_size=64):
                 continue
 
             batch_tensor = torch.stack(tensors, dim=0).to(device)
-            logits = model(batch_tensor)          # (B,)
-            probs = torch.sigmoid(logits)         # Cull probability if label 1 = cull
-            preds = (probs >= 0.5).long().cpu()   # 0=keep, 1=cull
+            logits = model(batch_tensor)          # (B, 2) keep/cull logits
+            preds = logits.argmax(dim=1).cpu()    # 0=keep, 1=cull
 
             for img_name, pred in zip(names, preds):
                 src_path = os.path.join(src_dir, img_name)
@@ -111,7 +110,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Use a trained model to predict which images to cull')
     parser.add_argument('--project', required=True, type=str)
     parser.add_argument('--stage', type=int, default=None)
-    parser.add_argument('--batch-size', type=int, default=512)
+    parser.add_argument('--batch-size', type=int, default=64)
     args = parser.parse_args()
 
     perform_culling(args.project, args.stage, args.batch_size)

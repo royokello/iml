@@ -1,13 +1,24 @@
 import torch
 import torch.nn as nn
-from torchvision.models import resnet18
+from transformers import DeiTModel, DeiTConfig
 
 class IMLCullModel(nn.Module):
-    def __init__(self, pretrained=False):
-        super().__init__()
-        self.backbone = resnet18(weights="IMAGENET1K_V1" if pretrained else None)
-        in_features = self.backbone.fc.in_features
-        self.backbone.fc = nn.Linear(in_features, 1)  # single logit head
+    def __init__(self):
+        super(IMLCullModel, self).__init__()
+        self.backbone = DeiTModel.from_pretrained("facebook/deit-base-distilled-patch16-384")
+        hidden_size = self.backbone.config.hidden_size
+        self.classifier = nn.Linear(hidden_size, 2)
 
-    def forward(self, x):
-        return self.backbone(x).squeeze(1)  # (B,) logits
+    def forward(self, pixel_values):
+        outputs = self.backbone(pixel_values=pixel_values)
+        pooled_output = outputs.last_hidden_state[:, 0]  # [CLS] token
+        logits = self.classifier(pooled_output)
+        return logits  # shape [batch_size, 2]
+
+    def freeze_backbone(self):
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+
+    def unfreeze_backbone(self):
+        for param in self.backbone.parameters():
+            param.requires_grad = True

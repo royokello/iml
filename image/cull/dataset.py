@@ -11,7 +11,7 @@ class IMLCullDataset(Dataset):
         self.labels = {}
 
         self.transform = transforms.Compose([
-            transforms.Resize((224, 224)),
+            transforms.Resize((384, 384)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
@@ -47,6 +47,6 @@ class IMLCullDataset(Dataset):
 
         image = Image.open(img_path).convert("RGB")
         pixel_values = self.transform(image)
-        label = torch.tensor(self.labels[img_path_csv], dtype=torch.float32)
+        label = torch.tensor(self.labels[self.images[idx]], dtype=torch.int64)
 
         return pixel_values, label, img_path

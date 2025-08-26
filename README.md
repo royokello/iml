@@ -13,6 +13,10 @@ ILM is a Python library designed for video processing and management. It include
 * **loop.py**: Detect seamless loops in videos using GPU-accelerated methods and structural similarity (SSIM) metrics, optimizing for efficient processing.
 * **label.py**: A lightweight Flask application providing a simple web UI for tagging and captioning detected video loops, storing metadata conveniently alongside content.
 
+## Installation
+
+`pip install -r requirements.txt`
+
 ## Usage
 
 ### Extract Frames
@@ -54,9 +58,8 @@ Visit `http://localhost:7860` to access the labeling interface.
 
 ### Cull
 
-`python3 -m image.cull.label.main --project /path/to/project/` - label images
+`python3 -m image.cull.label.main --project /path/to/project/`
 
-`python3 -m image.cull.train --project /path/to/project/` - train resnet18 on task
+`python3 -m image.cull.train --project /path/to/project/`
 
-`python3 -m image.cull.main --project /path/to/project/` - copy images to keep into a new directory
-
+`python3 -m image.cull.main --project /path/to/project/`
