@@ -6,9 +6,8 @@ import shutil
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
-from utils.stages import find_latest_stage  # re-use your helper
+from utils.stages import find_latest_stage
 
-# A label is (img_name, class_id, cx, cy, hx, hy)
 Label = Tuple[str, int, float, float, float, float]
 
 
@@ -17,13 +16,11 @@ def read_labels_csv(csv_path: str) -> List[Label]:
     with open(csv_path, "r", newline="") as f:
         reader = csv.reader(f)
         header = next(reader, None)
-        # Expect: ["img", "class", "cx", "cy", "hx", "hy"]
         for row in reader:
             try:
                 img, cls_s, cx_s, cy_s, hx_s, hy_s = row
                 labels.append((img, int(cls_s), float(cx_s), float(cy_s), float(hx_s), float(hy_s)))
             except Exception:
-                # Skip malformed rows
                 continue
     return labels
 
@@ -35,7 +32,6 @@ def make_dirs(base_out: str):
 
 
 def write_yolo_label_file(path: str, labels: List[Label]):
-    # YOLO expects: class cx cy w h, with w,h normalized full sizes
     with open(path, "w", newline="") as f:
         for (_, cls_id, cx, cy, hx, hy) in labels:
             w = 2.0 * hx
@@ -50,9 +46,10 @@ def balance_and_split(
 ) -> Tuple[Dict[str, List[Label]], Dict[str, List[Label]]]:
     """
     Returns (train_labels_by_img, val_labels_by_img)
-    - Balance per class to the size of the least-labeled class.
-    - Split that balanced set into train/val by val_split per class.
-    - Ensure no image leakage: if an image ends up in both splits, keep the side with more labels.
+
+    - Balance per class down to the least-labeled class (cap).
+    - Split each class into train/val with an exact val fraction.
+    - Allows the same image to be present in both splits (labels are split).
     """
     rnd = random.Random(seed)
 
@@ -60,46 +57,46 @@ def balance_and_split(
     by_class: Dict[int, List[Label]] = defaultdict(list)
     for lab in all_labels:
         by_class[lab[1]].append(lab)
-
     if not by_class:
         return {}, {}
 
-    # find cap = min class count
     cap = min(len(v) for v in by_class.values())
 
-    # sample per class to cap
+    # cap per class
     capped_by_class: Dict[int, List[Label]] = {}
     for c, lst in by_class.items():
         lst_copy = lst[:]
         rnd.shuffle(lst_copy)
         capped_by_class[c] = lst_copy[:cap]
 
-    # split per class into train/val
-    train_sel: List[Label] = []
-    val_sel: List[Label] = []
-    for c, lst in capped_by_class.items():
-        n_val = int(round(val_split * len(lst)))
-        rnd.shuffle(lst)
-        val_sel.extend(lst[:n_val])
-        train_sel.extend(lst[n_val:])
+    classes = sorted(capped_by_class.keys())
+    per_class_val_counts: Dict[int, int] = {}
+    raw_targets = [val_split * cap for _ in classes]
+    floors = [int(x) for x in map(lambda x: int(x), [int(val_split * cap) for _ in classes])]
+    fracs = [(i, (raw_targets[i] - int(raw_targets[i]))) for i in range(len(classes))]
+    remaining = int(round(sum(raw_targets))) - sum(floors)
+    
+    for i, c in enumerate(classes):
+        per_class_val_counts[c] = floors[i]
+        
+    fracs.sort(key=lambda t: t[1], reverse=True)
+    for i in range(remaining):
+        per_class_val_counts[classes[fracs[i][0]]] += 1
 
-    # collect by image
     train_by_img: Dict[str, List[Label]] = defaultdict(list)
     val_by_img: Dict[str, List[Label]] = defaultdict(list)
-    for lab in train_sel:
-        train_by_img[lab[0]].append(lab)
-    for lab in val_sel:
-        val_by_img[lab[0]].append(lab)
 
-    # resolve collisions: images appearing in both splits
-    collisions = set(train_by_img.keys()) & set(val_by_img.keys())
-    for img in collisions:
-        if len(train_by_img[img]) >= len(val_by_img[img]):
-            # keep train; drop val labels for this image
-            val_by_img.pop(img, None)
-        else:
-            # keep val; drop train labels for this image
-            train_by_img.pop(img, None)
+    for c in classes:
+        lst = capped_by_class[c][:]
+        rnd.shuffle(lst)
+        n_val = per_class_val_counts[c]
+        val_part = lst[:n_val]
+        train_part = lst[n_val:]
+
+        for lab in val_part:
+            val_by_img[lab[0]].append(lab)
+        for lab in train_part:
+            train_by_img[lab[0]].append(lab)
 
     return train_by_img, val_by_img
 
@@ -162,6 +159,20 @@ def main():
     # Copy and write
     copy_and_write(train_by_img, stage_dir, out_root, "train")
     copy_and_write(val_by_img, stage_dir, out_root, "val")
+
+    yaml_path = os.path.join(args.project, f"stage_{stage}_yolo.yaml")
+    with open(yaml_path, "w") as f:
+        f.write(f"# YOLO dataset config for stage {stage}\n")
+        f.write(f"path: {out_root}\n")
+        f.write("train: train/images\n")
+        f.write("val: val/images\n\n")
+        f.write("nc: 4\n")
+        f.write("names:\n")
+        f.write("  0: face\n")
+        f.write("  1: portrait\n")
+        f.write("  2: landscape\n")
+        f.write("  3: full_body\n")
+    print(f"Wrote dataset YAML: {yaml_path}")
 
     # Small summary
     n_train_imgs = len(train_by_img)
