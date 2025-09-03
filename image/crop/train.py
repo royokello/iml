@@ -27,12 +27,12 @@ def ensure_paths(project: str, stage: int):
 
 def copy_fixed_outputs(run_dir: str, project: str, stage: int, variant: str):
     best_src = os.path.join(run_dir, "weights", "best.pt")
-    best_dst = os.path.join(project, f"stage_{stage}_crop_{variant}.pt")
+    best_dst = os.path.join(project, f"stage_{stage}_crop_model.pt")
     if os.path.exists(best_src):
         shutil.copy2(best_src, best_dst)
 
     csv_src = os.path.join(run_dir, "results.csv")
-    csv_dst = os.path.join(project, f"stage_{stage}_crop_{variant}_epoch_log.csv")
+    csv_dst = os.path.join(project, f"stage_{stage}_crop_epoch_log.csv")
     if os.path.exists(csv_src):
         shutil.copy2(csv_src, csv_dst)
     return best_dst, csv_dst
@@ -55,7 +55,7 @@ def main():
     ap.add_argument("--project", required=True)
     ap.add_argument("--stage", type=int, default=None)
     ap.add_argument("--model", type=str, default=None, help="absolute path to a trained model (for resume/continue)")
-    ap.add_argument("--variant", required=True, help="e.g. yolo11n, yolov8n, ...")
+    ap.add_argument("--variant", help="e.g. yolo11n, yolov8n, ...")
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--workers", type=int, default=8)

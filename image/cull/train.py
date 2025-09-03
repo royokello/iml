@@ -72,7 +72,7 @@ def run_stage(
     val_size: int,
     best_val_auroc: float,
     best_val_acc: float,
-) -> Tuple[IMLCullModel, float]:
+) -> Tuple[IMLCullModel, float, float]:
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.AdamW(trainable_params, lr=learning_rate, weight_decay=0.05)
@@ -87,10 +87,11 @@ def run_stage(
 
         if val_auroc > best_val_auroc:
             improved = True
-        elif abs(val_auroc - best_val_auroc) < 1e-6 and val_acc > best_val_acc:
-            improved = True
+            if abs(val_auroc - best_val_auroc) < 1e-6 and val_acc < best_val_acc:
+                improved = False
         else:
             improved = False
+
         saved_str = "SAVED" if improved else ""
 
         epoch_timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -122,15 +123,19 @@ def run_stage(
             epochs_no_improve += 1
 
         history_val_auroc.append(val_auroc)
-        if len(history_val_auroc) >= patience:
-            window = history_val_auroc[-patience:]
+        patience_2x = patience * 2
+        if len(history_val_auroc) >= patience_2x:
+            window = history_val_auroc[-patience_2x:]
             plateau = (max(window) - min(window)) <= training_plateau
-            if epochs_no_improve >= patience or plateau:
+            if epochs_no_improve >= patience_2x or plateau:
                 break
+
+        if epochs_no_improve > patience:
+            break
 
         scheduler.step()
 
-    return (model, best_val_auroc)
+    return (model, best_val_auroc, best_val_acc)
 
 
 def train_model(
@@ -203,7 +208,7 @@ def train_model(
     model.freeze_backbone()
 
     print(f"Training stage 1: lr={stage1_lr}, epochs={stage1_epochs}, patience={stage1_patience}")
-    model, best_val_auroc = run_stage(
+    model, best_val_auroc, best_val_acc = run_stage(
         training_stage=1,
         model=model, num_epochs=stage1_epochs, learning_rate=stage1_lr,
         patience=stage1_patience, device=device, training_plateau=training_plateau,

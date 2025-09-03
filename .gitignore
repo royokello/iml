@@ -9,3 +9,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# YOLO models
+yolo11m.pt
+yolo11n.pt

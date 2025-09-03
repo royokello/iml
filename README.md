@@ -66,4 +66,8 @@ Visit `http://localhost:7860` to access the labeling interface.
 
 ### Crop
 
-`python3 -m image.cull.label.main --project /path/to/project/`
+`python3 -m image.crop.label.main --project /path/to/project/`
+
+`python3 -m image.crop.train --project /path/to/project/`
+
+`python3 -m image.crop.main --project /path/to/project/`
