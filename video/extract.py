@@ -161,7 +161,7 @@ def main(args):
             video_name = os.path.splitext(os.path.basename(input_path))[0]
             vid_out = os.path.join(output_root, video_name)
             os.makedirs(vid_out, exist_ok=True)
-            _process_video(input_path, vid_out, 1)
+            _process_video(input_path, vid_out, 1, 1)
         return
 
     video_counter = 1
@@ -180,7 +180,7 @@ def main(args):
                 vid_name = os.path.splitext(file)[0]
                 vid_out = os.path.join(output_root, vid_name)
                 os.makedirs(vid_out, exist_ok=True)
-                _process_video(vid_path, vid_out, 1)
+                _process_video(vid_path, vid_out, 1, video_counter)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>IML Rank</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='script.js') }}" defer></script>
+  <script>
+    window.templateData = {
+      total_images: {{ total_images|int }},
+      total_labels: {{ total_labels|int }},
+      label_stats: {{ label_stats|tojson }}
+    };
+  </script>
+</head>
+<body>
+  <div class="header">
+    <h1>IML Rank</h1>
+    <div class="subtitle">royokello</div>
+    <div class="counters">Total Images: {{ total_images }} | Total Labels: {{ total_labels }}</div>
+  </div>
+
+  <div class="main-container">
+    <div class="image-section">
+      <h2>Image 1</h2>
+      <div class="image-controls">
+        <button class="randomize-button" onclick="randomizeImage(1)">Randomize Image 1</button>
+      </div>
+      <img id="image-1" class="image-container" src="" alt="Image 1">
+    </div>
+
+    <div class="central-controls">
+      <button id="random-pair-button" class="random-pair-button" onclick="getRandomPair()">Get Random Pair</button>
+      <button id="switch-button" class="switch-button" onclick="switchImages()">Switch Images</button>
+
+      <div class="labels-container">
+        <h3>Select Label</h3>
+        <button class="label-button label-left" onclick="addLabel('left')">Left is Better</button>
+        <button class="label-button label-right" onclick="addLabel('right')">Right is Better</button>
+      </div>
+
+
+      <div class="labels-summary">
+        <h3>Labels Summary</h3>
+        <div class="stat-item">
+          <span>Left is Better:</span>
+          <span id="left-count">{{ label_stats.left }}</span>
+        </div>
+        <div class="stat-item">
+          <span>Right is Better:</span>
+          <span id="right-count">{{ label_stats.right }}</span>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="image-section">
+      <h2>Image 2</h2>
+      <div class="image-controls">
+        <button class="randomize-button" onclick="randomizeImage(2)">Randomize Image 2</button>
+      </div>
+      <img id="image-2" class="image-container" src="" alt="Image 2">
+    </div>
+  </div>
+</body>
+</html>
