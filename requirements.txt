@@ -6,3 +6,5 @@ pillow==11.3.0
 transformers
 scikit-learn==1.7.1
 ultralytics==8.3.189
+diffusers==0.35.1
+matplotlib==3.10.6
