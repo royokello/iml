@@ -323,7 +323,7 @@ def main():
     ap.add_argument("--input", required=True, help="Path to the input video")
     ap.add_argument("--output", required=True, help="Directory for generated samples and results")
     ap.add_argument("--ffmpeg-dir", default=None, help="Directory containing ffmpeg/ffprobe executables")
-    ap.add_argument("--resolutions", default="1024", help="Comma separated target heights in pixels (e.g. 768,1024)")
+    ap.add_argument("--resolutions", default="512,768,1024", help="Comma separated target heights in pixels (e.g. 768,1024)")
     ap.add_argument("--bitrates", default="256,512,1024,1536,2048,3072,4096", help="Comma separated target bitrates in kbps (e.g. 768,1024,1536,2048)")
     ap.add_argument("--skip", action="store_true", default=False, help="Skip regenerating samples/encodes and reuse existing files")
     ap.add_argument("--num_samples", type=int, default=3, help="Number of snippets per resolution/bitrate combination")
@@ -601,7 +601,7 @@ def main():
             ]
             if not data:
                 continue
-            data = sorted(data, key=lambda r: r["mean_ssim"])
+            data = sorted(data, key=lambda r: r["mean_storage_bps"])
             storages = [row["mean_storage_bps"] for row in data]
             ssim_vals = [row["mean_ssim"] for row in data]
             scatter = ax.scatter(storages, ssim_vals, marker="o", linewidths=1.2, label=f"{resolution}p")
@@ -615,23 +615,28 @@ def main():
                     fontsize=8,
                     color=color,
                 )
-            if len(storages) >= 2:
-                slopes = []
-                for idx_pt in range(len(storages)):
-                    if idx_pt == 0:
-                        denom = storages[1] - storages[0]
-                        slope_pt = (ssim_vals[1] - ssim_vals[0]) / denom if denom else 0.0
-                    elif idx_pt == len(storages) - 1:
-                        denom = storages[idx_pt] - storages[idx_pt - 1]
-                        slope_pt = (ssim_vals[idx_pt] - ssim_vals[idx_pt - 1]) / denom if denom else 0.0
-                    else:
-                        denom = storages[idx_pt + 1] - storages[idx_pt - 1]
-                        slope_pt = (ssim_vals[idx_pt + 1] - ssim_vals[idx_pt - 1]) / denom if denom else 0.0
-                    slopes.append(slope_pt)
-                idx_tangent = max(range(len(slopes)), key=lambda i: abs(slopes[i]))
-                tan_storage = storages[idx_tangent]
-                tan_ssim = ssim_vals[idx_tangent]
-                ax.scatter([tan_storage], [tan_ssim], marker="x", s=100, linewidths=2.0, color=color, zorder=6)
+            x_arr = np.array(storages, dtype=float)
+            y_arr = np.array(ssim_vals, dtype=float)
+            if len(x_arr) >= 2:
+                deg = min(3, len(x_arr) - 1)
+                try:
+                    poly = np.poly1d(np.polyfit(x_arr, y_arr, deg))
+                    dense_x = np.linspace(x_arr.min(), x_arr.max(), max(200, len(x_arr) * 50))
+                    dense_y = poly(dense_x)
+                    ax.plot(dense_x, dense_y, linewidth=1.8, color=color, alpha=0.85)
+                    knee_point = _knee_from_dense(dense_x, dense_y)
+                    if knee_point:
+                        ax.scatter(
+                            [knee_point[0]],
+                            [knee_point[1]],
+                            marker="x",
+                            s=100,
+                            linewidths=2.0,
+                            color=color,
+                            zorder=6,
+                        )
+                except np.linalg.LinAlgError:
+                    pass
         ax.set_xlabel(storage_label)
         ax.set_ylabel(metric_label)
         ax.set_title("SSIM vs Storage")
