@@ -1,5 +1,6 @@
 import argparse, json, math, os, re, subprocess, csv, random
 import numpy as np
+from itertools import combinations
 from datetime import datetime
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -219,7 +220,6 @@ def _write_markdown(path, context):
     metric = context.get("metric")
     if metric:
         lines.append(f"- Plotted metric: `{metric}`")
-    plot = context.get("plot")
     lines.append("")
     lines.append("| Resolution | Target Bitrate (kbps) | Avg Bitrate (kbps) | Mean Storage (bytes/s) | Mean SSIM |")
     lines.append("|------------|-----------------------|--------------------|------------------------|-----------|")
@@ -230,13 +230,10 @@ def _write_markdown(path, context):
             f"{_fmt_float(row.get('mean_storage_bps'), 1)} | "
             f"{_fmt_float(row['mean_ssim'], 4)} |"
         )
+    plot = context.get("plot")
     if plot:
         lines.append("")
         lines.append(f"![Quality Plot]({os.path.basename(plot)})")
-    storage_plot = context.get("storage_plot")
-    if storage_plot:
-        lines.append("")
-        lines.append(f"![Storage Plot]({os.path.basename(storage_plot)})")
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
@@ -323,11 +320,11 @@ def main():
     ap.add_argument("--input", required=True, help="Path to the input video")
     ap.add_argument("--output", required=True, help="Directory for generated samples and results")
     ap.add_argument("--ffmpeg-dir", default=None, help="Directory containing ffmpeg/ffprobe executables")
-    ap.add_argument("--resolutions", default="512,768,1024", help="Comma separated target heights in pixels (e.g. 768,1024)")
-    ap.add_argument("--bitrates", default="256,512,1024,1536,2048,3072,4096", help="Comma separated target bitrates in kbps (e.g. 768,1024,1536,2048)")
+    ap.add_argument("--resolutions", default="384,512,768,1024", help="Comma separated target heights in pixels (e.g. 768,1024)")
+    ap.add_argument("--bitrates", default="256,512,768,1024,1280,1536,1792,2048,2304,2560,2816,3072", help="Comma separated target bitrates in kbps (e.g. 768,1024,1536,2048)")
     ap.add_argument("--skip", action="store_true", default=False, help="Skip regenerating samples/encodes and reuse existing files")
-    ap.add_argument("--num_samples", type=int, default=3, help="Number of snippets per resolution/bitrate combination")
-    ap.add_argument("--sample_length", type=int, default=120, help="Length of each sample in seconds")
+    ap.add_argument("--num_samples", type=int, default=4, help="Number of snippets per resolution/bitrate combination")
+    ap.add_argument("--sample_length", type=int, default=90, help="Length of each sample in seconds")
     ap.add_argument("-v","--verbose", action="store_true", help="Enable verbose logs and verbose ffmpeg output")
     args = ap.parse_args()
 
@@ -515,12 +512,9 @@ def main():
         metric_key = "mean_ssim"
     metric_label = "SSIM"
 
-    storage_metric_key = None
-    if any(not (isinstance(r["mean_storage_bps"], float) and math.isnan(r["mean_storage_bps"])) for r in summary_rows):
-        storage_metric_key = "mean_storage_bps"
-    storage_label = "Storage (bytes/s)"
-
     plot_path = None
+    knee_rows = []
+    curve_models = {}
     if metric_key:
         fig, ax = plt.subplots()
         for resolution in resolutions:
@@ -550,6 +544,11 @@ def main():
             if len(xs_arr) >= 2:
                 deg = min(3, len(xs_arr) - 1)
                 poly = np.poly1d(np.polyfit(xs_arr, ys_arr, deg))
+                curve_models[resolution] = {
+                    "poly": poly,
+                    "x_min": float(xs_arr.min()),
+                    "x_max": float(xs_arr.max()),
+                }
                 dense_x = np.linspace(xs_arr.min(), xs_arr.max(), max(200, len(xs_arr) * 50))
                 dense_y = poly(dense_x)
                 line, = ax.plot(dense_x, dense_y, linewidth=2.0, label=f"{resolution}p")
@@ -569,12 +568,28 @@ def main():
                         color="black",
                         zorder=6,
                     )
+                    knee_rows.append({
+                        "curve": f"{resolution}p",
+                        "ssim": float(knee_point[1]),
+                        "bitrate": float(knee_point[0]),
+                    })
+                else:
+                    knee_rows.append({
+                        "curve": f"{resolution}p",
+                        "ssim": float("nan"),
+                        "bitrate": float("nan"),
+                    })
             else:
                 line, = ax.plot(xs_arr, ys_arr, linewidth=2.0, label=f"{resolution}p")
                 color = line.get_color()
                 ax.scatter(xs_arr, ys_arr, color=color, edgecolors="white", zorder=5)
                 for x, y, row in zip(xs_arr, ys_arr, data):
                     ax.text(x * 1.01 if x else x + 1, y, f"{resolution}p/{row['target_bitrate_kbps']}k", fontsize=8, color=color)
+                knee_rows.append({
+                    "curve": f"{resolution}p",
+                    "ssim": float("nan"),
+                    "bitrate": float("nan"),
+                })
         ax.set_xlabel("Bitrate (kbps)")
         ax.set_ylabel(metric_label)
         ax.set_title("Bitrate vs Quality (sample averages)")
@@ -582,72 +597,64 @@ def main():
         ax.grid(True)
         handles, labels = ax.get_legend_handles_labels()
         if handles:
-            ax.legend(handles, labels)
+                ax.legend(handles, labels)
         plt.tight_layout()
-        plot_path = os.path.join(output_dir, f"{ts}-quality.png")
+        plot_path = os.path.join(output_dir, "ssim_bitrate_graph.png")
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
 
-    storage_plot_path = None
-    if storage_metric_key:
-        fig, ax = plt.subplots()
-        for resolution in resolutions:
-            data = [r for r in summary_rows if r["resolution"] == resolution and not (isinstance(r["mean_storage_bps"], float) and math.isnan(r["mean_storage_bps"]))]
-            if not data:
+    intersection_rows = []
+    intersections_csv = None
+    if len(curve_models) >= 2:
+        for res_a, res_b in combinations(sorted(curve_models.keys()), 2):
+            model_a = curve_models[res_a]
+            model_b = curve_models[res_b]
+            diff_coeffs = np.polysub(model_a["poly"].c, model_b["poly"].c)
+            diff_coeffs = np.trim_zeros(diff_coeffs, "f")
+            if diff_coeffs.size == 0:
                 continue
-            data = [
-                r for r in data
-                if not (isinstance(r["mean_ssim"], float) and math.isnan(r["mean_ssim"]))
-            ]
-            if not data:
+            roots = np.roots(diff_coeffs)
+            if roots.size == 0:
                 continue
-            data = sorted(data, key=lambda r: r["mean_storage_bps"])
-            storages = [row["mean_storage_bps"] for row in data]
-            ssim_vals = [row["mean_ssim"] for row in data]
-            scatter = ax.scatter(storages, ssim_vals, marker="o", linewidths=1.2, label=f"{resolution}p")
-            color = tuple(scatter.get_facecolor()[0])
-            for storage, ssim_val, target_row in zip(storages, ssim_vals, data):
-                ax.annotate(
-                    f"{target_row['target_bitrate_kbps']}k",
-                    (storage, ssim_val),
-                    textcoords="offset points",
-                    xytext=(6, 4),
-                    fontsize=8,
-                    color=color,
-                )
-            x_arr = np.array(storages, dtype=float)
-            y_arr = np.array(ssim_vals, dtype=float)
-            if len(x_arr) >= 2:
-                deg = min(3, len(x_arr) - 1)
-                try:
-                    poly = np.poly1d(np.polyfit(x_arr, y_arr, deg))
-                    dense_x = np.linspace(x_arr.min(), x_arr.max(), max(200, len(x_arr) * 50))
-                    dense_y = poly(dense_x)
-                    ax.plot(dense_x, dense_y, linewidth=1.8, color=color, alpha=0.85)
-                    knee_point = _knee_from_dense(dense_x, dense_y)
-                    if knee_point:
-                        ax.scatter(
-                            [knee_point[0]],
-                            [knee_point[1]],
-                            marker="x",
-                            s=100,
-                            linewidths=2.0,
-                            color=color,
-                            zorder=6,
-                        )
-                except np.linalg.LinAlgError:
-                    pass
-        ax.set_xlabel(storage_label)
-        ax.set_ylabel(metric_label)
-        ax.set_title("SSIM vs Storage")
-        ax.grid(True)
-        handles, labels = ax.get_legend_handles_labels()
-        if handles:
-            ax.legend(handles, labels)
-        plt.tight_layout()
-        storage_plot_path = os.path.join(output_dir, f"{ts}-storage.png")
-        plt.savefig(storage_plot_path, dpi=150, bbox_inches="tight")
-        plt.close()
+            x_min = max(model_a["x_min"], model_b["x_min"])
+            x_max = min(model_a["x_max"], model_b["x_max"])
+            if x_min > x_max:
+                continue
+            for root in roots:
+                if not np.isfinite(root):
+                    continue
+                if abs(root.imag) > 1e-6:
+                    continue
+                x = float(root.real)
+                if x < x_min - 1e-3 or x > x_max + 1e-3:
+                    continue
+                ssim_val = float(np.real(model_a["poly"](x)))
+                intersection_rows.append({
+                    "curve_1": f"{res_a}p",
+                    "curve_2": f"{res_b}p",
+                    "ssim": ssim_val,
+                    "bitrate": float(x),
+                })
+    if intersection_rows:
+        intersection_rows = sorted(intersection_rows, key=lambda r: (r["bitrate"], r["curve_1"], r["curve_2"]))
+
+    knee_csv = None
+    if knee_rows:
+        knee_csv = os.path.join(output_dir, "ssim_bitrate_knee_points.csv")
+        with open(knee_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["curve", "ssim", "bitrate"])
+            writer.writeheader()
+            for row in knee_rows:
+                writer.writerow(row)
+
+    intersections_csv = None
+    if intersection_rows:
+        intersections_csv = os.path.join(output_dir, "ssim_bitrate_intersections.csv")
+        with open(intersections_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=["curve_1", "curve_2", "ssim", "bitrate"])
+            writer.writeheader()
+            for row in intersection_rows:
+                writer.writerow(row)
 
     markdown_path = os.path.join(output_dir, f"{ts}-results.md")
     _write_markdown(markdown_path, {
@@ -659,7 +666,6 @@ def main():
         "num_samples": actual_sample_count,
         "rows": summary_rows,
         "plot": plot_path,
-        "storage_plot": storage_plot_path,
         "metric": metric_label if metric_key else None,
     })
 
@@ -667,8 +673,10 @@ def main():
     print(samples_csv)
     if plot_path:
         print(plot_path)
-    if storage_plot_path:
-        print(storage_plot_path)
+    if knee_csv:
+        print(knee_csv)
+    if intersections_csv:
+        print(intersections_csv)
     print(markdown_path)
 
 if __name__ == "__main__":
