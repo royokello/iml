@@ -13,7 +13,13 @@ FFPROBE_BIN = "ffprobe"
 VERBOSE = False
 
 DEFAULT_RESOLUTIONS = [768, 1024]
-DEFAULT_BITRATES = [768, 1024, 1536, 2048]
+DEFAULT_BITRATE_QUALITIES = [256, 512, 768, 1024, 1280, 1536, 1792, 2048, 2304, 2560, 2816, 3072]
+DEFAULT_CRF_QUALITIES = [18, 22, 26, 30, 34, 38, 42]
+DEFAULT_QUALITIES = {
+    "bitrate": DEFAULT_BITRATE_QUALITIES,
+    "crf": DEFAULT_CRF_QUALITIES,
+}
+INTERSECTION_SAMPLE_POINTS = 2000
 
 
 def _parse_int_list(raw, fallback):
@@ -38,6 +44,40 @@ def _parse_int_list(raw, fallback):
             raise ValueError(f"Invalid integer value '{s}'")
         values.append(sign * int(token))
     return values if values else list(fallback)
+
+
+def _quality_display(encoder, value):
+    suffix = "k" if encoder == "bitrate" else ""
+    prefix = "" if encoder == "bitrate" else "crf"
+    return f"{prefix}{int(value)}{suffix}"
+
+
+def _quality_header(encoder):
+    return "Target Bitrate (kbps)" if encoder == "bitrate" else "Target CRF"
+
+
+def _quality_axis_label(encoder):
+    return "Bitrate (kbps)" if encoder == "bitrate" else "CRF"
+
+
+def _quality_suffix(encoder):
+    return "bitrate" if encoder == "bitrate" else encoder
+
+
+def _eval_storage_curve(model, xs):
+    xs_arr = np.asarray(xs, dtype=float)
+    poly = model.get("poly")
+    if poly is not None:
+        return poly(xs_arr)
+    return np.interp(xs_arr, model["storage"], model["ssim"])
+
+
+def _eval_quality_curve(model, xs):
+    xs_arr = np.asarray(xs, dtype=float)
+    qualities = model.get("quality")
+    if qualities is None:
+        raise ValueError("Quality data missing for storage curve model.")
+    return np.interp(xs_arr, model["storage"], qualities)
 
 
 def _ensure_dir(path):
@@ -94,7 +134,11 @@ def _load_cached_ssim_map(output_dir):
                 for row in reader:
                     try:
                         res = int(float(row.get("resolution", 0)))
-                        bitrate = int(float(row.get("target_bitrate_kbps", 0)))
+                        quality_token = row.get("target_quality")
+                        if quality_token in (None, ""):
+                            quality_token = row.get("target_bitrate_kbps", 0)
+                        quality_val = int(float(quality_token or 0))
+                        quality_type = (row.get("quality_type") or "bitrate").strip().lower()
                         sample_idx = int(float(row.get("sample_index", 0)))
                     except (TypeError, ValueError):
                         continue
@@ -106,7 +150,7 @@ def _load_cached_ssim_map(output_dir):
                             ssim_val = float(ssim_str)
                         except ValueError:
                             ssim_val = float("nan")
-                    mapping[(res, bitrate, sample_idx)] = ssim_val
+                    mapping[(res, quality_type, quality_val, sample_idx)] = ssim_val
         except Exception:
             continue
         else:
@@ -168,9 +212,8 @@ def _create_reference_sample(input_path, output_path, start, duration, ff_args):
         raise RuntimeError(f"Failed to create reference sample: {err or out}")
 
 
-def _encode_sample(reference_path, output_path, height, bitrate_kbps, ff_args):
+def _encode_sample(reference_path, output_path, height, quality_value, encoder_mode, ff_args):
     scale_filter = f"scale=-2:{height}:flags=bicubic"
-    bitrate = int(bitrate_kbps)
     cmd = [
         FFMPEG_BIN,
         *ff_args,
@@ -183,21 +226,42 @@ def _encode_sample(reference_path, output_path, height, bitrate_kbps, ff_args):
         "hevc_nvenc",
         "-preset",
         "slow",
-        "-b:v",
-        f"{bitrate}k",
-        "-maxrate",
-        f"{bitrate}k",
-        "-bufsize",
-        f"{bitrate * 2}k",
+    ]
+    if encoder_mode == "bitrate":
+        bitrate = int(quality_value)
+        cmd.extend([
+            "-b:v",
+            f"{bitrate}k",
+            "-maxrate",
+            f"{bitrate}k",
+            "-bufsize",
+            f"{bitrate * 2}k",
+        ])
+    else:
+        cq_value = int(quality_value)
+        cmd.extend([
+            "-rc",
+            "vbr_hq",
+            "-cq",
+            str(cq_value),
+            "-b:v",
+            "0",
+            "-maxrate",
+            "0",
+            "-bufsize",
+            "0",
+        ])
+    cmd.extend([
         "-fps_mode",
         "vfr",
         "-an",
         output_path,
-    ]
+    ])
     vprint("Encoding sample:", " ".join(cmd))
     rc, out, err = run(cmd)
     if rc != 0:
-        raise RuntimeError(f"Failed to encode sample at {height}p/{bitrate}k: {err or out}")
+        descriptor = f"{height}p/{_quality_display(encoder_mode, quality_value)}"
+        raise RuntimeError(f"Failed to encode sample at {descriptor}: {err or out}")
 
 
 def _fmt_float(value, precision=3):
@@ -213,19 +277,26 @@ def _write_markdown(path, context):
         f"- Input video: `{context['input']}`",
         f"- Output directory: `{context['output']}`",
         f"- Resolutions: {', '.join(str(r) for r in context['resolutions'])}",
-        f"- Bitrates (kbps): {', '.join(str(b) for b in context['bitrates'])}",
         f"- Sample length: {context['sample_length']} s",
         f"- Samples per combination: {context['num_samples']}",
     ]
+    encoder = context.get("encoder")
+    if encoder:
+        lines.append(f"- Encoder mode: `{encoder}`")
+    qualities_display = context.get("qualities_display")
+    if qualities_display:
+        lines.append(f"- Qualities: {', '.join(qualities_display)}")
     metric = context.get("metric")
     if metric:
         lines.append(f"- Plotted metric: `{metric}`")
     lines.append("")
-    lines.append("| Resolution | Target Bitrate (kbps) | Avg Bitrate (kbps) | Mean Storage (bytes/s) | Mean SSIM |")
+    header_label = context.get("quality_header", "Target Quality")
+    lines.append(f"| Resolution | {header_label} | Avg Bitrate (kbps) | Mean Storage (bytes/s) | Mean SSIM |")
     lines.append("|------------|-----------------------|--------------------|------------------------|-----------|")
     for row in context["rows"]:
+        target_quality = row.get("quality_label") or row.get("target_quality")
         lines.append(
-            f"| {row['resolution']} | {row['target_bitrate_kbps']} | "
+            f"| {row['resolution']} | {target_quality} | "
             f"{_fmt_float(row['avg_actual_bitrate_kbps'], 1)} | "
             f"{_fmt_float(row.get('mean_storage_bps'), 1)} | "
             f"{_fmt_float(row['mean_ssim'], 4)} |"
@@ -321,9 +392,10 @@ def main():
     ap.add_argument("--output", required=True, help="Directory for generated samples and results")
     ap.add_argument("--ffmpeg-dir", default=None, help="Directory containing ffmpeg/ffprobe executables")
     ap.add_argument("--resolutions", default="384,512,768,1024", help="Comma separated target heights in pixels (e.g. 768,1024)")
-    ap.add_argument("--bitrates", default="256,512,768,1024,1280,1536,1792,2048,2304,2560,2816,3072", help="Comma separated target bitrates in kbps (e.g. 768,1024,1536,2048)")
+    ap.add_argument("--encoder", choices=["bitrate", "crf"], default="bitrate", help="Quality control mode: constant bitrate or constant quality (CRF-like)")
+    ap.add_argument("--qualities", default=None, help="Comma separated quality targets (kbps for bitrate mode, CQ values for CRF mode). Defaults depend on encoder.")
     ap.add_argument("--skip", action="store_true", default=False, help="Skip regenerating samples/encodes and reuse existing files")
-    ap.add_argument("--num_samples", type=int, default=4, help="Number of snippets per resolution/bitrate combination")
+    ap.add_argument("--num_samples", type=int, default=4, help="Number of snippets per resolution/quality combination")
     ap.add_argument("--sample_length", type=int, default=90, help="Length of each sample in seconds")
     ap.add_argument("-v","--verbose", action="store_true", help="Enable verbose logs and verbose ffmpeg output")
     args = ap.parse_args()
@@ -354,12 +426,14 @@ def main():
     if not resolutions:
         raise SystemExit("No valid resolutions provided.")
 
+    encoder_mode = args.encoder
+    default_qualities = DEFAULT_QUALITIES.get(encoder_mode, [])
     try:
-        bitrates = sorted({int(abs(b)) for b in _parse_int_list(args.bitrates, DEFAULT_BITRATES) if int(abs(b)) > 0})
+        qualities = sorted({int(abs(q)) for q in _parse_int_list(args.qualities, default_qualities) if int(abs(q)) > 0})
     except ValueError as exc:
-        raise SystemExit(f"Invalid --bitrates value: {exc}") from exc
-    if not bitrates:
-        raise SystemExit("No valid bitrates provided.")
+        raise SystemExit(f"Invalid --qualities value: {exc}") from exc
+    if not qualities:
+        raise SystemExit("No valid quality targets provided.")
 
     num_samples = max(1, int(args.num_samples))
     sample_length = max(1, int(args.sample_length))
@@ -424,10 +498,11 @@ def main():
     summary_rows = []
     sample_rows = []
     for resolution in resolutions:
-        for bitrate in bitrates:
-            combo_dir = os.path.join(output_dir, f"{resolution}p_{bitrate}k")
+        for quality in qualities:
+            quality_label = _quality_display(encoder_mode, quality)
+            combo_dir = os.path.join(output_dir, f"{resolution}p_{quality_label}")
             _ensure_dir(combo_dir)
-            vprint(f"Processing {resolution}p @ {bitrate} kbps")
+            vprint(f"Processing {resolution}p @ {quality_label}")
             combo_samples = []
             for sample in reference_samples:
                 encoded_path = os.path.join(combo_dir, f"sample_{sample['index']:02d}.mp4")
@@ -437,12 +512,12 @@ def main():
                     encoded_meta = ffprobe_meta(encoded_path)
                     vprint(f"  Sample {sample['index']:02d}: reusing cached encode")
                 else:
-                    _encode_sample(sample["path"], encoded_path, resolution, bitrate, ff_args)
+                    _encode_sample(sample["path"], encoded_path, resolution, quality, encoder_mode, ff_args)
                     encoded_meta = ffprobe_meta(encoded_path)
                 ssim = float("nan")
                 reused_ssim = False
                 if skip_requested and cached_ssims:
-                    cached_ssim = cached_ssims.get((int(resolution), int(bitrate), int(sample["index"])))
+                    cached_ssim = cached_ssims.get((int(resolution), encoder_mode, int(quality), int(sample["index"])))
                     if cached_ssim is not None:
                         ssim = cached_ssim
                         reused_ssim = True
@@ -464,7 +539,9 @@ def main():
                 )
                 entry = {
                     "resolution": resolution,
-                    "target_bitrate_kbps": bitrate,
+                    "quality_type": encoder_mode,
+                    "target_quality": quality,
+                    "quality_label": quality_label,
                     "sample_index": sample["index"],
                     "start_seconds": sample["start"],
                     "duration_seconds": sample["duration"],
@@ -481,7 +558,9 @@ def main():
 
             summary_rows.append({
                 "resolution": resolution,
-                "target_bitrate_kbps": bitrate,
+                "quality_type": encoder_mode,
+                "target_quality": quality,
+                "quality_label": quality_label,
                 "avg_actual_bitrate_kbps": _mean([s["actual_bitrate_kbps"] for s in combo_samples]),
                 "mean_storage_bps": _mean([s["storage_bytes_per_second"] for s in combo_samples]),
                 "mean_ssim": _mean([s["ssim"] for s in combo_samples]),
@@ -490,7 +569,7 @@ def main():
     ts = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     summary_csv = os.path.join(output_dir, f"{ts}-summary.csv")
     samples_csv = os.path.join(output_dir, f"{ts}-samples.csv")
-    summary_fields = ["resolution","target_bitrate_kbps","avg_actual_bitrate_kbps","mean_storage_bps","mean_ssim"]
+    summary_fields = ["resolution","quality_type","target_quality","quality_label","avg_actual_bitrate_kbps","mean_storage_bps","mean_ssim"]
     with open(summary_csv, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=summary_fields)
         writer.writeheader()
@@ -498,7 +577,7 @@ def main():
             writer.writerow(row)
 
     sample_fields = [
-        "resolution","target_bitrate_kbps","sample_index","start_seconds","duration_seconds",
+        "resolution","quality_type","target_quality","quality_label","sample_index","start_seconds","duration_seconds",
         "encoded_path","actual_bitrate_kbps","width","height","size_bytes","storage_bytes_per_second","ssim"
     ]
     with open(samples_csv, "w", newline="", encoding="utf-8") as f:
@@ -513,55 +592,79 @@ def main():
     metric_label = "SSIM"
 
     plot_path = None
+    ssim_storage_plot_path = None
+    storage_intersection_rows = []
+    storage_knee_rows = []
+    storage_intersections_csv = None
+    storage_knees_csv = None
     knee_rows = []
+    axis_field_name = "bitrate" if encoder_mode == "bitrate" else "crf"
+    axis_label = _quality_axis_label(encoder_mode)
+    quality_suffix = _quality_suffix(encoder_mode)
     curve_models = {}
     if metric_key:
         fig, ax = plt.subplots()
+        quality_sign = 1 if encoder_mode == "bitrate" else -1
         for resolution in resolutions:
             data = [r for r in summary_rows if r["resolution"] == resolution and not (isinstance(r[metric_key], float) and math.isnan(r[metric_key]))]
             if not data:
                 continue
-            data = sorted(
-                data,
-                key=lambda r: (
-                    r["avg_actual_bitrate_kbps"]
-                    if not (isinstance(r["avg_actual_bitrate_kbps"], float) and math.isnan(r["avg_actual_bitrate_kbps"]))
-                    else r["target_bitrate_kbps"]
-                )
-            )
+            def _sort_key(row):
+                if encoder_mode == "bitrate":
+                    val = row["avg_actual_bitrate_kbps"]
+                    if isinstance(val, float) and math.isnan(val):
+                        val = float(row["target_quality"])
+                else:
+                    val = float(row["target_quality"])
+                return val
+            data = sorted(data, key=_sort_key)
             xs = []
+            xs_fit = []
             ys = []
+            point_rows = []
             for row in data:
-                x = (
-                    row["avg_actual_bitrate_kbps"]
-                    if not (isinstance(row["avg_actual_bitrate_kbps"], float) and math.isnan(row["avg_actual_bitrate_kbps"]))
-                    else row["target_bitrate_kbps"]
-                )
-                xs.append(x)
+                if encoder_mode == "bitrate":
+                    x_val = row["avg_actual_bitrate_kbps"]
+                    if isinstance(x_val, float) and math.isnan(x_val):
+                        x_val = float(row["target_quality"])
+                else:
+                    x_val = float(row["target_quality"])
+                xs.append(x_val)
+                xs_fit.append(x_val * quality_sign)
                 ys.append(row[metric_key])
+                point_rows.append(row)
             xs_arr = np.array(xs, dtype=float)
+            xs_fit_arr = np.array(xs_fit, dtype=float)
             ys_arr = np.array(ys, dtype=float)
-            if len(xs_arr) >= 2:
+            if len(xs_arr) >= 2 and not np.allclose(xs_fit_arr, xs_fit_arr[0]):
                 deg = min(3, len(xs_arr) - 1)
-                poly = np.poly1d(np.polyfit(xs_arr, ys_arr, deg))
+                poly = np.poly1d(np.polyfit(xs_fit_arr, ys_arr, deg))
                 curve_models[resolution] = {
                     "poly": poly,
-                    "x_min": float(xs_arr.min()),
-                    "x_max": float(xs_arr.max()),
+                    "x_min_fit": float(xs_fit_arr.min()),
+                    "x_max_fit": float(xs_fit_arr.max()),
+                    "sign": quality_sign,
                 }
-                dense_x = np.linspace(xs_arr.min(), xs_arr.max(), max(200, len(xs_arr) * 50))
-                dense_y = poly(dense_x)
-                line, = ax.plot(dense_x, dense_y, linewidth=2.0, label=f"{resolution}p")
+                dense_fit_x = np.linspace(xs_fit_arr.min(), xs_fit_arr.max(), max(200, len(xs_arr) * 50))
+                dense_y = poly(dense_fit_x)
+                dense_plot_x = dense_fit_x * quality_sign
+                order = np.argsort(dense_plot_x)
+                dense_plot_x_sorted = dense_plot_x[order]
+                dense_y_sorted = dense_y[order]
+                line, = ax.plot(dense_plot_x_sorted, dense_y_sorted, linewidth=2.0, label=f"{resolution}p")
                 color = line.get_color()
                 ax.scatter(xs_arr, ys_arr, color=color, edgecolors="white", zorder=5)
-                for x, y, row in zip(xs_arr, ys_arr, data):
-                    ax.text(x * 1.01 if x else x + 1, y, f"{resolution}p/{row['target_bitrate_kbps']}k", fontsize=8, color=color)
+                for x, y, row in zip(xs_arr, ys_arr, point_rows):
+                    ax.text(x * 1.01 if x else x + 1, y, f"{resolution}p/{row['quality_label']}", fontsize=8, color=color)
 
-                knee_point = _knee_from_dense(dense_x, dense_y)
-                if knee_point:
+                knee_point_fit = _knee_from_dense(dense_fit_x, dense_y)
+                knee_plot_x = None
+                if knee_point_fit:
+                    knee_plot_x = float(knee_point_fit[0]) * quality_sign
+                    knee_plot_y = float(knee_point_fit[1])
                     ax.scatter(
-                        [knee_point[0]],
-                        [knee_point[1]],
+                        [knee_plot_x],
+                        [knee_plot_y],
                         marker="x",
                         s=90,
                         linewidths=2.0,
@@ -570,38 +673,262 @@ def main():
                     )
                     knee_rows.append({
                         "curve": f"{resolution}p",
-                        "ssim": float(knee_point[1]),
-                        "bitrate": float(knee_point[0]),
+                        "ssim": knee_plot_y,
+                        "axis_value": knee_plot_x,
                     })
                 else:
                     knee_rows.append({
                         "curve": f"{resolution}p",
                         "ssim": float("nan"),
-                        "bitrate": float("nan"),
+                        "axis_value": float("nan"),
                     })
             else:
-                line, = ax.plot(xs_arr, ys_arr, linewidth=2.0, label=f"{resolution}p")
-                color = line.get_color()
-                ax.scatter(xs_arr, ys_arr, color=color, edgecolors="white", zorder=5)
-                for x, y, row in zip(xs_arr, ys_arr, data):
-                    ax.text(x * 1.01 if x else x + 1, y, f"{resolution}p/{row['target_bitrate_kbps']}k", fontsize=8, color=color)
+                if len(xs_arr):
+                    line, = ax.plot(xs_arr, ys_arr, linewidth=2.0, label=f"{resolution}p")
+                    color = line.get_color()
+                    ax.scatter(xs_arr, ys_arr, color=color, edgecolors="white", zorder=5)
+                    for x, y, row in zip(xs_arr, ys_arr, point_rows):
+                        ax.text(x * 1.01 if x else x + 1, y, f"{resolution}p/{row['quality_label']}", fontsize=8, color=color)
                 knee_rows.append({
                     "curve": f"{resolution}p",
                     "ssim": float("nan"),
-                    "bitrate": float("nan"),
+                    "axis_value": float("nan"),
                 })
-        ax.set_xlabel("Bitrate (kbps)")
+        ax.set_xlabel(axis_label)
         ax.set_ylabel(metric_label)
-        ax.set_title("Bitrate vs Quality (sample averages)")
+        ax.set_title(f"{axis_label} vs Quality (sample averages)")
         ax.set_ylim(top=1.0)
         ax.grid(True)
         handles, labels = ax.get_legend_handles_labels()
         if handles:
-                ax.legend(handles, labels)
+            ax.legend(handles, labels)
+        if encoder_mode == "crf":
+            ax.invert_xaxis()
         plt.tight_layout()
-        plot_path = os.path.join(output_dir, "ssim_bitrate_graph.png")
+        plot_path = os.path.join(output_dir, f"ssim_{quality_suffix}_graph.png")
         plt.savefig(plot_path, dpi=150, bbox_inches="tight")
         plt.close()
+
+    if encoder_mode == "crf":
+        fig, ax = plt.subplots()
+        has_curve = False
+        storage_curve_models = {}
+        for resolution in resolutions:
+            data = [
+                r for r in summary_rows
+                if r["resolution"] == resolution
+                and not (isinstance(r["mean_storage_bps"], float) and math.isnan(r["mean_storage_bps"]))
+                and not (isinstance(r["mean_ssim"], float) and math.isnan(r["mean_ssim"]))
+            ]
+            if not data:
+                continue
+            data = sorted(data, key=lambda r: float(r["mean_storage_bps"]))
+            storage_values = [float(row["mean_storage_bps"]) for row in data]
+            ssim_values = [float(row["mean_ssim"]) for row in data]
+            if len(storage_values) < 2:
+                continue
+            try:
+                deg = min(3, len(storage_values) - 1)
+                poly = np.poly1d(np.polyfit(storage_values, ssim_values, deg))
+            except np.linalg.LinAlgError:
+                poly = None
+            dense_storage = np.linspace(min(storage_values), max(storage_values), max(200, len(storage_values) * 50))
+            dense_ssim = poly(dense_storage) if poly is not None else np.interp(dense_storage, storage_values, ssim_values)
+            line, = ax.plot(dense_storage, dense_ssim, linewidth=2.0, label=f"{resolution}p")
+            color = line.get_color()
+            ax.scatter(storage_values, ssim_values, color=color, edgecolors="white", zorder=5)
+            for storage, ssim_val, row in zip(storage_values, ssim_values, data):
+                ax.text(
+                    storage * 1.01 if storage else storage + 1,
+                    ssim_val,
+                    f"{resolution}p/{row['quality_label']}",
+                    fontsize=8,
+                    color=color,
+                )
+            has_curve = True
+            knee_point = _knee_from_dense(dense_storage, dense_ssim)
+            storage_curve_models[resolution] = {
+                "poly": poly,
+                "storage": storage_values,
+                "ssim": ssim_values,
+                "quality": [float(row["target_quality"]) for row in data],
+                "x_min": float(min(storage_values)),
+                "x_max": float(max(storage_values)),
+                "knee": knee_point if knee_point else None,
+            }
+            if knee_point:
+                knee_storage = float(knee_point[0])
+                knee_ssim = float(knee_point[1])
+                model_ref = storage_curve_models[resolution]
+                try:
+                    knee_quality = float(_eval_quality_curve(model_ref, [knee_storage])[0])
+                except Exception:
+                    knee_quality = float("nan")
+                ax.scatter(
+                    [knee_storage],
+                    [knee_ssim],
+                    marker="^",
+                    s=110,
+                    linewidths=1.6,
+                    edgecolors=color,
+                    facecolors="none",
+                    zorder=8,
+                )
+                storage_knee_rows.append({
+                    "curve": f"{resolution}p",
+                    "curve_quality": knee_quality,
+                    "ssim": knee_ssim,
+                    "storage_bytes_per_second": knee_storage,
+                })
+            else:
+                storage_knee_rows.append({
+                    "curve": f"{resolution}p",
+                    "curve_quality": float("nan"),
+                    "ssim": float("nan"),
+                    "storage_bytes_per_second": float("nan"),
+                })
+        if has_curve:
+            ax.set_xlabel("Storage (bytes/s)")
+            ax.set_ylabel("SSIM")
+            ax.set_title("SSIM vs Storage")
+            ax.grid(True)
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(handles, labels)
+            intersection_points = {}
+            if len(storage_curve_models) >= 2:
+                for res_a, res_b in combinations(sorted(storage_curve_models.keys()), 2):
+                    model_a = storage_curve_models[res_a]
+                    model_b = storage_curve_models[res_b]
+                    x_min = max(model_a["x_min"], model_b["x_min"])
+                    x_max = min(model_a["x_max"], model_b["x_max"])
+                    if x_min >= x_max:
+                        continue
+                    sample_x = np.linspace(x_min, x_max, max(3, INTERSECTION_SAMPLE_POINTS))
+                    values_a = _eval_storage_curve(model_a, sample_x)
+                    values_b = _eval_storage_curve(model_b, sample_x)
+                    diff = values_a - values_b
+                    mask = np.isfinite(diff)
+                    if mask.sum() < 2:
+                        continue
+                    sample_x = sample_x[mask]
+                    diff = diff[mask]
+                    candidate_storage = []
+                    for idx in range(len(diff) - 1):
+                        d0 = diff[idx]
+                        d1 = diff[idx + 1]
+                        if np.isnan(d0) or np.isnan(d1):
+                            continue
+                        x0 = sample_x[idx]
+                        x1 = sample_x[idx + 1]
+                        if d0 == 0.0:
+                            candidate_storage.append(x0)
+                            continue
+                        if d1 == 0.0:
+                            candidate_storage.append(x1)
+                            continue
+                        if d0 * d1 < 0.0:
+                            denom = (d1 - d0)
+                            if denom == 0.0:
+                                continue
+                            x_root = x0 - d0 * (x1 - x0) / denom
+                            candidate_storage.append(x_root)
+                    if not candidate_storage:
+                        idx_min = int(np.argmin(np.abs(diff)))
+                        if abs(diff[idx_min]) < 1e-4:
+                            candidate_storage.append(sample_x[idx_min])
+                    if not candidate_storage:
+                        continue
+                    unique_candidates = []
+                    tolerance = (x_max - x_min) / max(10_000.0, INTERSECTION_SAMPLE_POINTS)
+                    for candidate in candidate_storage:
+                        if candidate < x_min - 1e-6 or candidate > x_max + 1e-6:
+                            continue
+                        if any(abs(candidate - existing) <= tolerance for existing in unique_candidates):
+                            continue
+                        unique_candidates.append(candidate)
+                    if not unique_candidates:
+                        continue
+                    key = tuple(sorted((res_a, res_b)))
+                    for storage_val in unique_candidates:
+                        ssim_val = float(_eval_storage_curve(model_a, storage_val))
+                        if not np.isfinite(ssim_val):
+                            continue
+                        quality_a = float(_eval_quality_curve(model_a, storage_val))
+                        quality_b = float(_eval_quality_curve(model_b, storage_val))
+                        qualities_map = {
+                            res_a: quality_a,
+                            res_b: quality_b,
+                        }
+                        existing = intersection_points.get(key)
+                        if existing is None or ssim_val > existing["ssim"]:
+                            intersection_points[key] = {
+                                "storage": storage_val,
+                                "ssim": ssim_val,
+                                "qualities": qualities_map,
+                            }
+            if intersection_points:
+                for (res_a, res_b), point in intersection_points.items():
+                    ax.scatter(
+                        [point["storage"]],
+                        [point["ssim"]],
+                        marker="x",
+                        s=90,
+                        linewidths=2.0,
+                        color="black",
+                        zorder=7,
+                    )
+                    storage_intersection_rows.append({
+                        "curve_1": f"{res_a}p",
+                        "curve_1_quality": float(point["qualities"][res_a]),
+                        "curve_2": f"{res_b}p",
+                        "curve_2_quality": float(point["qualities"][res_b]),
+                        "ssim": point["ssim"],
+                        "storage_bytes_per_second": point["storage"],
+                    })
+            plt.tight_layout()
+            ssim_storage_plot_path = os.path.join(output_dir, "ssim_bytespersecond_graph.png")
+            plt.savefig(ssim_storage_plot_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+    if storage_intersection_rows:
+        storage_intersection_rows = sorted(
+            storage_intersection_rows,
+            key=lambda r: (-r["ssim"], r["curve_1"], r["curve_2"]),
+        )
+        storage_intersections_csv = os.path.join(output_dir, "ssim_bytespersecond_intersection.csv")
+        with open(storage_intersections_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "curve_1",
+                    "curve_1_quality",
+                    "curve_2",
+                    "curve_2_quality",
+                    "ssim",
+                    "storage_bytes_per_second",
+                ],
+            )
+            writer.writeheader()
+            for row in storage_intersection_rows:
+                writer.writerow(row)
+
+    if storage_knee_rows:
+        storage_knee_rows = sorted(storage_knee_rows, key=lambda r: r["curve"])
+        storage_knees_csv = os.path.join(output_dir, "ssim_bytespersecond_knee_points.csv")
+        with open(storage_knees_csv, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "curve",
+                    "curve_quality",
+                    "ssim",
+                    "storage_bytes_per_second",
+                ],
+            )
+            writer.writeheader()
+            for row in storage_knee_rows:
+                writer.writerow(row)
 
     intersection_rows = []
     intersections_csv = None
@@ -609,6 +936,9 @@ def main():
         for res_a, res_b in combinations(sorted(curve_models.keys()), 2):
             model_a = curve_models[res_a]
             model_b = curve_models[res_b]
+            if model_a["sign"] != model_b["sign"]:
+                continue
+            sign = model_a["sign"]
             diff_coeffs = np.polysub(model_a["poly"].c, model_b["poly"].c)
             diff_coeffs = np.trim_zeros(diff_coeffs, "f")
             if diff_coeffs.size == 0:
@@ -616,56 +946,76 @@ def main():
             roots = np.roots(diff_coeffs)
             if roots.size == 0:
                 continue
-            x_min = max(model_a["x_min"], model_b["x_min"])
-            x_max = min(model_a["x_max"], model_b["x_max"])
-            if x_min > x_max:
+            x_min_fit = max(model_a["x_min_fit"], model_b["x_min_fit"])
+            x_max_fit = min(model_a["x_max_fit"], model_b["x_max_fit"])
+            if x_min_fit > x_max_fit:
                 continue
             for root in roots:
                 if not np.isfinite(root):
                     continue
                 if abs(root.imag) > 1e-6:
                     continue
-                x = float(root.real)
-                if x < x_min - 1e-3 or x > x_max + 1e-3:
+                x_fit = float(root.real)
+                if x_fit < x_min_fit - 1e-3 or x_fit > x_max_fit + 1e-3:
                     continue
-                ssim_val = float(np.real(model_a["poly"](x)))
+                ssim_val = float(np.real(model_a["poly"](x_fit)))
                 intersection_rows.append({
                     "curve_1": f"{res_a}p",
                     "curve_2": f"{res_b}p",
                     "ssim": ssim_val,
-                    "bitrate": float(x),
+                    "axis_value": float(x_fit * sign),
                 })
     if intersection_rows:
-        intersection_rows = sorted(intersection_rows, key=lambda r: (r["bitrate"], r["curve_1"], r["curve_2"]))
+        intersection_rows = sorted(intersection_rows, key=lambda r: (
+            r["axis_value"],
+            r["curve_1"],
+            r["curve_2"],
+        ))
 
     knee_csv = None
     if knee_rows:
-        knee_csv = os.path.join(output_dir, "ssim_bitrate_knee_points.csv")
+        knee_csv = os.path.join(output_dir, f"ssim_{quality_suffix}_knee_points.csv")
         with open(knee_csv, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["curve", "ssim", "bitrate"])
+            fieldnames = ["curve", "ssim", axis_field_name]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for row in knee_rows:
-                writer.writerow(row)
+                writer.writerow({
+                    "curve": row["curve"],
+                    "ssim": row["ssim"],
+                    axis_field_name: row["axis_value"],
+                })
 
     intersections_csv = None
     if intersection_rows:
-        intersections_csv = os.path.join(output_dir, "ssim_bitrate_intersections.csv")
+        intersections_csv = os.path.join(output_dir, f"ssim_{quality_suffix}_intersections.csv")
         with open(intersections_csv, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=["curve_1", "curve_2", "ssim", "bitrate"])
+            fieldnames = ["curve_1", "curve_2", "ssim", axis_field_name]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for row in intersection_rows:
-                writer.writerow(row)
+                writer.writerow({
+                    "curve_1": row["curve_1"],
+                    "curve_2": row["curve_2"],
+                    "ssim": row["ssim"],
+                    axis_field_name: row["axis_value"],
+                })
+
+    quality_header = _quality_header(encoder_mode)
+    qualities_display = [_quality_display(encoder_mode, q) for q in qualities]
 
     markdown_path = os.path.join(output_dir, f"{ts}-results.md")
     _write_markdown(markdown_path, {
         "input": input_path,
         "output": output_dir,
         "resolutions": resolutions,
-        "bitrates": bitrates,
+        "encoder": encoder_mode,
+        "qualities_display": qualities_display,
         "sample_length": sample_length,
         "num_samples": actual_sample_count,
         "rows": summary_rows,
         "plot": plot_path,
+        "quality_header": quality_header,
         "metric": metric_label if metric_key else None,
     })
 
@@ -677,6 +1027,12 @@ def main():
         print(knee_csv)
     if intersections_csv:
         print(intersections_csv)
+    if storage_intersections_csv:
+        print(storage_intersections_csv)
+    if storage_knees_csv:
+        print(storage_knees_csv)
+    if ssim_storage_plot_path:
+        print(ssim_storage_plot_path)
     print(markdown_path)
 
 if __name__ == "__main__":
