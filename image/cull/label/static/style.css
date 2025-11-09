@@ -27,7 +27,8 @@ body {
 }
 
 .image-section {
-    flex: 1;
+    flex: 0 1 50%;
+    max-width: 50%;
     min-width: 400px;
     text-align: center;
 }

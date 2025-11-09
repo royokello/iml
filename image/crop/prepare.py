@@ -9,6 +9,12 @@ from typing import Dict, List, Tuple
 from utils.stages import find_latest_stage
 
 Label = Tuple[str, int, float, float, float, float]
+CLASS_NAMES: Dict[int, str] = {
+    0: "face",
+    1: "portrait",
+    2: "landscape",
+    3: "full_body",
+}
 
 
 def read_labels_csv(csv_path: str) -> List[Label]:
@@ -31,12 +37,13 @@ def make_dirs(base_out: str):
         os.makedirs(os.path.join(base_out, split, "labels"), exist_ok=True)
 
 
-def write_yolo_label_file(path: str, labels: List[Label]):
+def write_yolo_label_file(path: str, labels: List[Label], class_id_map: Dict[int, int]):
     with open(path, "w", newline="") as f:
         for (_, cls_id, cx, cy, hx, hy) in labels:
+            mapped_cls = class_id_map.get(cls_id, cls_id)
             w = 2.0 * hx
             h = 2.0 * hy
-            f.write(f"{cls_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
+            f.write(f"{mapped_cls} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
 
 
 def balance_and_split(
@@ -106,6 +113,7 @@ def copy_and_write(
     images_root: str,
     out_root: str,
     split_name: str,
+    class_id_map: Dict[int, int],
 ):
     img_out = os.path.join(out_root, split_name, "images")
     lbl_out = os.path.join(out_root, split_name, "labels")
@@ -120,7 +128,7 @@ def copy_and_write(
         # write label file (same basename, .txt)
         base, _ = os.path.splitext(img_name)
         lbl_path = os.path.join(lbl_out, base + ".txt")
-        write_yolo_label_file(lbl_path, lbls)
+        write_yolo_label_file(lbl_path, lbls, class_id_map)
 
 
 def main():
@@ -149,6 +157,10 @@ def main():
     if not all_labels:
         raise SystemExit("No labels found in CSV.")
 
+    present_classes = sorted({lab[1] for lab in all_labels})
+    class_id_map = {cls_id: idx for idx, cls_id in enumerate(present_classes)}
+    class_names = [CLASS_NAMES.get(cls_id, f"class_{cls_id}") for cls_id in present_classes]
+
     # Balance & split
     train_by_img, val_by_img = balance_and_split(all_labels, args.val_split, seed=args.seed)
 
@@ -157,8 +169,8 @@ def main():
     make_dirs(out_root)
 
     # Copy and write
-    copy_and_write(train_by_img, stage_dir, out_root, "train")
-    copy_and_write(val_by_img, stage_dir, out_root, "val")
+    copy_and_write(train_by_img, stage_dir, out_root, "train", class_id_map)
+    copy_and_write(val_by_img, stage_dir, out_root, "val", class_id_map)
 
     yaml_path = os.path.join(args.project, f"stage_{stage}_yolo.yaml")
     with open(yaml_path, "w") as f:
@@ -166,12 +178,10 @@ def main():
         f.write(f"path: {out_root}\n")
         f.write("train: train/images\n")
         f.write("val: val/images\n\n")
-        f.write("nc: 4\n")
+        f.write(f"nc: {len(class_names)}\n")
         f.write("names:\n")
-        f.write("  0: face\n")
-        f.write("  1: portrait\n")
-        f.write("  2: landscape\n")
-        f.write("  3: full_body\n")
+        for idx, name in enumerate(class_names):
+            f.write(f"  {idx}: {name}\n")
     print(f"Wrote dataset YAML: {yaml_path}")
 
     # Small summary
