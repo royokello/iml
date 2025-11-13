@@ -84,6 +84,7 @@ def benchmark_fp16(x, w, stride, padding, dilation, flops):
 def benchmark_int8(
     x_q,
     w_q,
+    bias_fp16,
     scale_factor,
     apply_scale,
     stride,
@@ -99,6 +100,7 @@ def benchmark_int8(
         conv_fn(
             x_q,
             w_q,
+            bias_fp16,
             float(scale_factor),
             apply_scale,
             stride[0],
@@ -120,6 +122,7 @@ def benchmark_int8(
         out = conv_fn(
             x_q,
             w_q,
+            bias_fp16,
             float(scale_factor),
             apply_scale,
             stride[0],
@@ -148,6 +151,7 @@ def run_case(name, kh, kw, stride, pad, dilation):
 
     x = torch.randn(BATCH, C_IN, H, W, dtype=torch.float16, device=device)
     w = torch.randn(C_OUT, C_IN, kh, kw, dtype=torch.float16, device=device)
+    bias = torch.randn(C_OUT, dtype=torch.float16, device=device)
 
     hout = (H + 2 * pad[0] - dilation[0] * (kh - 1) - 1) // stride[0] + 1
     wout = (W + 2 * pad[1] - dilation[1] * (kw - 1) - 1) // stride[1] + 1
@@ -178,6 +182,7 @@ def run_case(name, kh, kw, stride, pad, dilation):
         int8_ms, int8_tops, int8_out = benchmark_int8(
             x_q,
             w_q,
+            bias,
             scale_factor,
             apply_scale,
             stride,

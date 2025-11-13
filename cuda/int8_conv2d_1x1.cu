@@ -26,6 +26,7 @@ __global__ void scale_acc_kernel(
     const int32_t* __restrict__ acc,
     float eff_scale,
     bool apply_scale,
+    const float* __restrict__ bias,
     int64_t total,
     int N,
     int C_out,
@@ -49,6 +50,9 @@ __global__ void scale_acc_kernel(
   float val = static_cast<float>(acc[acc_offset]);
   if (apply_scale) {
     val *= eff_scale;
+    if (bias != nullptr) {
+      val += bias[co];
+    }
   }
   out[idx] = val;
 }
@@ -171,6 +175,7 @@ torch::Tensor run_int8_gemm(
 torch::Tensor int8_conv2d_1x1_cuda(
     torch::Tensor x_q,
     torch::Tensor w_q,
+    torch::Tensor bias,
     double scale_product,
     bool apply_scale,
     int stride_h,
@@ -185,6 +190,10 @@ torch::Tensor int8_conv2d_1x1_cuda(
   TORCH_CHECK(x_q.dtype() == torch::kChar, "x_q must be int8");
   TORCH_CHECK(w_q.dtype() == torch::kChar, "w_q must be int8");
   TORCH_CHECK(groups == 1, "groups != 1 not implemented");
+  CHECK_INPUT(bias);
+  TORCH_CHECK(bias.dtype() == torch::kHalf, "bias must be fp16");
+  TORCH_CHECK(bias.size(0) == w_q.size(0), "bias size must match C_out");
+  auto bias_fp32 = bias.to(torch::kFloat);
 
   TORCH_CHECK(stride_h == 1 && stride_w == 1, "1x1 path requires stride=1");
   TORCH_CHECK(pad_h == 0 && pad_w == 0, "1x1 path requires pad=0");
@@ -221,11 +230,14 @@ torch::Tensor int8_conv2d_1x1_cuda(
   int64_t total = out.numel();
   int threads = 256;
   int blocks = (total + threads - 1) / threads;
+  const float* bias_ptr = bias_fp32.data_ptr<float>();
+
   scale_acc_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
       out.data_ptr<float>(),
       out_mat.data_ptr<int32_t>(),
       eff_scale,
       apply_scale,
+      bias_ptr,
       total,
       N,
       C_out,

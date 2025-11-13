@@ -181,6 +181,7 @@ __global__ void scale_acc_kernel(
     const int32_t* __restrict__ acc,
     float eff_scale,
     bool apply_scale,
+    const float* __restrict__ bias,
     int64_t total,
     int N,
     int C_out,
@@ -204,6 +205,9 @@ __global__ void scale_acc_kernel(
   float val = static_cast<float>(acc[acc_offset]);
   if (apply_scale) {
     val *= eff_scale;
+    if (bias != nullptr) {
+      val += bias[co];
+    }
   }
   out[idx] = val;
 }
@@ -211,6 +215,7 @@ __global__ void scale_acc_kernel(
 torch::Tensor int8_conv2d_3x3_im2col_cuda(
     torch::Tensor x_q,
     torch::Tensor w_q,
+    torch::Tensor bias,
     double scale_product,
     bool apply_scale,
     int stride_h,
@@ -225,6 +230,10 @@ torch::Tensor int8_conv2d_3x3_im2col_cuda(
   TORCH_CHECK(x_q.dtype() == torch::kChar, "x_q must be int8");
   TORCH_CHECK(w_q.dtype() == torch::kChar, "w_q must be int8");
   TORCH_CHECK(groups == 1, "groups != 1 not implemented");
+  CHECK_INPUT(bias);
+  TORCH_CHECK(bias.dtype() == torch::kHalf, "bias must be fp16");
+  TORCH_CHECK(bias.size(0) == w_q.size(0), "bias size must match C_out");
+  auto bias_fp32 = bias.to(torch::kFloat);
 
   TORCH_CHECK(w_q.size(2) == 3 && w_q.size(3) == 3, "Weights must be 3x3");
 
@@ -276,11 +285,14 @@ torch::Tensor int8_conv2d_3x3_im2col_cuda(
   int threads = 256;
   int blocks = (total + threads - 1) / threads;
 
+  const float* bias_ptr = bias_fp32.data_ptr<float>();
+
   scale_acc_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
       out.data_ptr<float>(),
       out_mat.data_ptr<int32_t>(),
       eff_scale,
       apply_scale,
+      bias_ptr,
       total,
       N,
       C_out,

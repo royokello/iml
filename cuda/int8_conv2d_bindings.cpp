@@ -3,6 +3,7 @@
 torch::Tensor int8_conv2d_1x1_cuda(
     torch::Tensor x_q,
     torch::Tensor w_q,
+    torch::Tensor bias,
     double scale_product,
     bool apply_scale,
     int stride_h,
@@ -16,6 +17,7 @@ torch::Tensor int8_conv2d_1x1_cuda(
 torch::Tensor int8_conv2d_3x3_im2col_cuda(
     torch::Tensor x_q,
     torch::Tensor w_q,
+    torch::Tensor bias,
     double scale_product,
     bool apply_scale,
     int stride_h,
