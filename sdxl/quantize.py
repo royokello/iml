@@ -12,8 +12,6 @@ from safetensors.numpy import load_file, save_file
 INT8_MIN = -128
 INT8_MAX = 127
 
-PRECISION_CHOICES = ("int8", "fp16", "fp32")
-
 MODULE_PREFIXES = {
     "text_encoder": (
         "cond_stage_model.",
@@ -45,9 +43,9 @@ MODULE_PREFIXES = {
 
 
 @dataclass
-class Stats:
-    tensors: int = 0
-    converted: int = 0
+class QuantStats:
+    weights: int = 0
+    biases: int = 0
     bytes_in: int = 0
     bytes_out: int = 0
 
@@ -57,7 +55,7 @@ def _derive_output_path(input_path: str, out_dir: str) -> str:
     base = os.path.basename(input_path.rstrip(os.sep))
     stem, ext = os.path.splitext(base or "model")
     ext = ext or ".safetensors"
-    return os.path.join(out_dir, f"{stem}_quantized{ext}")
+    return os.path.join(out_dir, f"{stem}_int8{ext}")
 
 
 def _tensor_module(name: str) -> str:
@@ -81,62 +79,31 @@ def _quantize_int8_sym(tensor: np.ndarray) -> Tuple[np.ndarray, float, float]:
     return q, scale, amax
 
 
-def _apply_precision(tensor: np.ndarray, precision: str) -> Tuple[np.ndarray, str, float, float | None]:
-    if tensor.dtype.kind != "f":
-        return tensor, "skip", 0.0, None
-
-    if precision == "int8":
-        q, scale, amax = _quantize_int8_sym(tensor)
-        return q, "int8", amax, scale
-    if precision == "fp16":
-        return tensor.astype(np.float16, copy=False), "fp16", 0.0, None
-    if precision == "fp32":
-        return tensor.astype(np.float32, copy=False), "fp32", 0.0, None
-
-    raise ValueError(f"Unsupported precision {precision}")
+def _strip_suffix(name: str, suffix: str) -> str:
+    if name.endswith(suffix):
+        return name[: -len(suffix)]
+    return name
 
 
-def identify_tensor_type(name: str) -> str:
-    n = name.lower()
-    if "bias" in n:
-        return "bias"
-    if any(k in n for k in ["attn1", "attn2", "to_q", "to_k", "to_v", "to_out"]):
-        return "attn"
-    if any(k in n for k in ["proj_in", "proj_out", "ff.net", "emb_layers", "proj.weight"]):
-        return "linear"
-    if any(k in n for k in ["in_layers", "out_layers", "skip_connection", "op.weight"]):
+def _weight_kind(name: str, tensor: np.ndarray) -> str | None:
+    if _tensor_module(name) != "unet":
+        return None
+    if not name.endswith(".weight"):
+        return None
+    if tensor.ndim == 4:
         return "conv2d"
-    return "unknown"
+    if tensor.ndim == 2:
+        return "linear"
+    return None
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Quantize SDXL checkpoints with per-module precision controls."
-    )
+    parser = argparse.ArgumentParser(description="Quantize SDXL UNet Conv/Linear weights.")
     parser.add_argument("--input", required=True, help="Path to a single .safetensors checkpoint.")
-    parser.add_argument("--output", required=True, help="Directory where the quantized file is stored.")
     parser.add_argument(
-        "--text-encoder-precision",
-        default="fp16",
-        choices=PRECISION_CHOICES,
-        help="Precision to use for text encoder tensors.",
-    )
-    parser.add_argument(
-        "--vae-precision",
-        default="fp16",
-        choices=PRECISION_CHOICES,
-        help="Precision to use for VAE tensors.",
-    )
-    parser.add_argument(
-        "--unet-precision",
-        default="fp16",
-        choices=PRECISION_CHOICES,
-        help="Precision to use for UNet tensors not quantized to int8.",
-    )
-    parser.add_argument(
-        "--unet-targets",
-        default="conv2d",
-        help="Comma-separated UNet tensor categories to quantize to int8 (attn, linear, conv2d).",
+        "--output",
+        required=True,
+        help="Directory where the quantized checkpoint is written.",
     )
     return parser.parse_args()
 
@@ -149,63 +116,55 @@ def main() -> None:
         raise SystemExit("Only .safetensors inputs are supported.")
 
     tensors = load_file(args.input)
-    precision_map = {
-        "text_encoder": args.text_encoder_precision,
-        "vae": args.vae_precision,
-    }
+    weight_kinds: Dict[str, str] = {}
+    for name, tensor in tensors.items():
+        kind = _weight_kind(name, tensor)
+        if kind:
+            weight_kinds[name] = kind
 
-    stats: Dict[str, Stats] = {k: Stats() for k in ("text_encoder", "vae", "unet")}
+    base_kind = { _strip_suffix(name, ".weight"): kind for name, kind in weight_kinds.items() }
+    stats: Dict[str, QuantStats] = {kind: QuantStats() for kind in ("conv2d", "linear")}
     updated: Dict[str, np.ndarray] = {}
 
-    requested_targets = {t.strip().lower() for t in args.unet_targets.split(",") if t.strip()}
-    valid_targets = {"attn", "linear", "conv2d"}
-    invalid_targets = requested_targets - valid_targets
-    if invalid_targets:
-        raise SystemExit(f"Unsupported --unet-targets: {', '.join(sorted(invalid_targets))}")
-
     for name, tensor in tensors.items():
-        module = _tensor_module(name)
-        if module not in stats:
-            stats[module] = Stats()
-        stats[module].tensors += 1
+        if name in weight_kinds:
+            kind = weight_kinds[name]
+            base = _strip_suffix(name, ".weight")
+            q_weight, scale, amax = _quantize_int8_sym(tensor)
+            updated[f"{base}.weight_q"] = q_weight
+            updated[f"{base}.scale_w"] = np.asarray(scale, dtype=np.float16)
 
-        if module == "unet":
-            tensor_type = identify_tensor_type(name)
-            desired_precision = "int8" if tensor_type in requested_targets else args.unet_precision
-        else:
-            desired_precision = precision_map[module]
-        new_tensor, action, amax, scale = _apply_precision(tensor, desired_precision)
-        updated[name] = new_tensor
-        if action == "int8" and scale is not None:
-            updated[f"{name}.scale"] = np.asarray(scale, dtype=np.float16)
+            stats[kind].weights += 1
+            stats[kind].bytes_in += tensor.nbytes
+            stats[kind].bytes_out += q_weight.nbytes + np.dtype(np.float16).itemsize
 
-        changed = action != "skip" and (
-            new_tensor.dtype != tensor.dtype or action == "int8"
-        )
-        if changed:
-            stats[module].converted += 1
-            stats[module].bytes_in += tensor.nbytes
-            out_bytes = new_tensor.nbytes
-            if action == "int8":
-                out_bytes += np.dtype(np.float16).itemsize
-            stats[module].bytes_out += out_bytes
+            print(
+                f"[quant] {name} kind={kind} "
+                f"amax={amax:.4g} scale={scale:.4g} "
+                f"{tensor.dtype}->{q_weight.dtype}"
+            )
+            continue
 
-            if action == "int8":
-                print(
-                    f"[quant] {name} module={module} "
-                    f"amax={amax:.4g} scale={scale:.4g} {tensor.dtype}->{new_tensor.dtype}"
-                )
+        if name.endswith(".bias"):
+            base = _strip_suffix(name, ".bias")
+            kind = base_kind.get(base)
+            if kind and tensor.dtype.kind == "f":
+                updated[name] = tensor.astype(np.float16, copy=False)
+                stats[kind].biases += 1
+                continue
+
+        updated[name] = tensor
 
     out_path = _derive_output_path(args.input, args.output)
     save_file(updated, out_path)
 
-    for module, module_stats in stats.items():
-        if not module_stats.tensors:
+    for kind, kind_stats in stats.items():
+        if not kind_stats.weights:
             continue
         print(
-            f"[module:{module}] tensors={module_stats.tensors} "
-            f"converted={module_stats.converted} "
-            f"bytes {module_stats.bytes_in}->{module_stats.bytes_out}"
+            f"[{kind}] weights={kind_stats.weights} "
+            f"biases={kind_stats.biases} "
+            f"bytes {kind_stats.bytes_in}->{kind_stats.bytes_out}"
         )
 
     print(f"[path] {out_path}")
