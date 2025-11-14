@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from model.blocks.conv_2d import Conv2d
+from model.utils.activations import quantize_input_and_attach_scale
+
 class UpSample2D(nn.Module):
     def __init__(
         self,
@@ -14,7 +17,7 @@ class UpSample2D(nn.Module):
         self.use_conv = use_conv
 
         if use_conv:
-            self.conv = nn.Conv2d(
+            self.conv = Conv2d(
                 in_channels=channels,
                 out_channels=channels,
                 kernel_size=3,
@@ -28,6 +31,7 @@ class UpSample2D(nn.Module):
         x = F.interpolate(x, scale_factor=2.0, mode="nearest")
 
         if self.conv is not None:
-            x = self.conv(x)
+            tensor_q = quantize_input_and_attach_scale(self.conv, x)
+            x = self.conv(tensor_q)
 
         return x

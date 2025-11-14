@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from model.blocks.conv_2d import Conv2d
+from model.utils.activations import quantize_input_and_attach_scale
 
 class ResnetBlock2D(nn.Module):
     def __init__(
@@ -85,21 +86,6 @@ class ResnetBlock2D(nn.Module):
         Quantize tensor to int8 using conv's activation scale, run conv, then restore dtype.
         """
         original_dtype = tensor.dtype
-        tensor_q = self._quantize_tensor(tensor, conv.scale_x)
+        tensor_q = quantize_input_and_attach_scale(conv, tensor)
         out = conv(tensor_q)
         return out.to(original_dtype)
-
-    @staticmethod
-    def _quantize_tensor(
-        tensor: torch.Tensor,
-        scale_param: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        Helper to quantize activations to int8 using a scalar scale value.
-        """
-        scale = scale_param.to(tensor.device, dtype=torch.float32)
-        if torch.any(scale == 0):
-            raise RuntimeError("Activation scale must be non-zero for quantized Conv2d.")
-        tensor_fp32 = tensor.float()
-        tensor_q = torch.round(tensor_fp32 / scale).clamp_(-128, 127)
-        return tensor_q.to(torch.int8)
