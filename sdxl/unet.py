@@ -7,8 +7,10 @@ from model.blocks.conv_2d import Conv2d
 from model.blocks.cross_attn_down_block_2d import CrossAttnDownBlock2D
 from model.blocks.cross_attn_up_block_2d import CrossAttnUpBlock2D
 from model.blocks.down_block_2d import DownBlock2D
+from model.blocks.linear import Linear
 from model.blocks.unet_mid_block_2d_cross_attn import UNetMidBlock2DCrossAttn
 from model.blocks.up_block_2d import UpBlock2D
+from model.utils.quantization import quantize_input_and_attach_scale
 
 
 def timestep_embedding(timesteps: torch.Tensor, dim: int, max_period: int = 10000):
@@ -27,17 +29,28 @@ class TimeEmbedding(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
-        self.mlp = nn.Sequential(
-            nn.Linear(dim, dim),
-            nn.SiLU(),
-            nn.Linear(dim, dim),
+        self.linear1 = Linear(
+            in_features=dim,
+            out_features=dim,
+            bias=True,
         )
+        self.linear2 = Linear(
+            in_features=dim,
+            out_features=dim,
+            bias=True,
+        )
+        self.act = nn.SiLU()
 
     def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
         if timesteps.dim() == 0:
             timesteps = timesteps[None]
         emb = timestep_embedding(timesteps, self.dim)
-        return self.mlp(emb)
+        tensor_q = quantize_input_and_attach_scale(self.linear1, emb)
+        emb = self.linear1(tensor_q)
+        emb = self.act(emb)
+        tensor_q = quantize_input_and_attach_scale(self.linear2, emb)
+        emb = self.linear2(tensor_q)
+        return emb
 
 
 class SDXLUNet(nn.Module):
@@ -194,27 +207,6 @@ class SDXLUNet(nn.Module):
         own.update(filtered)
         self.load_state_dict(own, strict=False)
 
-    @staticmethod
-    def _quantize_tensor(
-        tensor: torch.Tensor,
-        conv: Conv2d,
-    ) -> torch.Tensor:
-        """
-        Quantize activations to int8 using the Conv2d's stored scale.
-        """
-        scale = conv.scale_x.to(tensor.device, dtype=torch.float32)
-        if torch.any(scale == 0):
-            raise RuntimeError("Activation scale must be non-zero for quantized Conv2d.")
-        tensor_fp32 = tensor.float()
-        tensor_q = torch.round(tensor_fp32 / scale).clamp_(-128, 127)
-        return tensor_q.to(torch.int8)
-
-    def _apply_quant_conv(self, tensor: torch.Tensor, conv: Conv2d) -> torch.Tensor:
-        original_dtype = tensor.dtype
-        tensor_q = self._quantize_tensor(tensor, conv)
-        out = conv(tensor_q)
-        return out.to(original_dtype)
-
     def forward(
         self,
         sample: torch.Tensor,                 # [B, 4, H, W]
@@ -222,7 +214,8 @@ class SDXLUNet(nn.Module):
         encoder_hidden_states: torch.Tensor,  # [B, T, 2048]
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        x = self._apply_quant_conv(sample, self.conv_in)
+        tensor_q = quantize_input_and_attach_scale(self.conv_in, sample)
+        x = self.conv_in(tensor_q)
         temb = self.time_embed(timesteps)
 
         res_hidden_states: list[torch.Tensor] = []
@@ -267,5 +260,6 @@ class SDXLUNet(nn.Module):
 
         x = self.conv_norm_out(x)
         x = self.conv_act(x)
-        x = self._apply_quant_conv(x, self.conv_out)
+        tensor_q = quantize_input_and_attach_scale(self.conv_out, x)
+        x = self.conv_out(tensor_q)
         return x
