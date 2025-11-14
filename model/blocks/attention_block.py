@@ -1,9 +1,9 @@
-import torch
+﻿import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from model.blocks.linear import Linear
-from model.utils.activations import quantize_input_and_attach_scale
+from model.utils.quantization import quantize_input_and_attach_scale
 
 class AttentionBlock(nn.Module):
     def __init__(
@@ -55,7 +55,7 @@ class AttentionBlock(nn.Module):
         self.scale = self.head_dim ** -0.5
 
     def _reshape_heads(self, x: torch.Tensor, batch_size: int):
-        # x: [B, N, inner_dim] → [B, num_heads, N, head_dim]
+        # x: [B, N, inner_dim] â†’ [B, num_heads, N, head_dim]
         return (
             x.view(batch_size, -1, self.num_heads, self.head_dim)
              .transpose(1, 2)   # [B, N, H, D] -> [B, H, N, D]
@@ -68,8 +68,8 @@ class AttentionBlock(nn.Module):
         attention_mask: torch.Tensor | None = None,         # optional mask over M
     ) -> torch.Tensor:
         """
-        If encoder_hidden_states is None → self-attention.
-        Else → cross-attention (Q from hidden_states, K/V from encoder_hidden_states).
+        If encoder_hidden_states is None â†’ self-attention.
+        Else â†’ cross-attention (Q from hidden_states, K/V from encoder_hidden_states).
         """
 
         bsz, q_len, _ = hidden_states.shape

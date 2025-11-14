@@ -1,15 +1,15 @@
-import torch
+﻿import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from model.blocks.linear import Linear
-from model.utils.activations import quantize_input_and_attach_scale
+from model.utils.quantization import quantize_input_and_attach_scale
 
 class FeedForward(nn.Module):
     def __init__(
         self,
         dim: int,          # input and output embedding dimension
-        mult: float = 4.0, # expansion factor for hidden dimension (dim → dim*mult)
+        mult: float = 4.0, # expansion factor for hidden dimension (dim â†’ dim*mult)
         dropout: float = 0.0,
         use_gelu: bool = True,  # True: GELU, False: SiLU (both common in UNets/transformers)
     ):
@@ -18,14 +18,14 @@ class FeedForward(nn.Module):
         # hidden dimension is typically 4x the input dim
         hidden_dim = int(dim * mult)
 
-        # first linear expands dim → hidden_dim
+        # first linear expands dim â†’ hidden_dim
         self.fc1 = Linear(
             in_features=dim,
             out_features=hidden_dim,
             bias=True,
         )
 
-        # second linear projects hidden_dim → dim
+        # second linear projects hidden_dim â†’ dim
         self.fc2 = Linear(
             in_features=hidden_dim,
             out_features=dim,

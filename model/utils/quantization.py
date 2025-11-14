@@ -1,12 +1,10 @@
-import torch
+﻿import torch
 
 
 
-def quantize_activation_to_int8(
-    tensor: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
+def quantize_to_int8(tensor: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Compute a live per-tensor fp16 scale from the fp16 activations and
+    Compute a live per-tensor fp16 scale from fp16 activations and
     return (int8_quantized, fp16_scale).
 
     This matches the contract: activations are quantized to int8 and the
@@ -19,3 +17,9 @@ def quantize_activation_to_int8(
     scale_fp16 = scale_fp32.to(dtype=torch.float16)
     return x_q, scale_fp16
 
+
+def quantize_input_and_attach_scale(module, tensor: torch.Tensor) -> torch.Tensor:
+    """Quantize activations and set the module's input scale."""
+    tensor_q, scale = quantize_to_int8(tensor)
+    module.set_input_scale(scale)
+    return tensor_q

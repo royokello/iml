@@ -1,8 +1,8 @@
-import torch
+﻿import torch
 import torch.nn as nn
 from model.blocks.conv_2d import Conv2d
 from model.blocks.linear import Linear
-from model.utils.activations import quantize_input_and_attach_scale
+from model.utils.quantization import quantize_input_and_attach_scale
 
 class ResnetBlock2D(nn.Module):
     def __init__(
@@ -21,7 +21,7 @@ class ResnetBlock2D(nn.Module):
         # first normalization on the input feature map, stabilizes scale across channels
         self.norm1 = nn.GroupNorm(num_groups, in_channels, eps=1e-5, affine=True)
 
-        # first conv: mixes spatial info and maps in_channels → out_channels
+        # first conv: mixes spatial info and maps in_channels â†’ out_channels
         self.conv1 = Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
 
         # linear layer to project the time embedding to match out_channels
@@ -34,7 +34,7 @@ class ResnetBlock2D(nn.Module):
         # second normalization on the intermediate features (now out_channels wide)
         self.norm2 = nn.GroupNorm(num_groups, out_channels, eps=1e-5, affine=True)
 
-        # second conv: refines features, keeps same channel count out_channels → out_channels
+        # second conv: refines features, keeps same channel count out_channels â†’ out_channels
         self.conv2 = Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
 
         # if in_channels != out_channels we need a 1x1 conv to match shapes for residual add

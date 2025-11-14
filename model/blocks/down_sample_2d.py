@@ -1,8 +1,8 @@
-import torch
+﻿import torch
 import torch.nn as nn
 
 from model.blocks.conv_2d import Conv2d
-from model.utils.activations import quantize_input_and_attach_scale
+from model.utils.quantization import quantize_input_and_attach_scale
 
 
 class Downsample2D(nn.Module):
