@@ -1,10 +1,44 @@
+import os
+from pathlib import Path
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+from torch.utils.cpp_extension import load
 
 
-# This will be your C++/CUDA extension entry point
-# from your_extension import int8_conv2d_dp4a_forward
+_INT8_CONV2D_MODULE = None
+
+
+def _load_int8_conv2d_extension():
+    global _INT8_CONV2D_MODULE
+    if _INT8_CONV2D_MODULE is not None:
+        return _INT8_CONV2D_MODULE
+
+    repo_root = Path(__file__).resolve().parents[2]
+    sources = [
+        repo_root / "cuda" / "int8_conv2d_1x1.cu",
+        repo_root / "cuda" / "int8_conv2d_3x3_im2col.cu",
+        repo_root / "cuda" / "int8_conv2d_bindings.cpp",
+    ]
+
+    extra_ldflags: list[str] = []
+    cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+    if os.name == "nt":
+        if cuda_home:
+            lib_dir = Path(cuda_home) / "lib" / "x64"
+            extra_ldflags.append(f"/LIBPATH:{lib_dir}")
+        extra_ldflags += ["cublasLt.lib", "cublas.lib"]
+    else:
+        extra_ldflags += ["-lcublasLt", "-lcublas"]
+
+    _INT8_CONV2D_MODULE = load(
+        name="int8_conv2d_im2col",
+        sources=[str(src) for src in sources],
+        extra_cuda_cflags=["-O3"],
+        extra_cflags=["-O3"],
+        extra_ldflags=extra_ldflags,
+    )
+    return _INT8_CONV2D_MODULE
 
 
 class Conv2d(nn.Module):
@@ -100,34 +134,59 @@ class Conv2d(nn.Module):
         """
 
         assert x_q.dtype == torch.int8, "Input to Int8Conv2dDP4A must be int8"
+        if not x_q.is_cuda:
+            raise RuntimeError("INT8 conv kernels require CUDA tensors")
+        if self.groups != 1:
+            raise NotImplementedError("Only groups=1 is supported by the custom kernels")
 
-        # Call the custom kernel (to be implemented in C++/CUDA)
-        # y_fp16 = int8_conv2d_dp4a_forward(
-        #     x_q,
-        #     self.weight_q,
-        #     self.scale_x,
-        #     self.scale_w,
-        #     self.bias,
-        #     stride=self.stride,
-        #     padding=self.padding,
-        #     dilation=self.dilation,
-        #     groups=self.groups,
-        # )
+        module = _load_int8_conv2d_extension()
 
-        # For now, fallback to a fake float implementation so shapes work while developing:
-        # Dequantize to float, do normal conv, then cast to fp16.
-        x_f = x_q.float() * self.scale_x.float()
-        w_f = self.weight_q.float() * self.scale_w.float()
-        b_f = self.bias.float() if self.bias is not None else None
+        stride_h, stride_w = self.stride
+        pad_h, pad_w = self.padding
+        dilation_h, dilation_w = self.dilation
 
-        y_f = F.conv2d(
-            x_f,
-            w_f,
-            b_f,
-            stride=self.stride,
-            padding=self.padding,
-            dilation=self.dilation,
-            groups=self.groups,
+        is_1x1_kernel = (
+            self.kernel_size == (1, 1)
+            and self.stride == (1, 1)
+            and self.padding == (0, 0)
+            and self.dilation == (1, 1)
         )
 
-        return y_f.to(torch.float16)
+        if is_1x1_kernel:
+            conv_fn = module.int8_conv2d_1x1
+        elif self.kernel_size == (3, 3):
+            conv_fn = module.int8_conv2d_3x3_im2col
+        else:
+            raise NotImplementedError(
+                f"No custom kernel available for kernel_size={self.kernel_size}"
+            )
+
+        if self.weight_q.device != x_q.device:
+            raise RuntimeError("Call .to(device) on the module before running the forward pass")
+
+        bias = self.bias
+        if bias is None:
+            bias = torch.zeros(self.out_channels, dtype=torch.float16, device=x_q.device)
+
+        bias = bias.contiguous()
+        x_q = x_q.contiguous()
+        weight_q = self.weight_q.contiguous()
+
+        scale = float(self.scale_x.item() * self.scale_w.item())
+
+        y_fp32 = conv_fn(
+            x_q,
+            weight_q,
+            bias,
+            scale,
+            True,
+            stride_h,
+            stride_w,
+            pad_h,
+            pad_w,
+            dilation_h,
+            dilation_w,
+            self.groups,
+        )
+
+        return y_fp32.to(torch.float16)

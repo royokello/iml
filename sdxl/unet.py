@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from model.blocks.conv_2d import Conv2d
 from model.blocks.cross_attn_down_block_2d import CrossAttnDownBlock2D
 from model.blocks.cross_attn_up_block_2d import CrossAttnUpBlock2D
 from model.blocks.down_block_2d import DownBlock2D
@@ -43,95 +44,137 @@ class SDXLUNet(nn.Module):
     def __init__(self, model: dict[str, torch.Tensor] | None = None):
         super().__init__()
 
-        # hardcoded SDXL-ish core params (simplified, but fixed)
+        # SDXL-base UNet configuration
         self.in_channels = 4
         self.out_channels = 4
-        self.base_channels = 320
+        self.block_out_channels = (320, 640, 1280, 1280)
+        self.layers_per_block = 2
         self.time_embed_dim = 1280
         self.cross_attention_dim = 2048
-        self.num_heads = 8
-        self.head_dim = 64
-        self.num_res_blocks = 2
+        self.attention_head_dim = 64
+        self.down_block_types = (
+            "DownBlock2D",
+            "CrossAttnDownBlock2D",
+            "CrossAttnDownBlock2D",
+            "CrossAttnDownBlock2D",
+        )
+        self.up_block_types = (
+            "CrossAttnUpBlock2D",
+            "CrossAttnUpBlock2D",
+            "CrossAttnUpBlock2D",
+            "UpBlock2D",
+        )
 
         # 1) input conv
-        self.conv_in = nn.Conv2d(self.in_channels, self.base_channels, 3, 1, 1)
+        self.conv_in = Conv2d(
+            in_channels=self.in_channels,
+            out_channels=self.block_out_channels[0],
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
 
         # 2) time embedding
         self.time_embed = TimeEmbedding(self.time_embed_dim)
 
-        # 3) down blocks: one plain, one cross-attn
+        # 3) down blocks
         self.down_blocks = nn.ModuleList()
-        self.down_blocks.append(
-            DownBlock2D(
-                in_channels=self.base_channels,
-                out_channels=self.base_channels,
-                temb_channels=self.time_embed_dim,
-                num_layers=self.num_res_blocks,
-                add_downsample=True,
-                use_conv_down=True,
-            )
-        )
-        self.down_blocks.append(
-            CrossAttnDownBlock2D(
-                in_channels=self.base_channels,
-                out_channels=self.base_channels,
-                temb_channels=self.time_embed_dim,
-                num_layers=self.num_res_blocks,
-                num_attention_heads=self.num_heads,
-                head_dim=self.head_dim,
-                cross_attention_dim=self.cross_attention_dim,
-                add_downsample=False,
-                num_groups=32,
-                transformer_depth=1,
-                use_conv_down=True,
-            )
-        )
+        curr_in_channels = self.block_out_channels[0]
+        for idx, (block_type, out_channels) in enumerate(
+            zip(self.down_block_types, self.block_out_channels)
+        ):
+            add_downsample = idx < len(self.block_out_channels) - 1
+            if block_type == "DownBlock2D":
+                block = DownBlock2D(
+                    in_channels=curr_in_channels,
+                    out_channels=out_channels,
+                    temb_channels=self.time_embed_dim,
+                    num_layers=self.layers_per_block,
+                    add_downsample=add_downsample,
+                    use_conv_down=True,
+                )
+            elif block_type == "CrossAttnDownBlock2D":
+                num_heads = max(1, out_channels // self.attention_head_dim)
+                block = CrossAttnDownBlock2D(
+                    in_channels=curr_in_channels,
+                    out_channels=out_channels,
+                    temb_channels=self.time_embed_dim,
+                    num_layers=self.layers_per_block,
+                    num_attention_heads=num_heads,
+                    head_dim=self.attention_head_dim,
+                    cross_attention_dim=self.cross_attention_dim,
+                    add_downsample=add_downsample,
+                    num_groups=32,
+                    transformer_depth=1,
+                    use_conv_down=True,
+                )
+            else:
+                raise ValueError(f"Unsupported down block type: {block_type}")
+            self.down_blocks.append(block)
+            curr_in_channels = out_channels
 
         # 4) mid block
+        mid_channels = self.block_out_channels[-1]
+        mid_heads = max(1, mid_channels // self.attention_head_dim)
         self.mid_block = UNetMidBlock2DCrossAttn(
-            in_channels=self.base_channels,
-            out_channels=self.base_channels,
+            in_channels=mid_channels,
+            out_channels=mid_channels,
             temb_channels=self.time_embed_dim,
-            num_attention_heads=self.num_heads,
-            head_dim=self.head_dim,
+            num_attention_heads=mid_heads,
+            head_dim=self.attention_head_dim,
             cross_attention_dim=self.cross_attention_dim,
             num_layers=1,
             num_groups=32,
         )
 
-        # 5) up blocks: mirror
+        # 5) up blocks
         self.up_blocks = nn.ModuleList()
-        self.up_blocks.append(
-            CrossAttnUpBlock2D(
-                in_channels=self.base_channels,
-                out_channels=self.base_channels,
-                temb_channels=self.time_embed_dim,
-                num_layers=self.num_res_blocks,
-                num_attention_heads=self.num_heads,
-                head_dim=self.head_dim,
-                cross_attention_dim=self.cross_attention_dim,
-                add_upsample=True,
-                num_groups=32,
-                transformer_depth=1,
-                use_conv_up=True,
-            )
-        )
-        self.up_blocks.append(
-            UpBlock2D(
-                in_channels=self.base_channels,
-                out_channels=self.base_channels,
-                temb_channels=self.time_embed_dim,
-                num_layers=self.num_res_blocks,
-                add_upsample=False,
-                num_groups=32,
-                use_conv_up=True,
-            )
-        )
+        curr_in_channels = self.block_out_channels[-1]
+        reversed_block_out_channels = list(reversed(self.block_out_channels))
+        for idx, (block_type, out_channels) in enumerate(
+            zip(self.up_block_types, reversed_block_out_channels)
+        ):
+            add_upsample = idx < len(self.up_block_types) - 1
+            if block_type == "CrossAttnUpBlock2D":
+                num_heads = max(1, out_channels // self.attention_head_dim)
+                block = CrossAttnUpBlock2D(
+                    in_channels=curr_in_channels,
+                    out_channels=out_channels,
+                    temb_channels=self.time_embed_dim,
+                    num_layers=self.layers_per_block,
+                    num_attention_heads=num_heads,
+                    head_dim=self.attention_head_dim,
+                    cross_attention_dim=self.cross_attention_dim,
+                    add_upsample=add_upsample,
+                    num_groups=32,
+                    transformer_depth=1,
+                    use_conv_up=True,
+                )
+            elif block_type == "UpBlock2D":
+                block = UpBlock2D(
+                    in_channels=curr_in_channels,
+                    out_channels=out_channels,
+                    temb_channels=self.time_embed_dim,
+                    num_layers=self.layers_per_block,
+                    add_upsample=add_upsample,
+                    num_groups=32,
+                    use_conv_up=True,
+                )
+            else:
+                raise ValueError(f"Unsupported up block type: {block_type}")
+            self.up_blocks.append(block)
+            curr_in_channels = out_channels
 
         # 6) output head
-        self.conv_norm_out = nn.GroupNorm(32, self.base_channels, eps=1e-5, affine=True)
+        self.conv_norm_out = nn.GroupNorm(32, self.block_out_channels[0], eps=1e-5, affine=True)
         self.conv_act = nn.SiLU()
-        self.conv_out = nn.Conv2d(self.base_channels, self.out_channels, 3, 1, 1)
+        self.conv_out = Conv2d(
+            in_channels=self.block_out_channels[0],
+            out_channels=self.out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+        )
 
         # 7) optional filtered weight loading from safetensors/state_dict
         if model is not None:
@@ -151,6 +194,27 @@ class SDXLUNet(nn.Module):
         own.update(filtered)
         self.load_state_dict(own, strict=False)
 
+    @staticmethod
+    def _quantize_tensor(
+        tensor: torch.Tensor,
+        conv: Conv2d,
+    ) -> torch.Tensor:
+        """
+        Quantize activations to int8 using the Conv2d's stored scale.
+        """
+        scale = conv.scale_x.to(tensor.device, dtype=torch.float32)
+        if torch.any(scale == 0):
+            raise RuntimeError("Activation scale must be non-zero for quantized Conv2d.")
+        tensor_fp32 = tensor.float()
+        tensor_q = torch.round(tensor_fp32 / scale).clamp_(-128, 127)
+        return tensor_q.to(torch.int8)
+
+    def _apply_quant_conv(self, tensor: torch.Tensor, conv: Conv2d) -> torch.Tensor:
+        original_dtype = tensor.dtype
+        tensor_q = self._quantize_tensor(tensor, conv)
+        out = conv(tensor_q)
+        return out.to(original_dtype)
+
     def forward(
         self,
         sample: torch.Tensor,                 # [B, 4, H, W]
@@ -158,7 +222,7 @@ class SDXLUNet(nn.Module):
         encoder_hidden_states: torch.Tensor,  # [B, T, 2048]
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        x = self.conv_in(sample)
+        x = self._apply_quant_conv(sample, self.conv_in)
         temb = self.time_embed(timesteps)
 
         res_hidden_states: list[torch.Tensor] = []
@@ -203,5 +267,5 @@ class SDXLUNet(nn.Module):
 
         x = self.conv_norm_out(x)
         x = self.conv_act(x)
-        x = self.conv_out(x)
+        x = self._apply_quant_conv(x, self.conv_out)
         return x
