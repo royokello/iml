@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from model.blocks.conv_2d import Conv2d
+from model.blocks.linear import Linear
 from model.utils.activations import quantize_input_and_attach_scale
 
 class ResnetBlock2D(nn.Module):
@@ -24,7 +25,11 @@ class ResnetBlock2D(nn.Module):
         self.conv1 = Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
 
         # linear layer to project the time embedding to match out_channels
-        self.time_emb_proj = nn.Linear(temb_channels, out_channels)
+        self.time_emb_proj = Linear(
+            in_features=temb_channels,
+            out_features=out_channels,
+            bias=True,
+        )
 
         # second normalization on the intermediate features (now out_channels wide)
         self.norm2 = nn.GroupNorm(num_groups, out_channels, eps=1e-5, affine=True)
@@ -57,7 +62,8 @@ class ResnetBlock2D(nn.Module):
         # if a time embedding is provided, inject it as a per-channel bias
         if temb is not None:
             # project time embedding to out_channels
-            temb_proj = self.time_emb_proj(self.act(temb))  # apply activation then linear
+            tensor_q = quantize_input_and_attach_scale(self.time_emb_proj, self.act(temb))
+            temb_proj = self.time_emb_proj(tensor_q)  # apply activation then linear
 
             # reshape temb_proj to broadcast across spatial dims (H, W)
             temb_proj = temb_proj[:, :, None, None]

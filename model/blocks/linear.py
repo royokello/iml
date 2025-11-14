@@ -42,8 +42,6 @@ def _load_int8_linear_extension():
 
 class Linear(nn.Module):
     """
-    Small helper that mirrors the quantized Conv2d block but for dense layers.
-
     The layer expects int8 activations as input. Activations and weights are
     scaled back to floating point inside the forward pass using the stored
     scale factors (set via `set_input_scale` and `load_quantized_weights`).

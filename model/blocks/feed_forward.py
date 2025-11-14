@@ -2,6 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from model.blocks.linear import Linear
+from model.utils.activations import quantize_input_and_attach_scale
+
 class FeedForward(nn.Module):
     def __init__(
         self,
@@ -16,10 +19,18 @@ class FeedForward(nn.Module):
         hidden_dim = int(dim * mult)
 
         # first linear expands dim → hidden_dim
-        self.fc1 = nn.Linear(dim, hidden_dim)
+        self.fc1 = Linear(
+            in_features=dim,
+            out_features=hidden_dim,
+            bias=True,
+        )
 
         # second linear projects hidden_dim → dim
-        self.fc2 = nn.Linear(hidden_dim, dim)
+        self.fc2 = Linear(
+            in_features=hidden_dim,
+            out_features=dim,
+            bias=True,
+        )
 
         # dropout for regularization / smoothing
         self.dropout = nn.Dropout(dropout)
@@ -32,7 +43,8 @@ class FeedForward(nn.Module):
         # x: [B, N, dim] tokens from attention
 
         # project to higher-dimensional hidden space
-        x = self.fc1(x)          # [B, N, hidden_dim]
+        tensor_q = quantize_input_and_attach_scale(self.fc1, x)
+        x = self.fc1(tensor_q)  # [B, N, hidden_dim]
 
         # apply non-linear activation token-wise
         x = self.act(x)          # [B, N, hidden_dim]
@@ -41,7 +53,8 @@ class FeedForward(nn.Module):
         x = self.dropout(x)      # [B, N, hidden_dim]
 
         # project back down to original dim
-        x = self.fc2(x)          # [B, N, dim]
+        tensor_q = quantize_input_and_attach_scale(self.fc2, x)
+        x = self.fc2(tensor_q)  # [B, N, dim]
 
         # another dropout on the output (standard transformer style)
         x = self.dropout(x)      # [B, N, dim]
