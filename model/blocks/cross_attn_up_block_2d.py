@@ -1,3 +1,5 @@
+from typing import Sequence
+
 import torch
 import torch.nn as nn
 
@@ -18,6 +20,8 @@ class CrossAttnUpBlock2D(nn.Module):
         add_upsample: bool = True,
         num_groups: int = 32,
         transformer_depth: int = 1,
+        layer_transformer_depths: Sequence[int] | None = None,
+        skip_channels_per_layer: Sequence[int] | None = None,
         use_conv_up: bool = True,
     ):
         super().__init__()
@@ -26,11 +30,31 @@ class CrossAttnUpBlock2D(nn.Module):
         self.attentions = nn.ModuleList()
         self.upsamplers = nn.ModuleList()
 
+        if layer_transformer_depths is None:
+            layer_transformer_depths = (transformer_depth,) * num_layers
+        else:
+            layer_transformer_depths = tuple(layer_transformer_depths)
+            if len(layer_transformer_depths) != num_layers:
+                raise ValueError(
+                    "layer_transformer_depths must match num_layers "
+                    f"(got {len(layer_transformer_depths)} vs {num_layers})"
+                )
+
+        if skip_channels_per_layer is None:
+            skip_channels_per_layer = (out_channels,) * num_layers
+        else:
+            skip_channels_per_layer = tuple(skip_channels_per_layer)
+            if len(skip_channels_per_layer) != num_layers:
+                raise ValueError(
+                    "skip_channels_per_layer must match num_layers "
+                    f"(got {len(skip_channels_per_layer)} vs {num_layers})"
+                )
+
         curr_in_channels = in_channels
 
         for i in range(num_layers):
             # we concat skip features with current x, so resnet input channels are:
-            resnet_in = curr_in_channels + out_channels
+            resnet_in = curr_in_channels + skip_channels_per_layer[i]
 
             self.resnets.append(
                 ResnetBlock2D(
@@ -46,7 +70,7 @@ class CrossAttnUpBlock2D(nn.Module):
                     in_channels=out_channels,
                     num_heads=num_attention_heads,
                     head_dim=head_dim,
-                    depth=transformer_depth,
+                    depth=layer_transformer_depths[i],
                     cross_attention_dim=cross_attention_dim,
                     num_groups=num_groups,
                 )
@@ -59,6 +83,17 @@ class CrossAttnUpBlock2D(nn.Module):
                 UpSample2D(out_channels, use_conv=use_conv_up)
             )
 
+    def _pop_skip(
+        self,
+        res_hidden_states_list: list[torch.Tensor],
+        target_shape: torch.Size,
+    ) -> torch.Tensor:
+        while res_hidden_states_list:
+            res_hidden = res_hidden_states_list.pop()
+            if res_hidden.shape[2:] == target_shape[2:]:
+                return res_hidden
+        raise RuntimeError("No matching skip tensor for CrossAttnUpBlock2D.")
+
     def forward(
         self,
         x: torch.Tensor,                         # [B, C, H, W]
@@ -68,8 +103,7 @@ class CrossAttnUpBlock2D(nn.Module):
         attention_mask: torch.Tensor | None = None,
     ):
         for resnet, attn in zip(self.resnets, self.attentions):
-            # take last skip, concatenate along channels
-            res_hidden = res_hidden_states_list.pop()
+            res_hidden = self._pop_skip(res_hidden_states_list, x.shape)
             x = torch.cat([x, res_hidden], dim=1)
 
             x = resnet(x, temb)

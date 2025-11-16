@@ -24,7 +24,7 @@ namespace {
 __global__ void scale_acc_kernel(
     float* __restrict__ out,
     const int32_t* __restrict__ acc,
-    float eff_scale,
+    const float* __restrict__ scale,
     bool apply_scale,
     const float* __restrict__ bias,
     int64_t total,
@@ -49,6 +49,7 @@ __global__ void scale_acc_kernel(
 
   float val = static_cast<float>(acc[acc_offset]);
   if (apply_scale) {
+    float eff_scale = scale[co];
     val *= eff_scale;
     if (bias != nullptr) {
       val += bias[co];
@@ -176,7 +177,7 @@ torch::Tensor int8_conv2d_1x1_cuda(
     torch::Tensor x_q,
     torch::Tensor w_q,
     torch::Tensor bias,
-    double scale_product,
+    torch::Tensor scale,
     bool apply_scale,
     int stride_h,
     int stride_w,
@@ -187,12 +188,16 @@ torch::Tensor int8_conv2d_1x1_cuda(
     int groups) {
   CHECK_INPUT(x_q);
   CHECK_INPUT(w_q);
+  CHECK_INPUT(bias);
+  CHECK_INPUT(scale);
   TORCH_CHECK(x_q.dtype() == torch::kChar, "x_q must be int8");
   TORCH_CHECK(w_q.dtype() == torch::kChar, "w_q must be int8");
   TORCH_CHECK(groups == 1, "groups != 1 not implemented");
-  CHECK_INPUT(bias);
   TORCH_CHECK(bias.dtype() == torch::kHalf, "bias must be fp16");
   TORCH_CHECK(bias.size(0) == w_q.size(0), "bias size must match C_out");
+  TORCH_CHECK(
+      scale.dtype() == torch::kFloat || scale.dtype() == torch::kHalf,
+      "scale must be fp16/fp32");
   auto bias_fp32 = bias.to(torch::kFloat);
 
   TORCH_CHECK(stride_h == 1 && stride_w == 1, "1x1 path requires stride=1");
@@ -207,6 +212,9 @@ torch::Tensor int8_conv2d_1x1_cuda(
   int H = x.size(2);
   int W = x.size(3);
   int C_out = w.size(0);
+  TORCH_CHECK(
+      scale.dim() == 1 && scale.size(0) == C_out,
+      "scale must be 1D with length matching C_out");
 
   TORCH_CHECK(w.size(2) == 1 && w.size(3) == 1, "Weights must be 1x1");
 
@@ -226,7 +234,8 @@ torch::Tensor int8_conv2d_1x1_cuda(
   auto out_mat = run_int8_gemm(w_mat, x_mat, C_out, n_cols, K_total);
 
   auto out = torch::empty({N, C_out, H_out, W_out}, x.options().dtype(torch::kFloat));
-  float eff_scale = static_cast<float>(scale_product);
+  auto scale_fp32 = scale.to(torch::kFloat).contiguous();
+  const float* scale_ptr = scale_fp32.data_ptr<float>();
   int64_t total = out.numel();
   int threads = 256;
   int blocks = (total + threads - 1) / threads;
@@ -235,7 +244,7 @@ torch::Tensor int8_conv2d_1x1_cuda(
   scale_acc_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
       out.data_ptr<float>(),
       out_mat.data_ptr<int32_t>(),
-      eff_scale,
+      scale_ptr,
       apply_scale,
       bias_ptr,
       total,

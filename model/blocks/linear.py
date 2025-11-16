@@ -56,7 +56,7 @@ class Linear(nn.Module):
             "weight_q",
             torch.zeros(out_features, in_features, dtype=torch.int8),
         )
-        self.register_buffer("scale_w", torch.ones((), dtype=torch.float16))
+        self.register_buffer("scale_w", torch.ones(out_features, dtype=torch.float16))
         self.register_buffer("scale_x", torch.ones((), dtype=torch.float16))
 
         if bias:
@@ -70,11 +70,11 @@ class Linear(nn.Module):
         scale_w: torch.Tensor,
     ) -> None:
         """
-        Load pre-quantized int8 weights and their (scalar) fp16 scale.
+        Load pre-quantized int8 weights and their per-channel fp16 scales.
 
         Args:
             w_q: int8 tensor with shape [out_features, in_features]
-            scale_w: scalar tensor with dtype float16/float32
+            scale_w: tensor with shape [out_features], dtype float16/float32
         """
         if w_q.shape != self.weight_q.shape:
             raise ValueError(
@@ -82,8 +82,10 @@ class Linear(nn.Module):
             )
         if w_q.dtype is not torch.int8:
             raise TypeError("Quantized weights must be int8")
-        if scale_w.numel() != 1:
-            raise ValueError("scale_w must be a scalar tensor")
+        if scale_w.shape != torch.Size([self.out_features]):
+            raise ValueError(
+                f"scale_w must be shape [{self.out_features}], got {tuple(scale_w.shape)}"
+            )
 
         self.weight_q.copy_(w_q)
         self.scale_w.copy_(scale_w.to(torch.float16))
@@ -122,14 +124,34 @@ class Linear(nn.Module):
         if bias is None:
             bias = torch.zeros(self.out_features, dtype=torch.float16, device=x_q.device)
 
-        scale = float(self.scale_x.item() * self.scale_w.item())
+        scale = (
+            self.scale_x.to(torch.float32) * self.scale_w.to(torch.float32)
+        ).contiguous()
+        orig_shape = x_q.shape
+        x_flat = x_q.reshape(-1, self.in_features).contiguous()
+        batch_elems = x_flat.shape[0]
+        pad = (-batch_elems) % 32
+        if pad:
+            padded = torch.zeros(
+                (batch_elems + pad, self.in_features),
+                dtype=torch.int8,
+                device=x_q.device,
+            )
+            padded[:batch_elems] = x_flat
+            x_for_kernel = padded
+        else:
+            x_for_kernel = x_flat
 
         y_fp32 = module.int8_linear(
-            x_q.contiguous(),
+            x_for_kernel,
             self.weight_q.contiguous(),
             bias.contiguous(),
             scale,
             True,
         )
+        if pad:
+            y_fp32 = y_fp32[:batch_elems]
+
+        y_fp32 = y_fp32.view(*orig_shape[:-1], self.out_features)
 
         return y_fp32.to(dtype=torch.float16)

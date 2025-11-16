@@ -4,7 +4,7 @@ torch::Tensor int8_linear_cuda(
     torch::Tensor x_q,
     torch::Tensor w_q,
     torch::Tensor bias,
-    double scale_product,
+    torch::Tensor scale,
     bool apply_scale);
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {

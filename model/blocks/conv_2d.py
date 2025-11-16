@@ -85,10 +85,10 @@ class Conv2d(nn.Module):
             ),
         )
 
-        # per-tensor fp16 scale for weights (scalar)
+        # per-channel fp16 scale for weights, one per output channel
         self.register_buffer(
             "scale_w",
-            torch.ones((), dtype=torch.float16),
+            torch.ones(out_channels, dtype=torch.float16),
         )
 
         # per-tensor fp16 scale for activations (scalar)
@@ -106,16 +106,35 @@ class Conv2d(nn.Module):
 
     def load_quantized_weights(self, w_q: torch.Tensor, scale_w: torch.Tensor):
         """
-        Load pre-quantized int8 weights and per-tensor fp16 scale.
+        Load pre-quantized int8 weights and per-channel fp16 scales.
 
         w_q: int8 tensor [C_out, C_in/groups, K_h, K_w]
-        scale_w: scalar fp16 tensor
+        scale_w: tensor with shape [C_out] or [C_out, 1, 1]
         """
-        assert w_q.shape == self.weight_q.shape
-        assert w_q.dtype == torch.int8
-        assert scale_w.numel() == 1
+        if w_q.shape != self.weight_q.shape:
+            raise ValueError(
+                f"Expected weight shape {tuple(self.weight_q.shape)}, got {tuple(w_q.shape)}"
+            )
+        if w_q.dtype is not torch.int8:
+            raise TypeError("Quantized weights must be int8")
+
+        expected_shapes = (
+            torch.Size([self.out_channels]),
+            torch.Size([self.out_channels, 1, 1]),
+        )
+        if scale_w.shape not in expected_shapes:
+            raise ValueError(
+                f"scale_w must be shape [{self.out_channels}] or "
+                f"[{self.out_channels}, 1, 1], got {tuple(scale_w.shape)}"
+            )
+        scale_w = scale_w.to(torch.float16).view(-1)
+        if scale_w.numel() != self.out_channels:
+            raise ValueError(
+                f"scale_w must provide {self.out_channels} values, got {scale_w.numel()}"
+            )
+
         self.weight_q.copy_(w_q)
-        self.scale_w.copy_(scale_w.to(torch.float16))
+        self.scale_w.copy_(scale_w)
 
     def set_input_scale(self, scale_x: torch.Tensor):
         """
@@ -172,7 +191,9 @@ class Conv2d(nn.Module):
         x_q = x_q.contiguous()
         weight_q = self.weight_q.contiguous()
 
-        scale = float(self.scale_x.item() * self.scale_w.item())
+        scale = (
+            self.scale_w.to(torch.float32) * self.scale_x.to(torch.float32)
+        ).contiguous()
 
         y_fp32 = conv_fn(
             x_q,

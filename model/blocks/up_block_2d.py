@@ -1,3 +1,5 @@
+from typing import Sequence
+
 import torch
 import torch.nn as nn
 
@@ -13,6 +15,7 @@ class UpBlock2D(nn.Module):
         num_layers: int,         # how many ResNet+skip layers in this block
         add_upsample: bool = True,  # whether to upsample at the end of the block
         num_groups: int = 32,    # GroupNorm groups for ResnetBlock2D
+        skip_channels_per_layer: Sequence[int] | None = None,
         use_conv_up: bool = True # whether UpSample2D uses conv after interpolate
     ):
         super().__init__()
@@ -22,11 +25,21 @@ class UpBlock2D(nn.Module):
 
         curr_in_channels = in_channels   # channels coming into the first layer
 
-        for _ in range(num_layers):
+        if skip_channels_per_layer is None:
+            skip_channels_per_layer = (out_channels,) * num_layers
+        else:
+            skip_channels_per_layer = tuple(skip_channels_per_layer)
+            if len(skip_channels_per_layer) != num_layers:
+                raise ValueError(
+                    "skip_channels_per_layer must match num_layers "
+                    f"(got {len(skip_channels_per_layer)} vs {num_layers})"
+                )
+
+        for i in range(num_layers):
             # each layer concatenates a skip tensor [B, out_channels, H, W]
             # with current x [B, curr_in_channels, H, W]
             # so ResNet input channels = curr_in_channels + out_channels
-            resnet_in = curr_in_channels + out_channels
+            resnet_in = curr_in_channels + skip_channels_per_layer[i]
 
             # ResNet maps concatenated channels down to out_channels
             self.resnets.append(
@@ -53,12 +66,15 @@ class UpBlock2D(nn.Module):
         temb: torch.Tensor,                      # [B, temb_channels] time embedding
         res_hidden_states_list: list[torch.Tensor],  # list/stack of skip connections from down path
     ) -> torch.Tensor:
-        # iterate over each ResNet layer in this up block
-        for resnet in self.resnets:
-            # take the last skip (mirroring how down blocks pushed them)
-            res_hidden = res_hidden_states_list.pop()
+        def pop_matching_skip(target_shape: torch.Size) -> torch.Tensor:
+            while res_hidden_states_list:
+                res_hidden = res_hidden_states_list.pop()
+                if res_hidden.shape[2:] == target_shape[2:]:
+                    return res_hidden
+            raise RuntimeError("No matching skip tensor for UpBlock2D.")
 
-            # concatenate skip features and current features along channel dimension
+        for resnet in self.resnets:
+            res_hidden = pop_matching_skip(x.shape)
             x = torch.cat([x, res_hidden], dim=1)   # [B, C_in + C_skip, H, W]
 
             # run through ResNet to fuse skip + current and inject time embedding

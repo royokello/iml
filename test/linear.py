@@ -76,9 +76,15 @@ def benchmark_fp16(x, w, b, flops):
 
 def benchmark_int8(x_q, w_q, bias, scale_factor, apply_scale, flops):
     module = load_int8_linear_extension()
+    scale_tensor = torch.full(
+        (w_q.size(0),),
+        float(scale_factor),
+        dtype=torch.float32,
+        device=x_q.device,
+    )
 
     for _ in range(WARMUP):
-        module.int8_linear(x_q, w_q, bias, float(scale_factor), apply_scale)
+        module.int8_linear(x_q, w_q, bias, scale_tensor, apply_scale)
     torch.cuda.synchronize()
 
     start = torch.cuda.Event(enable_timing=True)
@@ -87,7 +93,7 @@ def benchmark_int8(x_q, w_q, bias, scale_factor, apply_scale, flops):
     out = None
     for _ in range(ITERS):
         start.record()
-        out = module.int8_linear(x_q, w_q, bias, float(scale_factor), apply_scale)
+        out = module.int8_linear(x_q, w_q, bias, scale_tensor, apply_scale)
         end.record()
         end.synchronize()
         times.append(start.elapsed_time(end))

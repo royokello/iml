@@ -79,6 +79,37 @@ def _quantize_int8_sym(tensor: np.ndarray) -> Tuple[np.ndarray, float, float]:
     return q, scale, amax
 
 
+def _quantize_int8_sym_per_channel(
+    tensor: np.ndarray, axis: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    arr32 = np.asarray(tensor, dtype=np.float32)
+    ndim = arr32.ndim
+    if ndim == 0:
+        raise ValueError("Per-channel quantization requires at least 1D tensors.")
+    axis_mod = axis % ndim
+    if arr32.size == 0:
+        q = arr32.astype(np.int8)
+        scale = np.ones(arr32.shape[axis_mod], dtype=np.float32)
+        amax = np.zeros(arr32.shape[axis_mod], dtype=np.float32)
+        return q, scale, amax
+
+    reduce_axes = tuple(i for i in range(ndim) if i != axis_mod)
+    if reduce_axes:
+        amax = np.max(np.abs(arr32), axis=reduce_axes, keepdims=False)
+    else:
+        amax = np.abs(arr32)
+
+    amax_safe = np.where(amax == 0.0, 1.0, amax)
+    scale = amax_safe / INT8_MAX
+
+    scale_shape = [1] * ndim
+    scale_shape[axis_mod] = arr32.shape[axis_mod]  # broadcast target axis only
+    scale_reshaped = scale.reshape(scale_shape)
+
+    q = np.clip(np.rint(arr32 / scale_reshaped), INT8_MIN, INT8_MAX).astype(np.int8)
+    return q, scale.astype(np.float32), amax.astype(np.float32)
+
+
 def _strip_suffix(name: str, suffix: str) -> str:
     if name.endswith(suffix):
         return name[: -len(suffix)]
@@ -130,17 +161,27 @@ def main() -> None:
         if name in weight_kinds:
             kind = weight_kinds[name]
             base = _strip_suffix(name, ".weight")
-            q_weight, scale, amax = _quantize_int8_sym(tensor)
-            updated[f"{base}.weight_q"] = q_weight
-            updated[f"{base}.scale_w"] = np.asarray(scale, dtype=np.float16)
+            if kind in ("conv2d", "linear"):
+                q_weight, scale_vec, amax_vec = _quantize_int8_sym_per_channel(
+                    tensor, axis=0
+                )
+                updated[f"{base}.weight_q"] = q_weight
+                updated[f"{base}.scale_w"] = scale_vec.astype(np.float16)
+            else:
+                q_weight, scale, amax = _quantize_int8_sym(tensor)
+                updated[f"{base}.weight_q"] = q_weight
+                updated[f"{base}.scale_w"] = np.asarray(scale, dtype=np.float16)
 
             stats[kind].weights += 1
             stats[kind].bytes_in += tensor.nbytes
-            stats[kind].bytes_out += q_weight.nbytes + np.dtype(np.float16).itemsize
+            stats[kind].bytes_out += (
+                q_weight.nbytes + updated[f"{base}.scale_w"].nbytes
+            )
 
             print(
                 f"[quant] {name} kind={kind} "
-                f"amax={amax:.4g} scale={scale:.4g} "
+                f"amax={float(np.max(amax_vec) if kind in ('conv2d', 'linear') else amax):.4g} "
+                f"scale_shape={updated[f'{base}.scale_w'].shape} "
                 f"{tensor.dtype}->{q_weight.dtype}"
             )
             continue

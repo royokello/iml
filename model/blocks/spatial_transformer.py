@@ -1,8 +1,8 @@
-﻿import torch
+import torch
 import torch.nn as nn
 
 from model.blocks.basic_transformer_block import BasicTransformerBlock
-from model.blocks.conv_2d import Conv2d
+from model.blocks.linear import Linear
 from model.utils.quantization import quantize_input_and_attach_scale
 
 
@@ -24,11 +24,11 @@ class SpatialTransformer(nn.Module):
         # normalize across channels before projecting into transformer space
         self.norm = nn.GroupNorm(num_groups, in_channels, eps=1e-5, affine=True)
 
-        # 1x1 conv to map C -> inner_dim (acts like per-pixel Linear)
-        self.proj_in = Conv2d(
-            in_channels=in_channels,
-            out_channels=self.inner_dim,
-            kernel_size=1,
+        # linear projections to map C <-> inner_dim (acts like per-pixel Linear)
+        self.proj_in = Linear(
+            in_features=in_channels,
+            out_features=self.inner_dim,
+            bias=True,
         )
 
         # stack of BasicTransformerBlocks operating on tokens
@@ -44,11 +44,10 @@ class SpatialTransformer(nn.Module):
             ]
         )
 
-        # 1x1 conv to map inner_dim -> C to go back into UNet
-        self.proj_out = Conv2d(
-            in_channels=self.inner_dim,
-            out_channels=in_channels,
-            kernel_size=1,
+        self.proj_out = Linear(
+            in_features=self.inner_dim,
+            out_features=in_channels,
+            bias=True,
         )
 
     def forward(
@@ -66,12 +65,12 @@ class SpatialTransformer(nn.Module):
         x = self.norm(x)                # [B, C, H, W]
 
         # 2) project channels C -> inner_dim (token embedding dim)
+        x = x.permute(0, 2, 3, 1).contiguous()   # [B, H, W, C]
         tensor_q = quantize_input_and_attach_scale(self.proj_in, x)
-        x = self.proj_in(tensor_q)  # [B, inner_dim, H, W]
+        x = self.proj_in(tensor_q)               # [B, H, W, inner_dim]
 
         # 3) reshape spatial map into sequence of tokens
-        x = x.view(b, self.inner_dim, h * w)    # [B, inner_dim, H*W]
-        x = x.transpose(1, 2)                   # [B, H*W, inner_dim] = [B, N, dim]
+        x = x.view(b, h * w, self.inner_dim)     # [B, N, inner_dim]
 
         # 4) run through stacked BasicTransformerBlocks
         for block in self.transformer_blocks:
@@ -82,12 +81,12 @@ class SpatialTransformer(nn.Module):
             )   # [B, N, inner_dim]
 
         # 5) reshape tokens back to spatial map
-        x = x.transpose(1, 2)                   # [B, inner_dim, N]
-        x = x.view(b, self.inner_dim, h, w)     # [B, inner_dim, H, W]
+        x = x.view(b, h, w, self.inner_dim)      # [B, H, W, inner_dim]
 
         # 6) project inner_dim -> C to match UNet channels
         tensor_q = quantize_input_and_attach_scale(self.proj_out, x)
-        x = self.proj_out(tensor_q)  # [B, C, H, W]
+        x = self.proj_out(tensor_q)              # [B, H, W, C]
+        x = x.permute(0, 3, 1, 2).contiguous()   # [B, C, H, W]
 
         # 7) residual add: spatial_attn_out + original UNet features
         x = x + residual

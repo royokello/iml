@@ -95,13 +95,19 @@ def benchmark_int8(
 ):
     module = load_int8_extension()
     conv_fn = module.int8_conv2d_1x1 if use_1x1_kernel else module.int8_conv2d_3x3_im2col
+    scale_tensor = torch.full(
+        (w_q.size(0),),
+        float(scale_factor),
+        dtype=torch.float32,
+        device=x_q.device,
+    )
 
     for _ in range(WARMUP):
         conv_fn(
             x_q,
             w_q,
             bias_fp16,
-            float(scale_factor),
+            scale_tensor,
             apply_scale,
             stride[0],
             stride[1],
@@ -123,7 +129,7 @@ def benchmark_int8(
             x_q,
             w_q,
             bias_fp16,
-            float(scale_factor),
+            scale_tensor,
             apply_scale,
             stride[0],
             stride[1],

@@ -150,7 +150,7 @@ __global__ void scale_acc_linear_kernel(
     float* __restrict__ out,
     const int32_t* __restrict__ acc,
     const float* __restrict__ bias,
-    float eff_scale,
+    const float* __restrict__ scale_vec,
     bool apply_scale,
     int64_t rows,
     int C_out) {
@@ -164,11 +164,10 @@ __global__ void scale_acc_linear_kernel(
 
   int64_t acc_idx = static_cast<int64_t>(col) * rows + row;
   float val = static_cast<float>(acc[acc_idx]);
-  if (apply_scale) {
-    val *= eff_scale;
-    if (bias != nullptr) {
-      val += bias[col];
-    }
+  float scale = apply_scale ? scale_vec[col] : 1.0f;
+  val *= scale;
+  if (bias != nullptr) {
+    val += bias[col];
   }
   out[idx] = val;
 }
@@ -179,11 +178,12 @@ torch::Tensor int8_linear_cuda(
     torch::Tensor x_q,
     torch::Tensor w_q,
     torch::Tensor bias,
-    double scale_product,
+    torch::Tensor scale,
     bool apply_scale) {
   CHECK_INPUT(x_q);
   CHECK_INPUT(w_q);
   CHECK_INPUT(bias);
+  CHECK_INPUT(scale);
   TORCH_CHECK(x_q.dtype() == torch::kChar, "x_q must be int8");
   TORCH_CHECK(w_q.dtype() == torch::kChar, "w_q must be int8");
   TORCH_CHECK(bias.dtype() == torch::kHalf, "bias must be fp16");
@@ -202,6 +202,9 @@ torch::Tensor int8_linear_cuda(
   int64_t rows = x.numel() / x.size(-1);
   int64_t in_features = x.size(-1);
   int C_out = static_cast<int>(w_q.size(0));
+  TORCH_CHECK(
+      scale.dim() == 1 && scale.size(0) == C_out,
+      "scale must be 1D with length matching the output dimension");
 
   auto x_mat = x.view({rows, in_features}).transpose(0, 1).contiguous();
   auto w_mat = w_q.contiguous();
@@ -210,8 +213,8 @@ torch::Tensor int8_linear_cuda(
 
   auto out = torch::empty({rows, C_out}, x.options().dtype(torch::kFloat));
   auto bias_fp32 = bias.to(torch::kFloat);
+  auto scale_fp32 = scale.to(torch::kFloat).contiguous();
 
-  float eff_scale = static_cast<float>(scale_product);
   int threads = 256;
   int64_t total = rows * static_cast<int64_t>(C_out);
   int blocks = static_cast<int>((total + threads - 1) / threads);
@@ -220,7 +223,7 @@ torch::Tensor int8_linear_cuda(
       out.data_ptr<float>(),
       out_mat.data_ptr<int32_t>(),
       bias_fp32.data_ptr<float>(),
-      eff_scale,
+      scale_fp32.data_ptr<float>(),
       apply_scale,
       rows,
       C_out);

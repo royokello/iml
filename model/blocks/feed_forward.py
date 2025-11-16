@@ -1,15 +1,16 @@
-﻿import torch
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from model.blocks.linear import Linear
 from model.utils.quantization import quantize_input_and_attach_scale
 
+
 class FeedForward(nn.Module):
     def __init__(
         self,
         dim: int,          # input and output embedding dimension
-        mult: float = 4.0, # expansion factor for hidden dimension (dim â†’ dim*mult)
+        mult: float = 4.0, # expansion factor for hidden dimension (dim -> dim*mult)
         dropout: float = 0.0,
         use_gelu: bool = True,  # True: GELU, False: SiLU (both common in UNets/transformers)
     ):
@@ -18,14 +19,14 @@ class FeedForward(nn.Module):
         # hidden dimension is typically 4x the input dim
         hidden_dim = int(dim * mult)
 
-        # first linear expands dim â†’ hidden_dim
+        # first linear expands dim -> 2 * hidden_dim (value + gate for GEGLU)
         self.fc1 = Linear(
             in_features=dim,
-            out_features=hidden_dim,
+            out_features=hidden_dim * 2,
             bias=True,
         )
 
-        # second linear projects hidden_dim â†’ dim
+        # second linear projects hidden_dim -> dim
         self.fc2 = Linear(
             in_features=hidden_dim,
             out_features=dim,
@@ -42,12 +43,13 @@ class FeedForward(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B, N, dim] tokens from attention
 
-        # project to higher-dimensional hidden space
+        # project to higher-dimensional hidden space (value + gate chunks)
         tensor_q = quantize_input_and_attach_scale(self.fc1, x)
-        x = self.fc1(tensor_q)  # [B, N, hidden_dim]
+        x = self.fc1(tensor_q)  # [B, N, 2 * hidden_dim]
+        value, gate = x.chunk(2, dim=-1)
 
-        # apply non-linear activation token-wise
-        x = self.act(x)          # [B, N, hidden_dim]
+        # GEGLU: activate the gate and apply elementwise to value portion
+        x = value * self.act(gate)  # [B, N, hidden_dim]
 
         # optional dropout in the hidden space
         x = self.dropout(x)      # [B, N, hidden_dim]

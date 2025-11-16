@@ -14,6 +14,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         head_dim: int,
         cross_attention_dim: int,
         num_layers: int = 1,
+        transformer_depth: int = 1,
         num_groups: int = 32,
     ):
         super().__init__()
@@ -41,7 +42,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     in_channels=out_channels,
                     num_heads=num_attention_heads,
                     head_dim=head_dim,
-                    depth=1,
+                    depth=transformer_depth,
                     cross_attention_dim=cross_attention_dim,
                     num_groups=num_groups,
                 )
