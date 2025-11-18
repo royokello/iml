@@ -57,7 +57,7 @@ class Linear(nn.Module):
             torch.zeros(out_features, in_features, dtype=torch.int8),
         )
         self.register_buffer("scale_w", torch.ones(out_features, dtype=torch.float16))
-        self.register_buffer("scale_x", torch.ones((), dtype=torch.float16))
+        self.register_buffer("scale_x", torch.ones(in_features, dtype=torch.float16))
 
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_features, dtype=torch.float16))
@@ -94,9 +94,9 @@ class Linear(nn.Module):
         """
         Persist the activation scale produced by the previous quantized op.
         """
-        if scale_x.numel() != 1:
-            raise ValueError("scale_x must be a scalar tensor")
-        self.scale_x.copy_(scale_x.to(torch.float16))
+        if scale_x.numel() != self.in_features:
+            raise ValueError("activation scale must match in_features")
+        self.scale_x.copy_(scale_x.to(torch.float16).contiguous())
 
     def forward(self, x_q: torch.Tensor) -> torch.Tensor:
         """
@@ -124,9 +124,8 @@ class Linear(nn.Module):
         if bias is None:
             bias = torch.zeros(self.out_features, dtype=torch.float16, device=x_q.device)
 
-        scale = (
-            self.scale_x.to(torch.float32) * self.scale_w.to(torch.float32)
-        ).contiguous()
+        scale_x_scalar = self.scale_x.to(torch.float32).max()
+        scale = (self.scale_w.to(torch.float32) * scale_x_scalar).contiguous()
         orig_shape = x_q.shape
         x_flat = x_q.reshape(-1, self.in_features).contiguous()
         batch_elems = x_flat.shape[0]

@@ -80,13 +80,19 @@ class AttentionBlock(nn.Module):
         _, kv_len, _ = encoder_hidden_states.shape
 
         # project queries, keys, values
-        tensor_q = quantize_input_and_attach_scale(self.to_q, hidden_states)
+        tensor_q = quantize_input_and_attach_scale(
+            self.to_q, hidden_states, channel_dim=hidden_states.ndim - 1
+        )
         q = self.to_q(tensor_q)  # [B, Nq, inner_dim]
 
-        tensor_q = quantize_input_and_attach_scale(self.to_k, encoder_hidden_states)
+        tensor_q = quantize_input_and_attach_scale(
+            self.to_k, encoder_hidden_states, channel_dim=encoder_hidden_states.ndim - 1
+        )
         k = self.to_k(tensor_q)  # [B, Nk, inner_dim]
 
-        tensor_q = quantize_input_and_attach_scale(self.to_v, encoder_hidden_states)
+        tensor_q = quantize_input_and_attach_scale(
+            self.to_v, encoder_hidden_states, channel_dim=encoder_hidden_states.ndim - 1
+        )
         v = self.to_v(tensor_q)  # [B, Nk, inner_dim]
 
         # split into heads
@@ -117,7 +123,9 @@ class AttentionBlock(nn.Module):
         attn_output = attn_output.view(bsz, q_len, self.inner_dim)
 
         # final linear projection back to dim
-        tensor_q = quantize_input_and_attach_scale(self.proj_out, attn_output)
+        tensor_q = quantize_input_and_attach_scale(
+            self.proj_out, attn_output, channel_dim=attn_output.ndim - 1
+        )
         attn_output = self.proj_out(tensor_q)  # [B, N, dim]
         attn_output = self.out_dropout(attn_output)
 

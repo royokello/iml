@@ -31,7 +31,14 @@ class UpSample2D(nn.Module):
         x = F.interpolate(x, scale_factor=2.0, mode="nearest")
 
         if self.conv is not None:
-            tensor_q = quantize_input_and_attach_scale(self.conv, x)
+            print("[debug] upsample conv input stats:", float(x.min()), float(x.max()))
+            tensor_q = quantize_input_and_attach_scale(self.conv, x, channel_dim=1)
+            print(
+                "[debug] upsample conv scale stats:",
+                float(self.conv.scale_x.min()),
+                float(self.conv.scale_x.max()),
+            )
             x = self.conv(tensor_q)
+            print("[debug] upsample conv output stats:", float(x.min()), float(x.max()))
 
         return x

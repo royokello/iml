@@ -91,11 +91,11 @@ class Conv2d(nn.Module):
             torch.ones(out_channels, dtype=torch.float16),
         )
 
-        # per-tensor fp16 scale for activations (scalar)
+        # per-input-channel fp16 scales for activations
         # (set by the previous layer / quantization logic)
         self.register_buffer(
             "scale_x",
-            torch.ones((), dtype=torch.float16),
+            torch.ones(in_channels, dtype=torch.float16),
         )
 
         # fp16 bias, one per output channel (optional)
@@ -142,8 +142,19 @@ class Conv2d(nn.Module):
 
         scale_x: scalar fp16 tensor
         """
-        assert scale_x.numel() == 1
-        self.scale_x.copy_(scale_x.to(torch.float16))
+        if scale_x.dim() == 4:
+            if scale_x.shape != (1, self.in_channels, 1, 1):
+                raise ValueError(
+                    "scale_x must be shape [1, C_in, 1, 1] when 4-dimensional"
+                )
+            scale_x = scale_x.view(-1)
+        elif scale_x.dim() != 1:
+            raise ValueError("scale_x must be 1D or 4D [1, C_in, 1, 1]")
+        if scale_x.numel() != self.in_channels:
+            raise ValueError(
+                f"activation scale must match in_channels ({self.in_channels})"
+            )
+        self.scale_x.copy_(scale_x.to(torch.float16).contiguous())
 
     def forward(self, x_q: torch.Tensor) -> torch.Tensor:
         """
@@ -191,9 +202,9 @@ class Conv2d(nn.Module):
         x_q = x_q.contiguous()
         weight_q = self.weight_q.contiguous()
 
-        scale = (
-            self.scale_w.to(torch.float32) * self.scale_x.to(torch.float32)
-        ).contiguous()
+        scale_x_fp32 = self.scale_x.to(torch.float32)
+        scale_w_fp32 = self.scale_w.to(torch.float32)
+        scale = (scale_w_fp32[:, None] * scale_x_fp32[None, :]).contiguous()
 
         y_fp32 = conv_fn(
             x_q,

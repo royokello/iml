@@ -37,6 +37,6 @@ class Downsample2D(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # apply the chosen downsampling operator (conv or pooling) to reduce spatial size
         if self.use_conv and self.conv is not None:
-            tensor_q = quantize_input_and_attach_scale(self.conv, x)
+            tensor_q = quantize_input_and_attach_scale(self.conv, x, channel_dim=1)
             return self.conv(tensor_q)
         return self.pool(x)

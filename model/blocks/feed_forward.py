@@ -44,7 +44,7 @@ class FeedForward(nn.Module):
         # x: [B, N, dim] tokens from attention
 
         # project to higher-dimensional hidden space (value + gate chunks)
-        tensor_q = quantize_input_and_attach_scale(self.fc1, x)
+        tensor_q = quantize_input_and_attach_scale(self.fc1, x, channel_dim=x.ndim - 1)
         x = self.fc1(tensor_q)  # [B, N, 2 * hidden_dim]
         value, gate = x.chunk(2, dim=-1)
 
@@ -55,7 +55,7 @@ class FeedForward(nn.Module):
         x = self.dropout(x)      # [B, N, hidden_dim]
 
         # project back down to original dim
-        tensor_q = quantize_input_and_attach_scale(self.fc2, x)
+        tensor_q = quantize_input_and_attach_scale(self.fc2, x, channel_dim=x.ndim - 1)
         x = self.fc2(tensor_q)  # [B, N, dim]
 
         # another dropout on the output (standard transformer style)

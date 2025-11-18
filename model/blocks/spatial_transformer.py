@@ -66,7 +66,7 @@ class SpatialTransformer(nn.Module):
 
         # 2) project channels C -> inner_dim (token embedding dim)
         x = x.permute(0, 2, 3, 1).contiguous()   # [B, H, W, C]
-        tensor_q = quantize_input_and_attach_scale(self.proj_in, x)
+        tensor_q = quantize_input_and_attach_scale(self.proj_in, x, channel_dim=x.ndim - 1)
         x = self.proj_in(tensor_q)               # [B, H, W, inner_dim]
 
         # 3) reshape spatial map into sequence of tokens
@@ -84,7 +84,7 @@ class SpatialTransformer(nn.Module):
         x = x.view(b, h, w, self.inner_dim)      # [B, H, W, inner_dim]
 
         # 6) project inner_dim -> C to match UNet channels
-        tensor_q = quantize_input_and_attach_scale(self.proj_out, x)
+        tensor_q = quantize_input_and_attach_scale(self.proj_out, x, channel_dim=x.ndim - 1)
         x = self.proj_out(tensor_q)              # [B, H, W, C]
         x = x.permute(0, 3, 1, 2).contiguous()   # [B, C, H, W]
 

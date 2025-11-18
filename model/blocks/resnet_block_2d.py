@@ -57,12 +57,17 @@ class ResnetBlock2D(nn.Module):
         h = self.act(h)
 
         # first conv: spatial feature extraction and channel mapping
-        h = self._apply_conv(h, self.conv1)
+        original_dtype = h.dtype
+        tensor_q = quantize_input_and_attach_scale(self.conv1, h, channel_dim=1)
+        h = self.conv1(tensor_q).to(original_dtype)
 
         # if a time embedding is provided, inject it as a per-channel bias
         if temb is not None:
             # project time embedding to out_channels
-            tensor_q = quantize_input_and_attach_scale(self.time_emb_proj, self.act(temb))
+            temb_act = self.act(temb)
+            tensor_q = quantize_input_and_attach_scale(
+                self.time_emb_proj, temb_act, channel_dim=temb_act.ndim - 1
+            )
             temb_proj = self.time_emb_proj(tensor_q)  # apply activation then linear
 
             # reshape temb_proj to broadcast across spatial dims (H, W)
@@ -78,20 +83,16 @@ class ResnetBlock2D(nn.Module):
         h = self.act(h)
 
         # second conv: refine features without changing channel count
-        h = self._apply_conv(h, self.conv2)
+        original_dtype = h.dtype
+        tensor_q = quantize_input_and_attach_scale(self.conv2, h, channel_dim=1)
+        h = self.conv2(tensor_q).to(original_dtype)
 
         # if needed, transform residual so its channels match h for addition
         if self.conv_shortcut is not None:
-            residual = self._apply_conv(residual, self.conv_shortcut)
+            original_dtype = residual.dtype
+            tensor_q = quantize_input_and_attach_scale(self.conv_shortcut, residual, channel_dim=1)
+            residual = self.conv_shortcut(tensor_q).to(original_dtype)
 
         # final residual add: output = transformed_input + shortcut(input)
         return residual + h
 
-    def _apply_conv(self, tensor: torch.Tensor, conv: Conv2d) -> torch.Tensor:
-        """
-        Quantize tensor to int8 using conv's activation scale, run conv, then restore dtype.
-        """
-        original_dtype = tensor.dtype
-        tensor_q = quantize_input_and_attach_scale(conv, tensor)
-        out = conv(tensor_q)
-        return out.to(original_dtype)

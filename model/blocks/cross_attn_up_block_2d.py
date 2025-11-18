@@ -102,18 +102,23 @@ class CrossAttnUpBlock2D(nn.Module):
         encoder_hidden_states: torch.Tensor,     # [B, T, cross_attention_dim]
         attention_mask: torch.Tensor | None = None,
     ):
-        for resnet, attn in zip(self.resnets, self.attentions):
+        for idx, (resnet, attn) in enumerate(zip(self.resnets, self.attentions)):
             res_hidden = self._pop_skip(res_hidden_states_list, x.shape)
             x = torch.cat([x, res_hidden], dim=1)
 
+            print(f"[debug] up block resnet {idx} input stats:", float(x.min()), float(x.max()))
             x = resnet(x, temb)
+            print(f"[debug] up block resnet {idx} output stats:", float(x.min()), float(x.max()))
             x = attn(
                 x,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask,
             )
+            print(f"[debug] up block attn {idx} output stats:", float(x.min()), float(x.max()))
 
         for upsampler in self.upsamplers:
+            print("[debug] upsampler input stats:", float(x.min()), float(x.max()))
             x = upsampler(x)
+            print("[debug] upsampler output stats:", float(x.min()), float(x.max()))
 
         return x

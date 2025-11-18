@@ -58,10 +58,10 @@ class TimeEmbedding(nn.Module):
         if timesteps.dim() == 0:
             timesteps = timesteps[None]
         emb = timestep_embedding(timesteps, self.input_dim)
-        tensor_q = quantize_input_and_attach_scale(self.linear1, emb)
+        tensor_q = quantize_input_and_attach_scale(self.linear1, emb, channel_dim=emb.ndim - 1)
         emb = self.linear1(tensor_q)
         emb = self.act(emb)
-        tensor_q = quantize_input_and_attach_scale(self.linear2, emb)
+        tensor_q = quantize_input_and_attach_scale(self.linear2, emb, channel_dim=emb.ndim - 1)
         emb = self.linear2(tensor_q)
         return emb
 
@@ -304,11 +304,16 @@ class SDXLUNet(nn.Module):
         attention_mask: torch.Tensor | None = None,
         pooled_embeds: torch.Tensor | None = None,  # [B, 2816]
     ) -> torch.Tensor:
-        tensor_q = quantize_input_and_attach_scale(self.conv_in, sample)
+        print("[debug] sample stats:", float(sample.min()), float(sample.max()))
+        tensor_q = quantize_input_and_attach_scale(self.conv_in, sample, channel_dim=1)
         x = self.conv_in(tensor_q)
+        print("[debug] conv_in output stats:", float(x.min()), float(x.max()))
         temb = self.time_embed(timesteps)
         if pooled_embeds is not None:
-            tensor_q = quantize_input_and_attach_scale(self.label_emb[0], pooled_embeds)
+            print("[debug] pooled_embeds stats:", float(pooled_embeds.min()), float(pooled_embeds.max()))
+            tensor_q = quantize_input_and_attach_scale(
+                self.label_emb[0], pooled_embeds, channel_dim=pooled_embeds.ndim - 1
+            )
             pooled = self.label_emb(tensor_q)
             temb = temb + pooled
 
@@ -325,6 +330,7 @@ class SDXLUNet(nn.Module):
                 )
             else:
                 x, res = block(x, temb)
+            print(f"[debug] down block {idx} output stats:", float(x.min()), float(x.max()))
             res_hidden_states.extend(res)
 
         # mid
@@ -334,6 +340,7 @@ class SDXLUNet(nn.Module):
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask,
         )
+        print("[debug] mid block output stats:", float(x.min()), float(x.max()))
 
         # up path
         for idx, block in enumerate(self.up_blocks):
@@ -351,9 +358,13 @@ class SDXLUNet(nn.Module):
                     temb,
                     res_hidden_states_list=res_hidden_states,
                 )
+            print(f"[debug] up block {idx} output stats:", float(x.min()), float(x.max()))
 
         x = self.conv_norm_out(x)
+        print("[debug] conv_norm_out stats:", float(x.min()), float(x.max()))
         x = self.conv_act(x)
-        tensor_q = quantize_input_and_attach_scale(self.conv_out, x)
+        print("[debug] conv_act stats:", float(x.min()), float(x.max()))
+        tensor_q = quantize_input_and_attach_scale(self.conv_out, x, channel_dim=1)
         x = self.conv_out(tensor_q)
+        print("[debug] conv_out stats:", float(x.min()), float(x.max()))
         return x

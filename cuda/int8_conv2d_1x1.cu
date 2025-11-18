@@ -213,8 +213,8 @@ torch::Tensor int8_conv2d_1x1_cuda(
   int W = x.size(3);
   int C_out = w.size(0);
   TORCH_CHECK(
-      scale.dim() == 1 && scale.size(0) == C_out,
-      "scale must be 1D with length matching C_out");
+      scale.dim() == 2 && scale.size(0) == C_out && scale.size(1) == C_in,
+      "scale must be 2D with shape [C_out, C_in]");
 
   TORCH_CHECK(w.size(2) == 1 && w.size(3) == 1, "Weights must be 1x1");
 
