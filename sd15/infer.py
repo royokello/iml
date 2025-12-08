@@ -37,7 +37,7 @@ def _encode_text_cpu(model_root: str, prompt: str, negative: str) -> torch.Tenso
     tok = CLIPTokenizer.from_pretrained(os.path.join(model_root, "tokenizer"))
     txtE = CLIPTextModel.from_pretrained(
         os.path.join(model_root, "text_encoder"),
-        torch_dtype=torch.float32,
+        dtype=torch.float32,
         low_cpu_mem_usage=False,   # force real weights, not meta
         device_map=None            # no lazy device map
     )  # stays on CPU
@@ -60,7 +60,7 @@ def _encode_text_cpu(model_root: str, prompt: str, negative: str) -> torch.Tenso
 
 
 def _load_unet_gpu(model_root: str, device: torch.device) -> UNet2DConditionModel:
-    kwargs = dict(torch_dtype=torch.float16, use_safetensors=True)
+    kwargs = dict(dtype=torch.float16, use_safetensors=True)
     try:
         # diffusers >= 0.24 supports this; fastest if flash-attn is available
         kwargs["attn_implementation"] = "flash_attention_2"
@@ -97,7 +97,7 @@ def _load_unet_gpu(model_root: str, device: torch.device) -> UNet2DConditionMode
 def _load_vae_gpu(model_root: str, device: torch.device) -> AutoencoderKL:
     vae = AutoencoderKL.from_pretrained(
         os.path.join(model_root, "vae"),
-        torch_dtype=torch.float16,
+        dtype=torch.float16,
     )
     vae = vae.to(device=device, dtype=torch.float16, memory_format=torch.channels_last).eval()
     return vae

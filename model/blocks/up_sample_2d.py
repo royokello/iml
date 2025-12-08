@@ -1,9 +1,9 @@
-﻿import torch
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from model.blocks.conv_2d import Conv2d
-from model.utils.quantization import quantize_input_and_attach_scale
+
 
 class UpSample2D(nn.Module):
     def __init__(
@@ -26,19 +26,14 @@ class UpSample2D(nn.Module):
         else:
             self.conv = None
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # upsample spatial dims by factor 2 (H,W â†’ 2H,2W)
+    def forward(self, x: torch.Tensor, debug: bool = False) -> torch.Tensor:
         x = F.interpolate(x, scale_factor=2.0, mode="nearest")
 
         if self.conv is not None:
-            print("[debug] upsample conv input stats:", float(x.min()), float(x.max()))
-            tensor_q = quantize_input_and_attach_scale(self.conv, x, channel_dim=1)
-            print(
-                "[debug] upsample conv scale stats:",
-                float(self.conv.scale_x.min()),
-                float(self.conv.scale_x.max()),
-            )
-            x = self.conv(tensor_q)
-            print("[debug] upsample conv output stats:", float(x.min()), float(x.max()))
+            if debug:
+                print("[debug] upsample conv input stats:", float(x.min()), float(x.max()))
+            x = self.conv(x, debug=debug)
+            if debug:
+                print("[debug] upsample conv output stats:", float(x.min()), float(x.max()))
 
         return x

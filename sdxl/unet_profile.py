@@ -27,8 +27,6 @@ def _collect_state_lines() -> list[str]:
     state = unet.state_dict()
     lines = ["name,shape"]
     for name, tensor in state.items():
-        if name.endswith(".scale_x"):
-            continue
         lines.append(_format_tensor_entry(name, tensor))
     return lines
 

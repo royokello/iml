@@ -14,7 +14,6 @@ from model.blocks.down_block_2d import DownBlock2D
 from model.blocks.linear import Linear
 from model.blocks.unet_mid_block_2d_cross_attn import UNetMidBlock2DCrossAttn
 from model.blocks.up_block_2d import UpBlock2D
-from model.utils.quantization import quantize_input_and_attach_scale
 
 
 def load_unet_key_mapping(base_dir: str) -> Dict[str, str]:
@@ -58,11 +57,9 @@ class TimeEmbedding(nn.Module):
         if timesteps.dim() == 0:
             timesteps = timesteps[None]
         emb = timestep_embedding(timesteps, self.input_dim)
-        tensor_q = quantize_input_and_attach_scale(self.linear1, emb, channel_dim=emb.ndim - 1)
-        emb = self.linear1(tensor_q)
+        emb = self.linear1(emb)
         emb = self.act(emb)
-        tensor_q = quantize_input_and_attach_scale(self.linear2, emb, channel_dim=emb.ndim - 1)
-        emb = self.linear2(tensor_q)
+        emb = self.linear2(emb)
         return emb
 
 
@@ -274,8 +271,6 @@ class SDXLUNet(nn.Module):
         missing: list[str] = []
 
         for name, target in state.items():
-            if name.endswith(".scale_x"):
-                continue
             source_name = self._key_mapping.get(name, name)
             tensor = model.get(source_name)
             if tensor is None:
@@ -303,18 +298,18 @@ class SDXLUNet(nn.Module):
         encoder_hidden_states: torch.Tensor,  # [B, T, 2048]
         attention_mask: torch.Tensor | None = None,
         pooled_embeds: torch.Tensor | None = None,  # [B, 2816]
+        debug: bool = False,
     ) -> torch.Tensor:
-        print("[debug] sample stats:", float(sample.min()), float(sample.max()))
-        tensor_q = quantize_input_and_attach_scale(self.conv_in, sample, channel_dim=1)
-        x = self.conv_in(tensor_q)
-        print("[debug] conv_in output stats:", float(x.min()), float(x.max()))
+        if debug:
+            print("[debug] sample stats:", float(sample.min()), float(sample.max()))
+        x = self.conv_in(sample, debug=debug)
+        if debug:
+            print("[debug] conv_in output stats:", float(x.min()), float(x.max()))
         temb = self.time_embed(timesteps)
         if pooled_embeds is not None:
-            print("[debug] pooled_embeds stats:", float(pooled_embeds.min()), float(pooled_embeds.max()))
-            tensor_q = quantize_input_and_attach_scale(
-                self.label_emb[0], pooled_embeds, channel_dim=pooled_embeds.ndim - 1
-            )
-            pooled = self.label_emb(tensor_q)
+            if debug:
+                print("[debug] pooled_embeds stats:", float(pooled_embeds.min()), float(pooled_embeds.max()))
+            pooled = self.label_emb(pooled_embeds)
             temb = temb + pooled
 
         res_hidden_states: list[torch.Tensor] = [x]
@@ -327,10 +322,12 @@ class SDXLUNet(nn.Module):
                     temb,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
+                    debug=debug,
                 )
             else:
-                x, res = block(x, temb)
-            print(f"[debug] down block {idx} output stats:", float(x.min()), float(x.max()))
+                x, res = block(x, temb, debug=debug)
+            if debug:
+                print(f"[debug] down block {idx} output stats:", float(x.min()), float(x.max()))
             res_hidden_states.extend(res)
 
         # mid
@@ -339,8 +336,10 @@ class SDXLUNet(nn.Module):
             temb,
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask,
+            debug=debug,
         )
-        print("[debug] mid block output stats:", float(x.min()), float(x.max()))
+        if debug:
+            print("[debug] mid block output stats:", float(x.min()), float(x.max()))
 
         # up path
         for idx, block in enumerate(self.up_blocks):
@@ -351,20 +350,25 @@ class SDXLUNet(nn.Module):
                     res_hidden_states_list=res_hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
+                    debug=debug,
                 )
             else:
                 x = block(
                     x,
                     temb,
                     res_hidden_states_list=res_hidden_states,
+                    debug=debug,
                 )
-            print(f"[debug] up block {idx} output stats:", float(x.min()), float(x.max()))
+            if debug:
+                print(f"[debug] up block {idx} output stats:", float(x.min()), float(x.max()))
 
         x = self.conv_norm_out(x)
-        print("[debug] conv_norm_out stats:", float(x.min()), float(x.max()))
+        if debug:
+            print("[debug] conv_norm_out stats:", float(x.min()), float(x.max()))
         x = self.conv_act(x)
-        print("[debug] conv_act stats:", float(x.min()), float(x.max()))
-        tensor_q = quantize_input_and_attach_scale(self.conv_out, x, channel_dim=1)
-        x = self.conv_out(tensor_q)
-        print("[debug] conv_out stats:", float(x.min()), float(x.max()))
+        if debug:
+            print("[debug] conv_act stats:", float(x.min()), float(x.max()))
+        x = self.conv_out(x, debug=debug)
+        if debug:
+            print("[debug] conv_out stats:", float(x.min()), float(x.max()))
         return x

@@ -65,6 +65,7 @@ class UpBlock2D(nn.Module):
         x: torch.Tensor,                         # [B, C_in, H, W] current features from previous block
         temb: torch.Tensor,                      # [B, temb_channels] time embedding
         res_hidden_states_list: list[torch.Tensor],  # list/stack of skip connections from down path
+        debug: bool = False,
     ) -> torch.Tensor:
         def pop_matching_skip(target_shape: torch.Size) -> torch.Tensor:
             while res_hidden_states_list:
@@ -78,11 +79,11 @@ class UpBlock2D(nn.Module):
             x = torch.cat([x, res_hidden], dim=1)   # [B, C_in + C_skip, H, W]
 
             # run through ResNet to fuse skip + current and inject time embedding
-            x = resnet(x, temb)                     # [B, out_channels, H, W]
+            x = resnet(x, temb, debug=debug)                     # [B, out_channels, H, W]
 
         # optionally upsample spatial resolution at the end of the block
         for upsampler in self.upsamplers:
-            x = upsampler(x)                        # [B, out_channels, 2H, 2W]
+            x = upsampler(x, debug=debug)                        # [B, out_channels, 2H, 2W]
 
         # return updated features to feed into the next up block
         return x

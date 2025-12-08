@@ -86,13 +86,13 @@ print('Preset:', {k: cfg[k] for k in cfg if k!='prompts'})
 # ────────────────── load tokenizer & text encoder ──────────────────
 TOK = CLIPTokenizer.from_pretrained(os.path.join(args.model, 'tokenizer'))
 TXT = CLIPTextModel.from_pretrained(
-    os.path.join(args.model, 'text_encoder'), torch_dtype=torch.float16
+    os.path.join(args.model, 'text_encoder'), dtype=torch.float16
 ).to(GPU).eval()
 for p in TXT.parameters(): p.requires_grad = False
 
 # ────────────────── load UNet & inject LoRA ──────────────────
 UNET = UNet2DConditionModel.from_pretrained(
-    os.path.join(args.model,'unet'), torch_dtype=torch.float16
+    os.path.join(args.model,'unet'), dtype=torch.float16
 ).to(GPU).train()
 # inject manual LoRA
 TARGETS = ['to_q','to_k','to_v','to_out.0']
@@ -107,7 +107,7 @@ for module in UNET.modules():
 
 # ────────────────── load VAE (CPU) & scheduler ──────────────────
 VAE  = AutoencoderKL.from_pretrained(
-    os.path.join(args.model,'vae'), torch_dtype=torch.float32
+    os.path.join(args.model,'vae'), dtype=torch.float32
 ).to(CPU).eval()
 SCHED= DDIMScheduler.from_pretrained(args.model, subfolder='scheduler')
 

@@ -56,8 +56,9 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         temb: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None = None,
+        debug: bool = False,
     ) -> torch.Tensor:
-        x = self.resnets[0](x, temb)
+        x = self.resnets[0](x, temb, debug=debug)
 
         for attn in self.attentions:
             x = attn(
@@ -66,5 +67,5 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                 attention_mask=attention_mask,
             )
 
-        x = self.resnets[1](x, temb)
+        x = self.resnets[1](x, temb, debug=debug)
         return x

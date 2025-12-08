@@ -36,7 +36,7 @@ class DownBlock2D(nn.Module):
                 Downsample2D(out_channels, use_conv=use_conv_down)
             )
 
-    def forward(self, x: torch.Tensor, temb: torch.Tensor):
+    def forward(self, x: torch.Tensor, temb: torch.Tensor, debug: bool = False):
         """
         Forward pass for DownBlock2D.
 
@@ -51,12 +51,12 @@ class DownBlock2D(nn.Module):
 
         # Pass through ResNet layers
         for resnet in self.resnets:
-            x = resnet(x, temb)
+            x = resnet(x, temb, debug=debug)
             residuals += (x,)
 
         # Optional downsample step
         for downsampler in self.downsamplers:
-            x = downsampler(x)
+            x = downsampler(x, debug=debug)
             residuals += (x,)
 
         return x, residuals

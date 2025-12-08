@@ -64,6 +64,7 @@ class CrossAttnDownBlock2D(nn.Module):
         temb: torch.Tensor,                 # [B, temb_channels]
         encoder_hidden_states: torch.Tensor,# [B, T, cross_attention_dim]
         attention_mask: torch.Tensor | None = None,
+        debug: bool = False,
     ):
         """
         Returns:
@@ -73,7 +74,7 @@ class CrossAttnDownBlock2D(nn.Module):
         res_samples = ()
 
         for resnet, attn in zip(self.resnets, self.attentions):
-            x = resnet(x, temb)  # local conv + time embedding
+            x = resnet(x, temb, debug=debug)  # local conv + time embedding
             x = attn(
                 x,
                 encoder_hidden_states=encoder_hidden_states,
@@ -82,7 +83,7 @@ class CrossAttnDownBlock2D(nn.Module):
             res_samples += (x,)
 
         for downsampler in self.downsamplers:
-            x = downsampler(x)   # optional H,W downsample
+            x = downsampler(x, debug=debug)   # optional H,W downsample
             res_samples += (x,)
 
         return x, res_samples
