@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Tuple
 
 import numpy as np
@@ -11,204 +11,196 @@ from safetensors.numpy import load_file, save_file
 
 INT8_MIN = -128
 INT8_MAX = 127
+SCALE_MIN = 1e-8
+SCALE_SUFFIX = "_scale"
 
-MODULE_PREFIXES = {
-    "text_encoder": (
-        "cond_stage_model.",
-        "conditioner.",
-        "conditioner.embedders.",
-        "text_encoder.",
-        "text_encoder_2.",
-        "clip_l.",
-        "clip_g.",
-    ),
-    "vae": (
-        "first_stage_model.",
-        "vae.",
-        "decoder.",
-        "encoder.",
-        "quant_conv.",
-        "post_quant_conv.",
-        "model_ema.first_stage_model.",
-        "model_ema.vae.",
-    ),
-    "unet": (
-        "model.diffusion_model.",
-        "model_ema.diffusion_model.",
-        "diffusion_model.",
-        "unet.",
-        "control_model.",
-    ),
-}
+UNET_PREFIXES = (
+    "model.diffusion_model.",
+    "model_ema.diffusion_model.",
+    "diffusion_model.",
+    "unet.",
+    "control_model.",
+)
 
 
-@dataclass
-class QuantStats:
-    weights: int = 0
-    biases: int = 0
-    bytes_in: int = 0
-    bytes_out: int = 0
+def _parse_precision(value: str) -> str:
+    value_lower = value.lower()
+    if value_lower not in {"fp16", "fp32", "int8"}:
+        raise argparse.ArgumentTypeError("Precision must be one of: fp16, fp32, int8.")
+    return value_lower
 
 
-def _derive_output_path(input_path: str, out_dir: str) -> str:
+def _derive_output_dir(input_path: str, out_dir: str) -> Path:
     os.makedirs(out_dir, exist_ok=True)
-    base = os.path.basename(input_path.rstrip(os.sep))
-    stem, ext = os.path.splitext(base or "model")
-    ext = ext or ".safetensors"
-    return os.path.join(out_dir, f"{stem}_int8{ext}")
+    if os.path.isdir(input_path):
+        name = Path(input_path).name or "unet"
+    else:
+        name = Path(input_path).stem or "unet"
+    target_dir = Path(out_dir) / f"{name}_unet"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir
 
 
-def _tensor_module(name: str) -> str:
-    for module, prefixes in MODULE_PREFIXES.items():
-        if name.startswith(prefixes):
-            return module
-    return "unet"
+def _is_unet_tensor(name: str) -> bool:
+    return name.startswith(UNET_PREFIXES)
 
 
-def _quantize_int8_sym(tensor: np.ndarray) -> Tuple[np.ndarray, float, float]:
+def _target_precision(name: str, base: str, to_q: str, to_k: str) -> str:
+    if "to_q" in name:
+        return to_q
+    if "to_k" in name:
+        return to_k
+    return base
+
+
+def _quantize_int8(tensor: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     arr32 = np.asarray(tensor, dtype=np.float32)
-    amax = float(np.max(np.abs(arr32))) if arr32.size else 0.0
-    if amax == 0.0:
-        scale = 1.0
-    else:
-        scale = amax / INT8_MAX
-    if arr32.size:
-        q = np.clip(np.rint(arr32 / scale), INT8_MIN, INT8_MAX).astype(np.int8)
-    else:
-        q = arr32.astype(np.int8)
-    return q, scale, amax
+    if not arr32.size:
+        scale_shape = arr32.shape[:1] if arr32.ndim else ()
+        return arr32.astype(np.int8), np.ones(scale_shape, dtype=np.float16)
+
+    if arr32.ndim == 0:
+        max_abs = float(np.abs(arr32))
+        scale = np.array(max(max_abs / 127.0, SCALE_MIN), dtype=np.float32)
+        quantized = np.clip(np.rint(arr32 / scale), INT8_MIN, INT8_MAX).astype(np.int8)
+        return quantized, np.asarray(scale, dtype=np.float16)
+
+    if arr32.ndim == 1:
+        max_abs = np.abs(arr32)
+        scales = np.maximum(max_abs / 127.0, SCALE_MIN)
+        quantized = np.clip(np.rint(arr32 / scales), INT8_MIN, INT8_MAX).astype(np.int8)
+        return quantized, scales.astype(np.float16)
+
+    reduce_axes = tuple(range(1, arr32.ndim))
+    max_abs = np.max(np.abs(arr32), axis=reduce_axes, keepdims=False)
+    scales = np.maximum(max_abs / 127.0, SCALE_MIN)
+    reshape = (scales.shape[0],) + (1,) * (arr32.ndim - 1)
+    quantized = np.clip(
+        np.rint(arr32 / scales.reshape(reshape)),
+        INT8_MIN,
+        INT8_MAX,
+    ).astype(np.int8)
+    return quantized, scales.astype(np.float16)
 
 
-def _quantize_int8_sym_per_channel(
-    tensor: np.ndarray, axis: int
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    arr32 = np.asarray(tensor, dtype=np.float32)
-    ndim = arr32.ndim
-    if ndim == 0:
-        raise ValueError("Per-channel quantization requires at least 1D tensors.")
-    axis_mod = axis % ndim
-    if arr32.size == 0:
-        q = arr32.astype(np.int8)
-        scale = np.ones(arr32.shape[axis_mod], dtype=np.float32)
-        amax = np.zeros(arr32.shape[axis_mod], dtype=np.float32)
-        return q, scale, amax
-
-    reduce_axes = tuple(i for i in range(ndim) if i != axis_mod)
-    if reduce_axes:
-        amax = np.max(np.abs(arr32), axis=reduce_axes, keepdims=False)
-    else:
-        amax = np.abs(arr32)
-
-    amax_safe = np.where(amax == 0.0, 1.0, amax)
-    scale = amax_safe / INT8_MAX
-
-    scale_shape = [1] * ndim
-    scale_shape[axis_mod] = arr32.shape[axis_mod]  # broadcast target axis only
-    scale_reshaped = scale.reshape(scale_shape)
-
-    q = np.clip(np.rint(arr32 / scale_reshaped), INT8_MIN, INT8_MAX).astype(np.int8)
-    return q, scale.astype(np.float32), amax.astype(np.float32)
+def _cast_tensor(tensor: np.ndarray, precision: str) -> Tuple[np.ndarray, np.ndarray | None]:
+    if precision == "int8":
+        return _quantize_int8(tensor)
+    if precision == "fp16":
+        return np.asarray(tensor, dtype=np.float16), None
+    return np.asarray(tensor, dtype=np.float32), None
 
 
-def _strip_suffix(name: str, suffix: str) -> str:
-    if name.endswith(suffix):
-        return name[: -len(suffix)]
-    return name
+def _convert_unet_tensors(
+    tensors: Dict[str, np.ndarray], base_precision: str, to_q_precision: str, to_k_precision: str
+) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+    converted: Dict[str, np.ndarray] = {}
+    scales: Dict[str, np.ndarray] = {}
+    for name, tensor in tensors.items():
+        precision = _target_precision(name, base_precision, to_q_precision, to_k_precision)
+        cast_tensor, scale = _cast_tensor(tensor, precision)
+        converted[name] = cast_tensor
+        if scale is not None:
+            scales[f"{name}{SCALE_SUFFIX}"] = scale
+    return converted, scales
 
 
-def _weight_kind(name: str, tensor: np.ndarray) -> str | None:
-    if _tensor_module(name) != "unet":
-        return None
-    if not name.endswith(".weight"):
-        return None
-    if tensor.ndim == 4:
-        return "conv2d"
-    if tensor.ndim == 2:
-        return "linear"
-    return None
+def _bytes_to_mb(num_bytes: int) -> float:
+    return num_bytes / (1024 * 1024)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Quantize SDXL UNet Conv/Linear weights.")
-    parser.add_argument("--input", required=True, help="Path to a single .safetensors checkpoint.")
+    parser = argparse.ArgumentParser(
+        description="Extract and quantize UNet tensors (int8 weights include per-channel fp16 scales)."
+    )
+    parser.add_argument(
+        "--input",
+        required=True,
+        help="Path to a Diffusers UNet directory (root repo or containing diffusion_pytorch_model.safetensors).",
+    )
     parser.add_argument(
         "--output",
-        required=True,
-        help="Directory where the quantized checkpoint is written.",
+        help="Directory where the UNet safetensors file will be written (default: required unless --inplace).",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--inplace",
+        action="store_true",
+        help="Overwrite the UNet safetensors referenced by --input instead of writing to --output.",
+    )
+    parser.add_argument(
+        "--base-precision",
+        default="fp16",
+        type=_parse_precision,
+        help="Precision for tensors that are not to_q or to_k (default: fp16).",
+    )
+    parser.add_argument(
+        "--to-q-precision",
+        default="int8",
+        type=_parse_precision,
+        help="Precision override for to_q tensors (default: int8).",
+    )
+    parser.add_argument(
+        "--to-k-precision",
+        default="int8",
+        type=_parse_precision,
+        help="Precision override for to_k tensors (default: int8).",
+    )
+    args = parser.parse_args()
+    if not args.inplace and not args.output:
+        parser.error("--output is required unless --inplace is provided.")
+    return args
+
+
+def _resolve_input_path(input_arg: str) -> str:
+    path = Path(input_arg)
+    if not path.exists():
+        raise SystemExit(f"Missing UNet directory: {input_arg}")
+    if not path.is_dir():
+        raise SystemExit("--input must be a directory that contains a Diffusers UNet.")
+
+    direct = path / "diffusion_pytorch_model.safetensors"
+    nested = path / "unet" / "diffusion_pytorch_model.safetensors"
+    for candidate in (direct, nested):
+        if candidate.is_file():
+            return str(candidate)
+    raise SystemExit(
+        "Could not find UNet safetensors in directory: "
+        f"{direct if direct.exists() else nested}"
+    )
 
 
 def main() -> None:
     args = parse_args()
-    if not os.path.isfile(args.input):
-        raise SystemExit(f"Missing checkpoint: {args.input}")
-    if not args.input.endswith(".safetensors"):
-        raise SystemExit("Only .safetensors inputs are supported.")
+    resolved_input = _resolve_input_path(args.input)
 
-    tensors = load_file(args.input)
-    weight_kinds: Dict[str, str] = {}
-    for name, tensor in tensors.items():
-        kind = _weight_kind(name, tensor)
-        if kind:
-            weight_kinds[name] = kind
+    tensors = load_file(resolved_input)
+    unet_tensors = {name: tensor for name, tensor in tensors.items() if _is_unet_tensor(name)}
+    if not unet_tensors:
+        unet_tensors = tensors
+    original_bytes = sum(tensor.nbytes for tensor in unet_tensors.values())
 
-    base_kind = { _strip_suffix(name, ".weight"): kind for name, kind in weight_kinds.items() }
-    stats: Dict[str, QuantStats] = {kind: QuantStats() for kind in ("conv2d", "linear")}
-    updated: Dict[str, np.ndarray] = {}
+    converted, scale_tensors = _convert_unet_tensors(
+        unet_tensors, args.base_precision, args.to_q_precision, args.to_k_precision
+    )
+    all_tensors: Dict[str, np.ndarray] = {**converted, **scale_tensors}
+    if args.inplace:
+        out_path = Path(resolved_input)
+    else:
+        out_dir = _derive_output_dir(args.input, args.output)
+        out_path = out_dir / "diffusion_pytorch_model.safetensors"
+    save_file(all_tensors, str(out_path))
 
-    for name, tensor in tensors.items():
-        if name in weight_kinds:
-            kind = weight_kinds[name]
-            base = _strip_suffix(name, ".weight")
-            if kind in ("conv2d", "linear"):
-                q_weight, scale_vec, amax_vec = _quantize_int8_sym_per_channel(
-                    tensor, axis=0
-                )
-                updated[f"{base}.weight_q"] = q_weight
-                updated[f"{base}.scale_w"] = scale_vec.astype(np.float16)
-            else:
-                q_weight, scale, amax = _quantize_int8_sym(tensor)
-                updated[f"{base}.weight_q"] = q_weight
-                updated[f"{base}.scale_w"] = np.asarray(scale, dtype=np.float16)
+    new_bytes = sum(tensor.nbytes for tensor in all_tensors.values())
+    fp16_count = sum(1 for tensor in converted.values() if tensor.dtype == np.float16)
+    int8_count = sum(1 for tensor in converted.values() if tensor.dtype == np.int8)
+    scale_count = len(scale_tensors)
 
-            stats[kind].weights += 1
-            stats[kind].bytes_in += tensor.nbytes
-            stats[kind].bytes_out += (
-                q_weight.nbytes + updated[f"{base}.scale_w"].nbytes
-            )
-
-            print(
-                f"[quant] {name} kind={kind} "
-                f"amax={float(np.max(amax_vec) if kind in ('conv2d', 'linear') else amax):.4g} "
-                f"scale_shape={updated[f'{base}.scale_w'].shape} "
-                f"{tensor.dtype}->{q_weight.dtype}"
-            )
-            continue
-
-        if name.endswith(".bias"):
-            base = _strip_suffix(name, ".bias")
-            kind = base_kind.get(base)
-            if kind and tensor.dtype.kind == "f":
-                updated[name] = tensor.astype(np.float16, copy=False)
-                stats[kind].biases += 1
-                continue
-
-        updated[name] = tensor
-
-    out_path = _derive_output_path(args.input, args.output)
-    save_file(updated, out_path)
-
-    for kind, kind_stats in stats.items():
-        if not kind_stats.weights:
-            continue
-        print(
-            f"[{kind}] weights={kind_stats.weights} "
-            f"biases={kind_stats.biases} "
-            f"bytes {kind_stats.bytes_in}->{kind_stats.bytes_out}"
-        )
-
-    print(f"[path] {out_path}")
+    print(f"[unet] saved {len(all_tensors)} tensors (including scales) to {out_path}")
+    print(
+        "[summary] weights="
+        f"{len(converted)} scales={scale_count} fp16={fp16_count} int8={int8_count} "
+        f"size={_bytes_to_mb(original_bytes):.2f}MB->{_bytes_to_mb(new_bytes):.2f}MB"
+    )
 
 
 if __name__ == "__main__":

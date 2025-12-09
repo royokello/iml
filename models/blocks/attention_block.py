@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.blocks.linear import Linear
+from models.blocks.linear import LinearFP16, LinearInt8
 
 
 class AttentionBlock(nn.Module):
@@ -24,28 +24,30 @@ class AttentionBlock(nn.Module):
 
         self.cross_attention_dim = cross_attention_dim or dim
 
-        self.to_q = Linear(
+        self.to_q = LinearInt8(
             in_features=dim,
             out_features=self.inner_dim,
             bias=False,
         )
-        self.to_k = Linear(
+        self.to_k = LinearInt8(
             in_features=self.cross_attention_dim,
             out_features=self.inner_dim,
             bias=False,
         )
-        self.to_v = Linear(
+        self.to_v = LinearFP16(
             in_features=self.cross_attention_dim,
             out_features=self.inner_dim,
             bias=False,
         )
 
-        self.proj_out = Linear(
-            in_features=self.inner_dim,
-            out_features=dim,
-            bias=True,
+        self.to_out = nn.Sequential(
+            LinearFP16(
+                in_features=self.inner_dim,
+                out_features=dim,
+                bias=True,
+            ),
+            nn.Dropout(dropout),
         )
-        self.out_dropout = nn.Dropout(dropout)
 
         self.scale = self.head_dim ** -0.5
 
@@ -86,7 +88,6 @@ class AttentionBlock(nn.Module):
         attn_output = attn_output.transpose(1, 2).contiguous()
         attn_output = attn_output.view(bsz, q_len, self.inner_dim)
 
-        attn_output = self.proj_out(attn_output)
-        attn_output = self.out_dropout(attn_output)
+        attn_output = self.to_out(attn_output)
 
         return attn_output

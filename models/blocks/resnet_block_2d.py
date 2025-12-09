@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 
-from model.blocks.conv_2d import Conv2d
-from model.blocks.linear import Linear
+from models.blocks.conv_2d import Conv2d
+from models.blocks.linear import LinearFP16
 
 
 class ResnetBlock2D(nn.Module):
@@ -22,7 +22,7 @@ class ResnetBlock2D(nn.Module):
         self.norm1 = nn.GroupNorm(num_groups, in_channels, eps=1e-5, affine=True)
         self.conv1 = Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
 
-        self.time_emb_proj = Linear(
+        self.time_emb_proj = LinearFP16(
             in_features=temb_channels,
             out_features=out_channels,
             bias=True,

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from model.blocks.conv_2d import Conv2d
+from models.blocks.conv_2d import Conv2d
 
 
 class Downsample2D(nn.Module):

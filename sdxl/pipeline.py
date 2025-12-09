@@ -306,7 +306,7 @@ class StableDiffusionXLPipeline(
         add_time_ids = list(original_size + crops_coords_top_left + target_size)
 
         passed_add_embed_dim = (
-            self.unet.config.addition_time_embed_dim * len(add_time_ids) + text_encoder_projection_dim
+            256 * len(add_time_ids) + text_encoder_projection_dim  # SDXL UNet addition time embed dim is fixed at 256
         )
         expected_add_embed_dim = self.unet.add_embedding.linear_1.in_features
 
@@ -442,7 +442,7 @@ class StableDiffusionXLPipeline(
         )
 
         # 5. Prepare latent variables
-        num_channels_latents = self.unet.config.in_channels
+        num_channels_latents = 4  # SDXLUNet uses four latent channels
         latents = self.prepare_latents(
             batch_size,
             num_channels_latents,

@@ -1,19 +1,20 @@
 import json
 import math
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.blocks.conv_2d import Conv2d
-from model.blocks.cross_attn_down_block_2d import CrossAttnDownBlock2D
-from model.blocks.cross_attn_up_block_2d import CrossAttnUpBlock2D
-from model.blocks.down_block_2d import DownBlock2D
-from model.blocks.linear import Linear
-from model.blocks.unet_mid_block_2d_cross_attn import UNetMidBlock2DCrossAttn
-from model.blocks.up_block_2d import UpBlock2D
+from models.blocks.conv_2d import Conv2d
+from models.blocks.cross_attn_down_block_2d import CrossAttnDownBlock2D
+from models.blocks.cross_attn_up_block_2d import CrossAttnUpBlock2D
+from models.blocks.down_block_2d import DownBlock2D
+from models.blocks.linear import LinearFP16, LinearInt8
+from models.blocks.unet_mid_block_2d_cross_attn import UNetMidBlock2DCrossAttn
+from models.blocks.up_block_2d import UpBlock2D
+from models.embeddings import GaussianFourierProjection, ImageProjection, TextImageProjection, TextImageTimeEmbedding, TextTimeEmbedding, TimestepEmbedding, Timesteps, get_activation
 
 
 def load_unet_key_mapping(base_dir: str) -> Dict[str, str]:
@@ -41,12 +42,12 @@ class TimeEmbedding(nn.Module):
         super().__init__()
         self.input_dim = input_dim
         self.embed_dim = embed_dim
-        self.linear1 = Linear(
+        self.linear_1 = LinearFP16(
             in_features=input_dim,
             out_features=embed_dim,
             bias=True,
         )
-        self.linear2 = Linear(
+        self.linear_2 = LinearFP16(
             in_features=embed_dim,
             out_features=embed_dim,
             bias=True,
@@ -57,10 +58,32 @@ class TimeEmbedding(nn.Module):
         if timesteps.dim() == 0:
             timesteps = timesteps[None]
         emb = timestep_embedding(timesteps, self.input_dim)
-        emb = self.linear1(emb)
+        emb = self.linear_1(emb)
         emb = self.act(emb)
-        emb = self.linear2(emb)
+        emb = self.linear_2(emb)
         return emb
+
+
+class AddEmbedding(nn.Module):
+    def __init__(self, input_dim: int, embed_dim: int):
+        super().__init__()
+        self.linear_1 = LinearFP16(
+            in_features=input_dim,
+            out_features=embed_dim,
+            bias=True,
+        )
+        self.linear_2 = LinearFP16(
+            in_features=embed_dim,
+            out_features=embed_dim,
+            bias=True,
+        )
+        self.act = nn.SiLU()
+
+    def forward(self, embeds: torch.Tensor) -> torch.Tensor:
+        x = self.linear_1(embeds)
+        x = self.act(x)
+        x = self.linear_2(x)
+        return x
 
 
 class SDXLUNet(nn.Module):
@@ -80,6 +103,78 @@ class SDXLUNet(nn.Module):
         self.time_embed_dim = 1280
         self.cross_attention_dim = 2048
         self.attention_head_dim = 64
+
+        # Hard-coded SDXL defaults for the inherited Diffusers helpers.
+        time_embedding_type = "fourier"
+        block_out_channels = self.block_out_channels
+        flip_sin_to_cos = True
+        freq_shift = 0
+        time_embedding_dim = self.time_embed_dim
+        act_fn = "silu"
+        timestep_post_act = None
+        time_cond_proj_dim = None
+        encoder_hid_dim_type = None
+        encoder_hid_dim = None
+        class_embed_type = None
+        num_class_embeds = None
+        projection_class_embeddings_input_dim = 1280
+        addition_embed_type = "text_time"
+        addition_embed_type_num_heads = 64
+        addition_time_embed_dim = 256
+        time_embedding_act_fn = None
+        cross_attention_dim = 2048
+
+        # time
+        time_embed_dim, timestep_input_dim = self._set_time_proj(
+            time_embedding_type,
+            block_out_channels=block_out_channels,
+            flip_sin_to_cos=flip_sin_to_cos,
+            freq_shift=freq_shift,
+            time_embedding_dim=time_embedding_dim,
+        )
+
+        self.time_embedding = TimestepEmbedding(
+            timestep_input_dim,
+            time_embed_dim,
+            act_fn=act_fn,
+            post_act_fn=timestep_post_act,
+            cond_proj_dim=time_cond_proj_dim,
+        )
+
+        self._set_encoder_hid_proj(
+            encoder_hid_dim_type,
+            cross_attention_dim=cross_attention_dim,
+            encoder_hid_dim=encoder_hid_dim,
+        )
+
+        # class embedding
+        self._set_class_embedding(
+            class_embed_type,
+            act_fn=act_fn,
+            num_class_embeds=num_class_embeds,
+            projection_class_embeddings_input_dim=projection_class_embeddings_input_dim,
+            time_embed_dim=time_embed_dim,
+            timestep_input_dim=timestep_input_dim,
+        )
+
+        self._set_add_embedding(
+            addition_embed_type,
+            addition_embed_type_num_heads=addition_embed_type_num_heads,
+            addition_time_embed_dim=addition_time_embed_dim,
+            cross_attention_dim=cross_attention_dim,
+            encoder_hid_dim=encoder_hid_dim,
+            flip_sin_to_cos=flip_sin_to_cos,
+            freq_shift=freq_shift,
+            projection_class_embeddings_input_dim=projection_class_embeddings_input_dim,
+            time_embed_dim=time_embed_dim,
+        )
+
+        if time_embedding_act_fn is None:
+            self.time_embed_act = None
+        else:
+            self.time_embed_act = get_activation(time_embedding_act_fn)
+
+
         # 1) input conv
         self.conv_in = Conv2d(
             in_channels=self.in_channels,
@@ -90,12 +185,12 @@ class SDXLUNet(nn.Module):
         )
 
         # 2) time embedding
-        self.time_embed = TimeEmbedding(self.block_out_channels[0], self.time_embed_dim)
+        self.time_embedding = TimeEmbedding(
+            self.block_out_channels[0], self.time_embed_dim
+        )
         self.label_emb_in_dim = 2816
-        self.label_emb = nn.Sequential(
-            Linear(self.label_emb_in_dim, self.time_embed_dim, bias=True),
-            nn.SiLU(),
-            Linear(self.time_embed_dim, self.time_embed_dim, bias=True),
+        self.add_embedding = AddEmbedding(
+            self.label_emb_in_dim, self.time_embed_dim
         )
 
         # 3) down blocks
@@ -269,106 +364,398 @@ class SDXLUNet(nn.Module):
         updated: dict[str, torch.Tensor] = {}
         matched = 0
         missing: list[str] = []
+        missing_details: list[tuple[str, tuple[int, ...]]] = []
 
         for name, target in state.items():
             source_name = self._key_mapping.get(name, name)
             tensor = model.get(source_name)
             if tensor is None:
                 missing.append(f"{name} (looked for {source_name})")
+                missing_details.append((name, tuple(int(dim) for dim in target.shape)))
                 continue
 
             updated[name] = tensor.to(dtype=target.dtype)
             matched += 1
 
         missing_count = len(missing)
-        print(f"[unet-load] matched={matched}, missing={missing_count}")
+        total_expected = len(state)
+
         if missing_count:
-            missing_keys = ", ".join(missing)
-            raise SystemExit(
-                f"[unet-load] aborting because tensors are missing: {missing_keys}"
-            )
+            for tensor_name, tensor_shape in missing_details:
+                print(f"[unet-load-missing] {tensor_name}: shape={tensor_shape}")
+            print(f"[unet-load] matched={matched}, missing={missing_count}")
+            print(f"[unet-load] expected={total_expected}, loaded={matched}")
+            raise SystemExit("[unet-load] aborting because tensors are missing (see above)")
+        else:
+            print(f"[unet-load] matched={matched}, missing={missing_count}")
+            print(f"[unet-load] expected={total_expected}, loaded={matched}")
 
         state.update(updated)
         self.load_state_dict(state, strict=False)
 
+        for module in self.modules():
+            if isinstance(module, LinearInt8):
+                module._weights_loaded = True
+
+    def get_time_embed(
+        self, sample: torch.Tensor, timestep: Union[torch.Tensor, float, int]
+    ) -> Optional[torch.Tensor]:
+        timesteps = timestep
+        if not torch.is_tensor(timesteps):
+            # TODO: this requires sync between CPU and GPU. So try to pass timesteps as tensors if you can
+            # This would be a good case for the `match` statement (Python 3.10+)
+            is_mps = sample.device.type == "mps"
+            is_npu = sample.device.type == "npu"
+            if isinstance(timestep, float):
+                dtype = torch.float32 if (is_mps or is_npu) else torch.float64
+            else:
+                dtype = torch.int32 if (is_mps or is_npu) else torch.int64
+            timesteps = torch.tensor([timesteps], dtype=dtype, device=sample.device)
+        elif len(timesteps.shape) == 0:
+            timesteps = timesteps[None].to(sample.device)
+
+        # broadcast to batch dimension in a way that's compatible with ONNX/Core ML
+        timesteps = timesteps.expand(sample.shape[0])
+
+        t_emb = self.time_proj(timesteps)
+        # `Timesteps` does not contain any weights and will always return f32 tensors
+        # but time_embedding might actually be running in fp16. so we need to cast here.
+        # there might be better ways to encapsulate this.
+        t_emb = t_emb.to(dtype=sample.dtype)
+        return t_emb
+    
+    def get_class_embed(self, sample: torch.Tensor, class_labels: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        class_emb = None
+        if self.class_embedding is not None:
+            if class_labels is None:
+                raise ValueError("class_labels should be provided when num_class_embeds > 0")
+
+            if self.config.class_embed_type == "timestep":
+                class_labels = self.time_proj(class_labels)
+
+                # `Timesteps` does not contain any weights and will always return f32 tensors
+                # there might be better ways to encapsulate this.
+                class_labels = class_labels.to(dtype=sample.dtype)
+
+            class_emb = self.class_embedding(class_labels).to(dtype=sample.dtype)
+        return class_emb
+    
+    def _set_time_proj(
+        self,
+        time_embedding_type: str,
+        block_out_channels: int,
+        flip_sin_to_cos: bool,
+        freq_shift: float,
+        time_embedding_dim: int,
+    ) -> Tuple[int, int]:
+        if time_embedding_type == "fourier":
+            time_embed_dim = time_embedding_dim or block_out_channels[0] * 2
+            if time_embed_dim % 2 != 0:
+                raise ValueError(f"`time_embed_dim` should be divisible by 2, but is {time_embed_dim}.")
+            self.time_proj = GaussianFourierProjection(
+                time_embed_dim // 2, set_W_to_weight=False, log=False, flip_sin_to_cos=flip_sin_to_cos
+            )
+            timestep_input_dim = time_embed_dim
+        elif time_embedding_type == "positional":
+            time_embed_dim = time_embedding_dim or block_out_channels[0] * 4
+
+            self.time_proj = Timesteps(block_out_channels[0], flip_sin_to_cos, freq_shift)
+            timestep_input_dim = block_out_channels[0]
+        else:
+            raise ValueError(
+                f"{time_embedding_type} does not exist. Please make sure to use one of `fourier` or `positional`."
+            )
+
+        return time_embed_dim, timestep_input_dim
+
+    def _set_encoder_hid_proj(
+        self,
+        encoder_hid_dim_type: Optional[str],
+        cross_attention_dim: Union[int, Tuple[int]],
+        encoder_hid_dim: Optional[int],
+    ):
+        if encoder_hid_dim_type is None and encoder_hid_dim is not None:
+            encoder_hid_dim_type = "text_proj"
+            self.register_to_config(encoder_hid_dim_type=encoder_hid_dim_type)
+
+        if encoder_hid_dim is None and encoder_hid_dim_type is not None:
+            raise ValueError(
+                f"`encoder_hid_dim` has to be defined when `encoder_hid_dim_type` is set to {encoder_hid_dim_type}."
+            )
+
+        if encoder_hid_dim_type == "text_proj":
+            self.encoder_hid_proj = nn.Linear(encoder_hid_dim, cross_attention_dim)
+        elif encoder_hid_dim_type == "text_image_proj":
+            # image_embed_dim DOESN'T have to be `cross_attention_dim`. To not clutter the __init__ too much
+            # they are set to `cross_attention_dim` here as this is exactly the required dimension for the currently only use
+            # case when `addition_embed_type == "text_image_proj"` (Kandinsky 2.1)`
+            self.encoder_hid_proj = TextImageProjection(
+                text_embed_dim=encoder_hid_dim,
+                image_embed_dim=cross_attention_dim,
+                cross_attention_dim=cross_attention_dim,
+            )
+        elif encoder_hid_dim_type == "image_proj":
+            # Kandinsky 2.2
+            self.encoder_hid_proj = ImageProjection(
+                image_embed_dim=encoder_hid_dim,
+                cross_attention_dim=cross_attention_dim,
+            )
+        elif encoder_hid_dim_type is not None:
+            raise ValueError(
+                f"`encoder_hid_dim_type`: {encoder_hid_dim_type} must be None, 'text_proj', 'text_image_proj', or 'image_proj'."
+            )
+        else:
+            self.encoder_hid_proj = None
+
+    def _set_class_embedding(
+        self,
+        class_embed_type: Optional[str],
+        act_fn: str,
+        num_class_embeds: Optional[int],
+        projection_class_embeddings_input_dim: Optional[int],
+        time_embed_dim: int,
+        timestep_input_dim: int,
+    ):
+        if class_embed_type is None and num_class_embeds is not None:
+            self.class_embedding = nn.Embedding(num_class_embeds, time_embed_dim)
+        elif class_embed_type == "timestep":
+            self.class_embedding = TimestepEmbedding(timestep_input_dim, time_embed_dim, act_fn=act_fn)
+        elif class_embed_type == "identity":
+            self.class_embedding = nn.Identity(time_embed_dim, time_embed_dim)
+        elif class_embed_type == "projection":
+            if projection_class_embeddings_input_dim is None:
+                raise ValueError(
+                    "`class_embed_type`: 'projection' requires `projection_class_embeddings_input_dim` be set"
+                )
+            # The projection `class_embed_type` is the same as the timestep `class_embed_type` except
+            # 1. the `class_labels` inputs are not first converted to sinusoidal embeddings
+            # 2. it projects from an arbitrary input dimension.
+            #
+            # Note that `TimestepEmbedding` is quite general, being mainly linear layers and activations.
+            # When used for embedding actual timesteps, the timesteps are first converted to sinusoidal embeddings.
+            # As a result, `TimestepEmbedding` can be passed arbitrary vectors.
+            self.class_embedding = TimestepEmbedding(projection_class_embeddings_input_dim, time_embed_dim)
+        elif class_embed_type == "simple_projection":
+            if projection_class_embeddings_input_dim is None:
+                raise ValueError(
+                    "`class_embed_type`: 'simple_projection' requires `projection_class_embeddings_input_dim` be set"
+                )
+            self.class_embedding = nn.Linear(projection_class_embeddings_input_dim, time_embed_dim)
+        else:
+            self.class_embedding = None
+
+    def _set_add_embedding(
+        self,
+        addition_embed_type: str,
+        addition_embed_type_num_heads: int,
+        addition_time_embed_dim: Optional[int],
+        flip_sin_to_cos: bool,
+        freq_shift: float,
+        cross_attention_dim: Optional[int],
+        encoder_hid_dim: Optional[int],
+        projection_class_embeddings_input_dim: Optional[int],
+        time_embed_dim: int,
+    ):
+        if addition_embed_type == "text":
+            if encoder_hid_dim is not None:
+                text_time_embedding_from_dim = encoder_hid_dim
+            else:
+                text_time_embedding_from_dim = cross_attention_dim
+
+            self.add_embedding = TextTimeEmbedding(
+                text_time_embedding_from_dim, time_embed_dim, num_heads=addition_embed_type_num_heads
+            )
+        elif addition_embed_type == "text_image":
+            # text_embed_dim and image_embed_dim DON'T have to be `cross_attention_dim`. To not clutter the __init__ too much
+            # they are set to `cross_attention_dim` here as this is exactly the required dimension for the currently only use
+            # case when `addition_embed_type == "text_image"` (Kandinsky 2.1)`
+            self.add_embedding = TextImageTimeEmbedding(
+                text_embed_dim=cross_attention_dim, image_embed_dim=cross_attention_dim, time_embed_dim=time_embed_dim
+            )
+        elif addition_embed_type == "text_time":
+            self.add_time_proj = Timesteps(addition_time_embed_dim, flip_sin_to_cos, freq_shift)
+            self.add_embedding = TimestepEmbedding(projection_class_embeddings_input_dim, time_embed_dim)
+        elif addition_embed_type == "image":
+            # Kandinsky 2.2
+            self.add_embedding = ImageTimeEmbedding(image_embed_dim=encoder_hid_dim, time_embed_dim=time_embed_dim)
+        elif addition_embed_type == "image_hint":
+            # Kandinsky 2.2 ControlNet
+            self.add_embedding = ImageHintTimeEmbedding(image_embed_dim=encoder_hid_dim, time_embed_dim=time_embed_dim)
+        elif addition_embed_type is not None:
+            raise ValueError(
+                f"`addition_embed_type`: {addition_embed_type} must be None, 'text', 'text_image', 'text_time', 'image', or 'image_hint'."
+            )
+        
     def forward(
         self,
-        sample: torch.Tensor,                 # [B, 4, H, W]
-        timesteps: torch.Tensor,              # [B] or scalar
-        encoder_hidden_states: torch.Tensor,  # [B, T, 2048]
-        attention_mask: torch.Tensor | None = None,
-        pooled_embeds: torch.Tensor | None = None,  # [B, 2816]
-        debug: bool = False,
+        sample: torch.Tensor,
+        timestep: Union[torch.Tensor, float, int],
+        encoder_hidden_states: torch.Tensor,
+        class_labels: Optional[torch.Tensor] = None,
+        timestep_cond: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        cross_attention_kwargs: Optional[Dict[str, Any]] = None,
+        added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
+        down_block_additional_residuals: Optional[Tuple[torch.Tensor]] = None,
+        mid_block_additional_residual: Optional[torch.Tensor] = None,
+        down_intrablock_additional_residuals: Optional[Tuple[torch.Tensor]] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
+        return_dict: bool = True,
     ) -> torch.Tensor:
-        if debug:
-            print("[debug] sample stats:", float(sample.min()), float(sample.max()))
-        x = self.conv_in(sample, debug=debug)
-        if debug:
-            print("[debug] conv_in output stats:", float(x.min()), float(x.max()))
-        temb = self.time_embed(timesteps)
-        if pooled_embeds is not None:
-            if debug:
-                print("[debug] pooled_embeds stats:", float(pooled_embeds.min()), float(pooled_embeds.max()))
-            pooled = self.label_emb(pooled_embeds)
-            temb = temb + pooled
+        r"""
+        The [`UNet2DConditionModel`] forward method.
+
+        Args:
+            sample (`torch.Tensor`):
+                The noisy input tensor with the following shape `(batch, channel, height, width)`.
+            timestep (`torch.Tensor` or `float` or `int`): The number of timesteps to denoise an input.
+            encoder_hidden_states (`torch.Tensor`):
+                The encoder hidden states with shape `(batch, sequence_length, feature_dim)`.
+            class_labels (`torch.Tensor`, *optional*, defaults to `None`):
+                Optional class labels for conditioning. Their embeddings will be summed with the timestep embeddings.
+            timestep_cond: (`torch.Tensor`, *optional*, defaults to `None`):
+                Conditional embeddings for timestep. If provided, the embeddings will be summed with the samples passed
+                through the `self.time_embedding` layer to obtain the timestep embeddings.
+            attention_mask (`torch.Tensor`, *optional*, defaults to `None`):
+                An attention mask of shape `(batch, key_tokens)` is applied to `encoder_hidden_states`. If `1` the mask
+                is kept, otherwise if `0` it is discarded. Mask will be converted into a bias, which adds large
+                negative values to the attention scores corresponding to "discard" tokens.
+            cross_attention_kwargs (`dict`, *optional*):
+                A kwargs dictionary that if specified is passed along to the `AttentionProcessor` as defined under
+                `self.processor` in
+                [diffusers.models.attention_processor](https://github.com/huggingface/diffusers/blob/main/src/diffusers/models/attention_processor.py).
+            added_cond_kwargs: (`dict`, *optional*):
+                A kwargs dictionary containing additional embeddings that if specified are added to the embeddings that
+                are passed along to the UNet blocks.
+            down_block_additional_residuals: (`tuple` of `torch.Tensor`, *optional*):
+                A tuple of tensors that if specified are added to the residuals of down unet blocks.
+            mid_block_additional_residual: (`torch.Tensor`, *optional*):
+                A tensor that if specified is added to the residual of the middle unet block.
+            down_intrablock_additional_residuals (`tuple` of `torch.Tensor`, *optional*):
+                additional residuals to be added within UNet down blocks, for example from T2I-Adapter side model(s)
+            encoder_attention_mask (`torch.Tensor`):
+                A cross-attention mask of shape `(batch, sequence_length)` is applied to `encoder_hidden_states`. If
+                `True` the mask is kept, otherwise if `False` it is discarded. Mask will be converted into a bias,
+                which adds large negative values to the attention scores corresponding to "discard" tokens.
+            return_dict (`bool`, *optional*, defaults to `True`):
+                Whether or not to return a [`~models.unets.unet_2d_condition.UNet2DConditionOutput`] instead of a plain
+                tuple.
+
+        Returns:
+            torch.Tensor
+        """
+
+        # SDXL-base UNet always applies two upsampling stages, so overall factor is fixed.
+        default_overall_up_factor = 4
+
+        # upsample size should be forwarded when sample is not a multiple of `default_overall_up_factor`
+        forward_upsample_size = False
+        upsample_size = None
+
+        for dim in sample.shape[-2:]:
+            if dim % default_overall_up_factor != 0:
+                # Forward upsample size to force interpolation output size.
+                forward_upsample_size = True
+                break
+
+        # ensure attention_mask is a bias, and give it a singleton query_tokens dimension
+        # expects mask of shape:
+        #   [batch, key_tokens]
+        # adds singleton query_tokens dimension:
+        #   [batch,                    1, key_tokens]
+        # this helps to broadcast it as a bias over attention scores, which will be in one of the following shapes:
+        #   [batch,  heads, query_tokens, key_tokens] (e.g. torch sdp attn)
+        #   [batch * heads, query_tokens, key_tokens] (e.g. xformers or classic attn)
+        if attention_mask is not None:
+            # assume that mask is expressed as:
+            #   (1 = keep,      0 = discard)
+            # convert mask into a bias that can be added to attention scores:
+            #       (keep = +0,     discard = -10000.0)
+            attention_mask = (1 - attention_mask.to(sample.dtype)) * -10000.0
+            attention_mask = attention_mask.unsqueeze(1)
+
+        # convert encoder_attention_mask to a bias the same way we do for attention_mask
+        if encoder_attention_mask is not None:
+            encoder_attention_mask = (1 - encoder_attention_mask.to(sample.dtype)) * -10000.0
+            encoder_attention_mask = encoder_attention_mask.unsqueeze(1)
+
+        # 0. center input if necessary
+        # SDXL latents are already centered; the generic `center_input_sample` flag is never used.
+
+        # 1. time
+        t_emb = self.get_time_embed(sample=sample, timestep=timestep)
+        emb = self.time_embedding(t_emb, timestep_cond)
+
+        class_emb = self.get_class_embed(sample=sample, class_labels=class_labels)
+        if class_emb is not None:
+            if self.config.class_embeddings_concat:
+                emb = torch.cat([emb, class_emb], dim=-1)
+            else:
+                emb = emb + class_emb
+
+        aug_emb = self.get_aug_embed(
+            emb=emb, encoder_hidden_states=encoder_hidden_states, added_cond_kwargs=added_cond_kwargs
+        )
+        if self.config.addition_embed_type == "image_hint":
+            aug_emb, hint = aug_emb
+            sample = torch.cat([sample, hint], dim=1)
+
+        emb = emb + aug_emb if aug_emb is not None else emb
+
+        if self.time_embed_act is not None:
+            emb = self.time_embed_act(emb)
+
+        encoder_hidden_states = self.process_encoder_hidden_states(
+            encoder_hidden_states=encoder_hidden_states, added_cond_kwargs=added_cond_kwargs
+        )
+
+        # 2. pre-process (following the original modified logic)
+        x = self.conv_in(sample)  # [B, 4, H, W] -> [B, 320, H, W]
 
         res_hidden_states: list[torch.Tensor] = [x]
 
-        # down path
+        # 3. down path
         for idx, block in enumerate(self.down_blocks):
             if isinstance(block, CrossAttnDownBlock2D):
                 x, res = block(
                     x,
-                    temb,
+                    emb,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
-                    debug=debug,
                 )
             else:
-                x, res = block(x, temb, debug=debug)
-            if debug:
-                print(f"[debug] down block {idx} output stats:", float(x.min()), float(x.max()))
+                x, res = block(x, emb)
+
             res_hidden_states.extend(res)
 
-        # mid
+        # 4. mid
         x = self.mid_block(
             x,
-            temb,
+            emb,
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask,
-            debug=debug,
         )
-        if debug:
-            print("[debug] mid block output stats:", float(x.min()), float(x.max()))
 
-        # up path
+        # 5. up path
         for idx, block in enumerate(self.up_blocks):
             if isinstance(block, CrossAttnUpBlock2D):
                 x = block(
                     x,
-                    temb,
+                    emb,
                     res_hidden_states_list=res_hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
-                    debug=debug,
                 )
             else:
                 x = block(
                     x,
-                    temb,
+                    emb,
                     res_hidden_states_list=res_hidden_states,
-                    debug=debug,
                 )
-            if debug:
-                print(f"[debug] up block {idx} output stats:", float(x.min()), float(x.max()))
 
+        # 6. Post
         x = self.conv_norm_out(x)
-        if debug:
-            print("[debug] conv_norm_out stats:", float(x.min()), float(x.max()))
         x = self.conv_act(x)
-        if debug:
-            print("[debug] conv_act stats:", float(x.min()), float(x.max()))
-        x = self.conv_out(x, debug=debug)
-        if debug:
-            print("[debug] conv_out stats:", float(x.min()), float(x.max()))
+        x = self.conv_out(x)
         return x
+    

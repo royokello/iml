@@ -13,13 +13,13 @@ import argparse
 import os
 import shutil
 import time
-from typing import Dict, Iterable
+from typing import Iterable
 
 import torch
 from PIL import Image
 import numpy as np
 import copy
-from diffusers import AutoencoderKL, UNet2DConditionModel
+from diffusers import AutoencoderKL
 from diffusers.schedulers import (
     DDIMScheduler,
     DPMSolverMultistepScheduler,
@@ -36,6 +36,7 @@ from transformers import (
 from packaging import version
 
 from sdxl.pipeline import StableDiffusionXLPipeline
+from sdxl.unet import SDXLUNet
 
 DEFAULT_PROMPT = "A propaganda poster depicting a cat dressed as french emperor napoleon holding a piece of cheese."
 
@@ -68,6 +69,44 @@ def _ensure_unet_config(unet_dir: str, base_dir: str) -> None:
             shutil.copyfile(source, target)
         else:
             raise SystemExit(f"Missing UNet config file: {source}")
+
+
+def _resolve_unet_checkpoint(unet_dir: str) -> str:
+    path = os.path.abspath(unet_dir)
+    if os.path.isfile(path):
+        if path.endswith(".safetensors"):
+            return path
+        raise SystemExit(f"Expected a .safetensors file for UNet weights: {path}")
+
+    if not os.path.isdir(path):
+        raise SystemExit(f"UNet directory not found: {unet_dir}")
+
+    preferred = os.path.join(path, "diffusion_pytorch_model.safetensors")
+    if os.path.isfile(preferred):
+        return preferred
+
+    safetensors = sorted(
+        filename for filename in os.listdir(path) if filename.endswith(".safetensors")
+    )
+    if safetensors:
+        return os.path.join(path, safetensors[0])
+
+    raise SystemExit(
+        f"No .safetensors file found in UNet directory: {path}. "
+        "Provide --unet pointing to a folder that contains quantized UNet weights."
+    )
+
+
+def _load_quantized_unet(
+    base_dir: str,
+    unet_dir: str,
+    device: torch.device,
+) -> SDXLUNet:
+    checkpoint_path = _resolve_unet_checkpoint(unet_dir)
+    print(f"Loading quantized UNet checkpoint '{checkpoint_path}' ...")
+    model = load_safetensors(checkpoint_path, device="cpu")
+    unet = SDXLUNet(model=model)
+    return unet.to(device=device, dtype=torch.float16).eval()
 
 
 def _build_scheduler(base_dir: str, sampler: str, schedule: str):
@@ -184,10 +223,11 @@ def main() -> None:
 
     print("Loading unet ...")
     _ensure_unet_config(unet_dir, base_dir)
-    unet = UNet2DConditionModel.from_pretrained(
-        pretrained_model_name_or_path=unet_dir,
-        torch_dtype=torch.float16,
-    ).to(device=cpu_device).eval()
+    unet = _load_quantized_unet(
+        base_dir=base_dir,
+        unet_dir=unet_dir,
+        device=cpu_device,
+    )
 
     print("Loading vae ...")
     vae = AutoencoderKL.from_pretrained(
@@ -220,7 +260,7 @@ def main() -> None:
         print("torch.compile not available (requires torch>=2.0). Continuing without compilation.")
 
     print("Enabling CPU offload to reduce VRAM requirements ...")
-    sdxl_pipe.enable_model_cpu_offload()
+    # sdxl_pipe.enable_model_cpu_offload()
 
     print("generating image ...")
     output = sdxl_pipe.generate(

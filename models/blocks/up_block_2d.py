@@ -3,8 +3,8 @@ from typing import Sequence
 import torch
 import torch.nn as nn
 
-from model.blocks.resnet_block_2d import ResnetBlock2D
-from model.blocks.up_sample_2d import UpSample2D
+from models.blocks.resnet_block_2d import ResnetBlock2D
+from models.blocks.up_sample_2d import UpSample2D
 
 class UpBlock2D(nn.Module):
     def __init__(

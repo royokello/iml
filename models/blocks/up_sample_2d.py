@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from model.blocks.conv_2d import Conv2d
+from models.blocks.conv_2d import Conv2d
 
 
 class UpSample2D(nn.Module):
