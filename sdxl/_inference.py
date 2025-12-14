@@ -10,6 +10,7 @@ single combined `.safetensors` checkpoint, then denoises with the INT8
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import time
@@ -35,7 +36,7 @@ from transformers import (
 )
 from packaging import version
 
-from sdxl.pipeline import StableDiffusionXLPipeline
+from sdxl._pipeline import StableDiffusionXLPipeline
 from sdxl.unet import SDXLUNet
 
 DEFAULT_PROMPT = "A propaganda poster depicting a cat dressed as french emperor napoleon holding a piece of cheese."
@@ -51,10 +52,6 @@ def _auto_name(out_dir: str) -> str:
         if not os.path.exists(candidate):
             return candidate
     raise RuntimeError("Unable to derive unique filename for output image.")
-
-
-def _normalize_sampler(name: str) -> str:
-    return name.strip().lower().replace("-", "_").replace(" ", "_")
 
 
 def _ensure_unet_config(unet_dir: str, base_dir: str) -> None:
@@ -109,31 +106,31 @@ def _load_quantized_unet(
     return unet.to(device=device, dtype=torch.float16).eval()
 
 
-def _build_scheduler(base_dir: str, sampler: str, schedule: str):
-    sampler_name = _normalize_sampler(sampler)
-    schedule_name = schedule.strip().lower()
+def _build_scheduler(base_dir: str):
+    scheduler_dir = os.path.join(base_dir, "scheduler")
+    config_path = os.path.join(scheduler_dir, "scheduler_config.json")
+    if not os.path.isfile(config_path):
+        raise SystemExit(f"Missing scheduler config: {config_path}")
 
-    if sampler_name in {"euler_a", "euler_ancestral"}:
-        cls = EulerAncestralDiscreteScheduler
-    elif sampler_name in {"euler", "euler_discrete"}:
-        cls = EulerDiscreteScheduler
-    elif sampler_name == "heun":
-        cls = HeunDiscreteScheduler
-    elif sampler_name == "ddim":
-        cls = DDIMScheduler
-    elif sampler_name in {"dpmpp_2m", "dpmpp2m"}:
-        cls = DPMSolverMultistepScheduler
-    else:
-        raise SystemExit(f"Unsupported sampler '{sampler}'.")
+    with open(config_path, "r", encoding="utf-8") as fp:
+        config = json.load(fp)
 
-    scheduler = cls.from_pretrained(base_dir, subfolder="scheduler")
-    use_karras = schedule_name.startswith("karras")
-    config = getattr(scheduler, "config", None)
-    if config is not None and hasattr(config, "use_karras_sigmas"):
-        config.use_karras_sigmas = use_karras
-    elif hasattr(scheduler, "use_karras_sigmas"):
-        scheduler.use_karras_sigmas = use_karras
-    return scheduler
+    class_name = config.get("_class_name", "").strip()
+    scheduler_classes = {
+        "EulerAncestralDiscreteScheduler": EulerAncestralDiscreteScheduler,
+        "EulerDiscreteScheduler": EulerDiscreteScheduler,
+        "HeunDiscreteScheduler": HeunDiscreteScheduler,
+        "DDIMScheduler": DDIMScheduler,
+        "DPMSolverMultistepScheduler": DPMSolverMultistepScheduler,
+    }
+    cls = scheduler_classes.get(class_name)
+    if cls is None:
+        raise SystemExit(
+            "Unsupported scheduler class in config: "
+            f"'{class_name}'"
+        )
+
+    return cls.from_pretrained(base_dir, subfolder="scheduler")
 
 
 def parse_args() -> argparse.Namespace:
@@ -166,8 +163,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=512, help="Image height (multiple of 8).")
     parser.add_argument("--width", type=int, default=512, help="Image width (multiple of 8).")
     parser.add_argument("--steps", type=int, default=20, help="Number of sampling steps.")
-    parser.add_argument("--sampler", default="euler_a", help="Sampler name (euler_a, euler, heun, ddim, dpmpp_2m).")
-    parser.add_argument("--scheduler", default="karras", help="Scheduler noise spacing (karras, linear).")
     parser.add_argument("--cfg", type=float, default=5.0, help="Classifier-free guidance scale.")
     parser.add_argument(
         "--debug",
@@ -218,7 +213,7 @@ def main() -> None:
     ).to(device=gpu_device, dtype=torch.float16).eval()
 
     print("Loading scheduler ...")
-    scheduler = _build_scheduler(base_dir, args.sampler, args.scheduler)
+    scheduler = _build_scheduler(base_dir)
     scheduler.set_timesteps(args.steps, device=gpu_device)
 
     print("Loading unet ...")

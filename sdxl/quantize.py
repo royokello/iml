@@ -45,11 +45,31 @@ def _is_unet_tensor(name: str) -> bool:
     return name.startswith(UNET_PREFIXES)
 
 
-def _target_precision(name: str, base: str, to_q: str, to_k: str) -> str:
+def _target_precision(
+    name: str,
+    base: str,
+    to_q: str,
+    to_k: str,
+    to_v: str,
+    to_out: str,
+    proj_in: str,
+    proj_out: str,
+    conv_shortcut: str,
+) -> str:
     if "to_q" in name:
         return to_q
     if "to_k" in name:
         return to_k
+    if "to_v" in name:
+        return to_v
+    if "to_out" in name:
+        return to_out
+    if "proj_in" in name:
+        return proj_in
+    if "proj_out" in name:
+        return proj_out
+    if "conv_shortcut" in name:
+        return conv_shortcut
     return base
 
 
@@ -92,12 +112,30 @@ def _cast_tensor(tensor: np.ndarray, precision: str) -> Tuple[np.ndarray, np.nda
 
 
 def _convert_unet_tensors(
-    tensors: Dict[str, np.ndarray], base_precision: str, to_q_precision: str, to_k_precision: str
+    tensors: Dict[str, np.ndarray],
+    base_precision: str,
+    to_q_precision: str,
+    to_k_precision: str,
+    to_v_precision: str,
+    to_out_precision: str,
+    proj_in_precision: str,
+    proj_out_precision: str,
+    conv_shortcut_precision: str,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
     converted: Dict[str, np.ndarray] = {}
     scales: Dict[str, np.ndarray] = {}
     for name, tensor in tensors.items():
-        precision = _target_precision(name, base_precision, to_q_precision, to_k_precision)
+        precision = _target_precision(
+            name,
+            base_precision,
+            to_q_precision,
+            to_k_precision,
+            to_v_precision,
+            to_out_precision,
+            proj_in_precision,
+            proj_out_precision,
+            conv_shortcut_precision,
+        )
         cast_tensor, scale = _cast_tensor(tensor, precision)
         converted[name] = cast_tensor
         if scale is not None:
@@ -131,7 +169,7 @@ def parse_args() -> argparse.Namespace:
         "--base-precision",
         default="fp16",
         type=_parse_precision,
-        help="Precision for tensors that are not to_q or to_k (default: fp16).",
+        help="Precision for tensors that are not to_q, to_k, to_v, to_out, proj_in, or proj_out (default: fp16).",
     )
     parser.add_argument(
         "--to-q-precision",
@@ -145,10 +183,52 @@ def parse_args() -> argparse.Namespace:
         type=_parse_precision,
         help="Precision override for to_k tensors (default: int8).",
     )
+    parser.add_argument(
+        "--to-v-precision",
+        default="fp16",
+        type=_parse_precision,
+        help="Precision override for to_v tensors (default: int8).",
+    )
+    parser.add_argument(
+        "--to-out-precision",
+        default="fp16",
+        type=_parse_precision,
+        help="Precision override for to_out tensors (default: int8).",
+    )
+    parser.add_argument(
+        "--proj-in-precision",
+        default="fp16",
+        type=_parse_precision,
+        help="Precision override for proj_in tensors (default: int8).",
+    )
+    parser.add_argument(
+        "--proj-out-precision",
+        default="fp16",
+        type=_parse_precision,
+        help="Precision override for proj_out tensors (default: int8).",
+    )
+    parser.add_argument(
+        "--conv-shortcut-precision",
+        default="fp16",
+        type=_parse_precision,
+        help="Precision override for conv_shortcut tensors (default: int8).",
+    )
+    
     args = parser.parse_args()
     if not args.inplace and not args.output:
         parser.error("--output is required unless --inplace is provided.")
     return args
+
+
+def _log_precisions(args: argparse.Namespace) -> None:
+    print(f"[precision] base={args.base_precision}")
+    print(f"[precision] to_q={args.to_q_precision}")
+    print(f"[precision] to_k={args.to_k_precision}")
+    print(f"[precision] to_v={args.to_v_precision}")
+    print(f"[precision] to_out={args.to_out_precision}")
+    print(f"[precision] proj_in={args.proj_in_precision}")
+    print(f"[precision] proj_out={args.proj_out_precision}")
+    print(f"[precision] conv_shortcut={args.conv_shortcut_precision}")
 
 
 def _resolve_input_path(input_arg: str) -> str:
@@ -171,6 +251,7 @@ def _resolve_input_path(input_arg: str) -> str:
 
 def main() -> None:
     args = parse_args()
+    _log_precisions(args)
     resolved_input = _resolve_input_path(args.input)
 
     tensors = load_file(resolved_input)
@@ -180,7 +261,15 @@ def main() -> None:
     original_bytes = sum(tensor.nbytes for tensor in unet_tensors.values())
 
     converted, scale_tensors = _convert_unet_tensors(
-        unet_tensors, args.base_precision, args.to_q_precision, args.to_k_precision
+        unet_tensors,
+        args.base_precision,
+        args.to_q_precision,
+        args.to_k_precision,
+        args.to_v_precision,
+        args.to_out_precision,
+        args.proj_in_precision,
+        args.proj_out_precision,
+        args.conv_shortcut_precision,
     )
     all_tensors: Dict[str, np.ndarray] = {**converted, **scale_tensors}
     if args.inplace:

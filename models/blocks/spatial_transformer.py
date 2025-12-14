@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from models.blocks.basic_transformer_block import BasicTransformerBlock
-from models.blocks.linear import LinearFP16
+from models.blocks.linear import LinearFP16, LinearInt8
 
 
 class SpatialTransformer(nn.Module):
@@ -39,6 +39,7 @@ class SpatialTransformer(nn.Module):
             ]
         )
 
+        # self.proj_out = LinearInt8(
         self.proj_out = LinearFP16(
             in_features=self.inner_dim,
             out_features=in_channels,

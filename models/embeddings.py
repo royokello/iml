@@ -2,6 +2,7 @@ import math
 from typing import Optional
 from torch import nn
 import torch
+import numpy as np
 
 def get_timestep_embedding(
     timesteps: torch.Tensor,

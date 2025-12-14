@@ -90,3 +90,39 @@ class Conv2d(nn.Module):
             groups=self.groups,
         )
         return y_fp32.to(torch.float16)
+
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class Conv2d1x1Int8(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, bias: bool = True):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+
+        # match your checkpoint: int8 tensor stored as `weight`
+        self.register_buffer(
+            "weight",
+            torch.zeros(out_channels, in_channels, 1, 1, dtype=torch.int8),
+        )
+
+        # per-out-channel scale (most common + safest for conv weights)
+        self.register_buffer(
+            "weight_scale",
+            torch.ones(out_channels, dtype=torch.float16),
+        )
+
+        self.bias = nn.Parameter(torch.zeros(out_channels, dtype=torch.float16)) if bias else None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dtype != torch.float16:
+            x = x.to(torch.float16)
+
+        # dequantize to fp16
+        w = self.weight.to(torch.float16) * self.weight_scale[:, None, None, None]
+        b = self.bias if self.bias is not None else None
+
+        return F.conv2d(x, w, b, stride=1, padding=0, dilation=1, groups=1)

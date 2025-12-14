@@ -3,34 +3,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-class LinearFP16(nn.Module):
+class LinearFP16(nn.Linear):
     """
-    Standard fp16 Linear layer used for modules that remain in floating point.
+    Standard Linear layer using fp16 parameters and compute.
     """
 
     def __init__(self, in_features: int, out_features: int, bias: bool = True):
-        super().__init__()
-        self.in_features = in_features
-        self.out_features = out_features
-
-        self.weight = nn.Parameter(
-            torch.zeros(out_features, in_features, dtype=torch.float16)
-        )
-        if bias:
-            self.bias = nn.Parameter(torch.zeros(out_features, dtype=torch.float16))
-        else:
-            self.bias = None
+        super().__init__(in_features, out_features, bias=bias)
+        self.to(torch.float16)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.shape[-1] != self.in_features:
-            raise ValueError(
-                f"Expected last dimension {self.in_features}, got {x.shape[-1]}"
-            )
-
-        weight = self.weight.to(torch.float32)
-        bias = self.bias.to(torch.float32) if self.bias is not None else None
-        y = F.linear(x.to(torch.float32), weight, bias)
-        return y.to(torch.float16)
+        return super().forward(x.to(torch.float16))
 
 
 class LinearInt8(nn.Module):
@@ -90,11 +73,11 @@ class LinearInt8(nn.Module):
                 "Per-channel scaled int8 weights must be loaded before calling forward."
             )
 
-        x_fp16 = x.to(torch.float32)
-        bias_fp16 = self.bias.to(torch.float32) if self.bias is not None else None
+        x_fp16 = x.to(torch.float16)
+        bias_fp16 = self.bias.to(torch.float16) if self.bias is not None else None
 
-        w_int8 = self.weight.to(torch.float32)
-        scale = self.weight_scale.to(torch.float32).unsqueeze(1)
+        w_int8 = self.weight.to(torch.float16)
+        scale = self.weight_scale.to(torch.float16).unsqueeze(1)
         weight_fp16 = w_int8 * scale
 
         y_fp16 = F.linear(x_fp16, weight_fp16, bias_fp16)

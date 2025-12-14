@@ -5,7 +5,6 @@ from typing import Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from models.blocks.conv_2d import Conv2d
 from models.blocks.cross_attn_down_block_2d import CrossAttnDownBlock2D
@@ -14,7 +13,7 @@ from models.blocks.down_block_2d import DownBlock2D
 from models.blocks.linear import LinearFP16, LinearInt8
 from models.blocks.unet_mid_block_2d_cross_attn import UNetMidBlock2DCrossAttn
 from models.blocks.up_block_2d import UpBlock2D
-from models.embeddings import GaussianFourierProjection, ImageProjection, TextImageProjection, TextImageTimeEmbedding, TextTimeEmbedding, TimestepEmbedding, Timesteps, get_activation
+from models.embeddings import GaussianFourierProjection, ImageHintTimeEmbedding, ImageProjection, ImageTimeEmbedding, TextImageProjection, TextImageTimeEmbedding, TextTimeEmbedding, TimestepEmbedding, Timesteps, get_activation
 
 
 def load_unet_key_mapping(base_dir: str) -> Dict[str, str]:
@@ -23,45 +22,6 @@ def load_unet_key_mapping(base_dir: str) -> Dict[str, str]:
     """
     mapping_path = Path(base_dir) / "unet" / "mapping.json"
     return json.loads(mapping_path.read_text(encoding="utf-8"))
-
-
-def timestep_embedding(timesteps: torch.Tensor, dim: int, max_period: int = 10000):
-    half = dim // 2
-    freqs = torch.exp(
-        -math.log(max_period) * torch.arange(0, half, device=timesteps.device) / half
-    )
-    args = timesteps.float()[:, None] * freqs[None, :]
-    emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-    if dim % 2 == 1:
-        emb = F.pad(emb, (0, 1))
-    return emb
-
-
-class TimeEmbedding(nn.Module):
-    def __init__(self, input_dim: int, embed_dim: int):
-        super().__init__()
-        self.input_dim = input_dim
-        self.embed_dim = embed_dim
-        self.linear_1 = LinearFP16(
-            in_features=input_dim,
-            out_features=embed_dim,
-            bias=True,
-        )
-        self.linear_2 = LinearFP16(
-            in_features=embed_dim,
-            out_features=embed_dim,
-            bias=True,
-        )
-        self.act = nn.SiLU()
-
-    def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
-        if timesteps.dim() == 0:
-            timesteps = timesteps[None]
-        emb = timestep_embedding(timesteps, self.input_dim)
-        emb = self.linear_1(emb)
-        emb = self.act(emb)
-        emb = self.linear_2(emb)
-        return emb
 
 
 class AddEmbedding(nn.Module):
@@ -86,6 +46,13 @@ class AddEmbedding(nn.Module):
         return x
 
 
+OPTIONAL_TENSORS = {
+    # Fourier time projection weights are procedurally re-created from config, so
+    # they are not serialized in the original SDXL checkpoints.
+    "time_proj.weight",
+}
+
+
 class SDXLUNet(nn.Module):
 
     def __init__(
@@ -97,100 +64,97 @@ class SDXLUNet(nn.Module):
         self._key_mapping = dict(key_mapping or {})
 
         # SDXL-base UNet configuration
-        self.in_channels = 4
-        self.out_channels = 4
-        self.block_out_channels = (320, 640, 1280)
-        self.time_embed_dim = 1280
-        self.cross_attention_dim = 2048
-        self.attention_head_dim = 64
-
-        # Hard-coded SDXL defaults for the inherited Diffusers helpers.
-        time_embedding_type = "fourier"
-        block_out_channels = self.block_out_channels
-        flip_sin_to_cos = True
-        freq_shift = 0
-        time_embedding_dim = self.time_embed_dim
-        act_fn = "silu"
-        timestep_post_act = None
-        time_cond_proj_dim = None
-        encoder_hid_dim_type = None
-        encoder_hid_dim = None
-        class_embed_type = None
-        num_class_embeds = None
-        projection_class_embeddings_input_dim = 1280
-        addition_embed_type = "text_time"
-        addition_embed_type_num_heads = 64
-        addition_time_embed_dim = 256
-        time_embedding_act_fn = None
-        cross_attention_dim = 2048
+        self.config = {
+            "in_channels": 4,
+            "out_channels": 4,
+            "block_out_channels": (320, 640, 1280),
+            "time_embed_dim": 1280,
+            "cross_attention_dim": 2048,
+            "attention_head_dim": 64,
+            # Hard-coded SDXL defaults for the inherited Diffusers helpers.
+            "time_embedding_type": "positional",
+            "flip_sin_to_cos": True,
+            "freq_shift": 0,
+            "time_embedding_dim": 1280,
+            "act_fn": "silu",
+            "timestep_post_act": None,
+            "time_cond_proj_dim": None,
+            "encoder_hid_dim_type": None,
+            "encoder_hid_dim": None,
+            "class_embed_type": None,
+            "num_class_embeds": None,
+            "projection_class_embeddings_input_dim": 1280,
+            "addition_embed_type": "text_time",
+            "addition_embed_type_num_heads": 64,
+            "addition_time_embed_dim": 256,
+            "time_embedding_act_fn": None,
+            "class_embeddings_concat": False,
+        }
 
         # time
         time_embed_dim, timestep_input_dim = self._set_time_proj(
-            time_embedding_type,
-            block_out_channels=block_out_channels,
-            flip_sin_to_cos=flip_sin_to_cos,
-            freq_shift=freq_shift,
-            time_embedding_dim=time_embedding_dim,
+            time_embedding_type=self.config["time_embedding_type"],
+            block_out_channels=self.config["block_out_channels"],
+            flip_sin_to_cos=self.config["flip_sin_to_cos"],
+            freq_shift=self.config["freq_shift"],
+            time_embedding_dim=self.config["time_embedding_dim"],
         )
 
         self.time_embedding = TimestepEmbedding(
             timestep_input_dim,
             time_embed_dim,
-            act_fn=act_fn,
-            post_act_fn=timestep_post_act,
-            cond_proj_dim=time_cond_proj_dim,
+            act_fn=self.config["act_fn"],
+            post_act_fn=self.config["timestep_post_act"],
+            cond_proj_dim=self.config["time_cond_proj_dim"],
         )
 
         self._set_encoder_hid_proj(
-            encoder_hid_dim_type,
-            cross_attention_dim=cross_attention_dim,
-            encoder_hid_dim=encoder_hid_dim,
+            encoder_hid_dim_type=self.config["encoder_hid_dim_type"],
+            cross_attention_dim=self.config["cross_attention_dim"],
+            encoder_hid_dim=self.config["encoder_hid_dim"],
         )
 
         # class embedding
         self._set_class_embedding(
-            class_embed_type,
-            act_fn=act_fn,
-            num_class_embeds=num_class_embeds,
-            projection_class_embeddings_input_dim=projection_class_embeddings_input_dim,
+            self.config["class_embed_type"],
+            act_fn=self.config["act_fn"],
+            num_class_embeds=self.config["num_class_embeds"],
+            projection_class_embeddings_input_dim=self.config["projection_class_embeddings_input_dim"],
             time_embed_dim=time_embed_dim,
             timestep_input_dim=timestep_input_dim,
         )
 
         self._set_add_embedding(
-            addition_embed_type,
-            addition_embed_type_num_heads=addition_embed_type_num_heads,
-            addition_time_embed_dim=addition_time_embed_dim,
-            cross_attention_dim=cross_attention_dim,
-            encoder_hid_dim=encoder_hid_dim,
-            flip_sin_to_cos=flip_sin_to_cos,
-            freq_shift=freq_shift,
-            projection_class_embeddings_input_dim=projection_class_embeddings_input_dim,
+            self.config["addition_embed_type"],
+            addition_embed_type_num_heads=self.config["addition_embed_type_num_heads"],
+            addition_time_embed_dim=self.config["addition_time_embed_dim"],
+            cross_attention_dim=self.config["cross_attention_dim"],
+            encoder_hid_dim=self.config["encoder_hid_dim"],
+            flip_sin_to_cos=self.config["flip_sin_to_cos"],
+            freq_shift=self.config["freq_shift"],
+            projection_class_embeddings_input_dim=self.config["projection_class_embeddings_input_dim"],
             time_embed_dim=time_embed_dim,
         )
 
-        if time_embedding_act_fn is None:
+        if self.config["time_embedding_act_fn"] is None:
             self.time_embed_act = None
         else:
-            self.time_embed_act = get_activation(time_embedding_act_fn)
+            self.time_embed_act = get_activation(self.config["time_embedding_act_fn"])
 
 
         # 1) input conv
         self.conv_in = Conv2d(
-            in_channels=self.in_channels,
-            out_channels=self.block_out_channels[0],
+            in_channels=self.config["in_channels"],
+            out_channels=self.config["block_out_channels"][0],
             kernel_size=3,
             stride=1,
             padding=1,
         )
 
         # 2) time embedding
-        self.time_embedding = TimeEmbedding(
-            self.block_out_channels[0], self.time_embed_dim
-        )
         self.label_emb_in_dim = 2816
         self.add_embedding = AddEmbedding(
-            self.label_emb_in_dim, self.time_embed_dim
+            self.label_emb_in_dim, self.config["time_embed_dim"]
         )
 
         # 3) down blocks
@@ -325,11 +289,11 @@ class SDXLUNet(nn.Module):
             )
 
         # 6) output head
-        self.conv_norm_out = nn.GroupNorm(32, self.block_out_channels[0], eps=1e-5, affine=True)
+        self.conv_norm_out = nn.GroupNorm(32, self.config["block_out_channels"][0], eps=1e-5, affine=True)
         self.conv_act = nn.SiLU()
         self.conv_out = Conv2d(
-            in_channels=self.block_out_channels[0],
-            out_channels=self.out_channels,
+            in_channels=self.config["block_out_channels"][0],
+            out_channels=self.config["out_channels"],
             kernel_size=3,
             stride=1,
             padding=1,
@@ -345,7 +309,7 @@ class SDXLUNet(nn.Module):
         `res_hidden_states` will be populated during the forward pass. This allows
         us to size the up block ResNets to match checkpoint expectations.
         """
-        skip_channels: list[int] = [self.block_out_channels[0]]
+        skip_channels: list[int] = [self.config["block_out_channels"][0]]
         for block in self.down_blocks:
             resnets = getattr(block, "resnets", [])
             for resnet in resnets:
@@ -370,6 +334,9 @@ class SDXLUNet(nn.Module):
             source_name = self._key_mapping.get(name, name)
             tensor = model.get(source_name)
             if tensor is None:
+                if name in OPTIONAL_TENSORS:
+                    # Skip optional tensors that Diffusers rebuilds on init.
+                    continue
                 missing.append(f"{name} (looked for {source_name})")
                 missing_details.append((name, tuple(int(dim) for dim in target.shape)))
                 continue
@@ -430,7 +397,7 @@ class SDXLUNet(nn.Module):
             if class_labels is None:
                 raise ValueError("class_labels should be provided when num_class_embeds > 0")
 
-            if self.config.class_embed_type == "timestep":
+            if self.config["class_embed_type"] == "timestep":
                 class_labels = self.time_proj(class_labels)
 
                 # `Timesteps` does not contain any weights and will always return f32 tensors
@@ -586,6 +553,67 @@ class SDXLUNet(nn.Module):
                 f"`addition_embed_type`: {addition_embed_type} must be None, 'text', 'text_image', 'text_time', 'image', or 'image_hint'."
             )
         
+    def get_aug_embed(
+        self, emb: torch.Tensor, encoder_hidden_states: torch.Tensor, added_cond_kwargs: Dict[str, Any]
+    ) -> Optional[torch.Tensor]:
+        aug_emb = None
+        if self.config["addition_embed_type"] == "text":
+            aug_emb = self.add_embedding(encoder_hidden_states)
+        elif self.config["addition_embed_type"] == "text_image":
+            # Kandinsky 2.1 - style
+            if "image_embeds" not in added_cond_kwargs:
+                raise ValueError(
+                    f"{self.__class__} has the config param `addition_embed_type` set to 'text_image' which requires the keyword argument `image_embeds` to be passed in `added_cond_kwargs`"
+                )
+
+            image_embs = added_cond_kwargs.get("image_embeds")
+            text_embs = added_cond_kwargs.get("text_embeds", encoder_hidden_states)
+            aug_emb = self.add_embedding(text_embs, image_embs)
+        elif self.config["addition_embed_type"] == "text_time":
+            # SDXL - style
+            if "text_embeds" not in added_cond_kwargs:
+                raise ValueError(
+                    f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `text_embeds` to be passed in `added_cond_kwargs`"
+                )
+            text_embeds = added_cond_kwargs.get("text_embeds")
+            if "time_ids" not in added_cond_kwargs:
+                raise ValueError(
+                    f"{self.__class__} has the config param `addition_embed_type` set to 'text_time' which requires the keyword argument `time_ids` to be passed in `added_cond_kwargs`"
+                )
+            time_ids = added_cond_kwargs.get("time_ids")
+            time_embeds = self.add_time_proj(time_ids.flatten())
+            time_embeds = time_embeds.reshape((text_embeds.shape[0], -1))
+            add_embeds = torch.concat([text_embeds, time_embeds], dim=-1)
+            add_embeds = add_embeds.to(emb.dtype)
+            aug_emb = self.add_embedding(add_embeds)
+        elif self.config["addition_embed_type"] == "image":
+            # Kandinsky 2.2 - style
+            if "image_embeds" not in added_cond_kwargs:
+                raise ValueError(
+                    f"{self.__class__} has the config param `addition_embed_type` set to 'image' which requires the keyword argument `image_embeds` to be passed in `added_cond_kwargs`"
+                )
+            image_embs = added_cond_kwargs.get("image_embeds")
+            aug_emb = self.add_embedding(image_embs)
+        elif self.config["addition_embed_type"] == "image_hint":
+            # Kandinsky 2.2 ControlNet - style
+            if "image_embeds" not in added_cond_kwargs or "hint" not in added_cond_kwargs:
+                raise ValueError(
+                    f"{self.__class__} has the config param `addition_embed_type` set to 'image_hint' which requires the keyword arguments `image_embeds` and `hint` to be passed in `added_cond_kwargs`"
+                )
+            image_embs = added_cond_kwargs.get("image_embeds")
+            hint = added_cond_kwargs.get("hint")
+            aug_emb = self.add_embedding(image_embs, hint)
+        return aug_emb
+
+    def process_encoder_hidden_states(
+        self,
+        encoder_hidden_states: torch.Tensor,
+        added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
+    ) -> torch.Tensor:
+        # SDXL only concatenates pooled text and time embeddings via `get_aug_embed`, so
+        # encoder hidden states pass through unchanged.
+        return encoder_hidden_states
+
     def forward(
         self,
         sample: torch.Tensor,
@@ -684,11 +712,11 @@ class SDXLUNet(nn.Module):
 
         # 1. time
         t_emb = self.get_time_embed(sample=sample, timestep=timestep)
-        emb = self.time_embedding(t_emb, timestep_cond)
+        emb = self.time_embedding(t_emb)
 
         class_emb = self.get_class_embed(sample=sample, class_labels=class_labels)
         if class_emb is not None:
-            if self.config.class_embeddings_concat:
+            if self.config["class_embeddings_concat"]:
                 emb = torch.cat([emb, class_emb], dim=-1)
             else:
                 emb = emb + class_emb
@@ -696,7 +724,7 @@ class SDXLUNet(nn.Module):
         aug_emb = self.get_aug_embed(
             emb=emb, encoder_hidden_states=encoder_hidden_states, added_cond_kwargs=added_cond_kwargs
         )
-        if self.config.addition_embed_type == "image_hint":
+        if self.config["addition_embed_type"] == "image_hint":
             aug_emb, hint = aug_emb
             sample = torch.cat([sample, hint], dim=1)
 
