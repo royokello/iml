@@ -1,0 +1,142 @@
+body {
+  margin: 0;
+}
+
+.inspect {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 4rem;
+  color: #fdf6e3;
+}
+
+.inspect-header h1 {
+  margin: 0;
+}
+
+.inspect-header .lead {
+  margin: 0.35rem 0 1.5rem;
+  color: #93a1a1;
+}
+
+.inspect-form label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 0.35rem;
+}
+
+.path-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.path-row input {
+  flex: 1;
+  padding: 0.75rem 0.9rem;
+  border-radius: 10px;
+  border: 1px solid #073642;
+  background: #073642;
+  color: #fdf6e3;
+}
+
+.path-row button {
+  padding: 0.75rem 1.2rem;
+  border-radius: 10px;
+  border: 1px solid #2aa198;
+  background: #2aa198;
+  color: #002b36;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.05s ease, box-shadow 0.15s ease;
+}
+
+.path-row button:hover {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  transform: translateY(-1px);
+}
+
+.path-row button:active {
+  transform: translateY(0);
+}
+
+.status {
+  min-height: 1.5rem;
+  margin-top: 0.5rem;
+  color: #93a1a1;
+}
+
+.status.success {
+  color: #2aa198;
+}
+
+.status.error {
+  color: #dc322f;
+}
+
+.panel {
+  background: #073642;
+  border: 1px solid #0f3b46;
+  border-radius: 14px;
+  padding: 1.1rem 1.2rem;
+  margin-top: 1.5rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+.panel-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.panel-header h2 {
+  margin: 0;
+}
+
+.panel-summary {
+  color: #93a1a1;
+  font-size: 0.95rem;
+}
+
+.table-wrap {
+  overflow: auto;
+  border-radius: 10px;
+  border: 1px solid #0f3b46;
+  background: #00232c;
+  max-height: 520px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 0.75rem 0.9rem;
+  border-bottom: 1px solid #0f3b46;
+}
+
+th {
+  text-align: left;
+  background: #01313d;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+tr:hover td {
+  background: rgba(42, 161, 152, 0.07);
+}
+
+@media (max-width: 640px) {
+  .path-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .path-row button {
+    width: 100%;
+  }
+}

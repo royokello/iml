@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ML-B Inspect</title>
+  <link rel="stylesheet" href="/static/common.css" />
+  <link rel="stylesheet" href="/static/styles/inspect.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+<body>
+  <main class="inspect">
+    <header class="inspect-header">
+      <h1>Inspect a model</h1>
+      <p class="lead">Enter an absolute path to your .safetensors file.</p>
+    </header>
+
+    <form id="inspect-form" class="inspect-form">
+      <label for="model-path">Model filepath</label>
+      <div class="path-row">
+        <input id="model-path" name="model-path" type="text" placeholder="ex: C:\models\final.safetensors" autocomplete="off" />
+        <button type="submit">Inspect</button>
+      </div>
+      <div class="status" id="status"></div>
+    </form>
+
+    <section class="panel">
+      <header class="panel-header">
+        <h2>Metadata</h2>
+      </header>
+      <div class="table-wrap meta-table">
+        <table>
+          <thead>
+            <tr>
+              <th>Key</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody id="metadata"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel">
+      <header class="panel-header">
+        <h2>Tensors</h2>
+        <div class="panel-summary" id="tensor-summary"></div>
+      </header>
+      <div class="table-wrap">
+        <table class="tensor-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Shape</th>
+              <th>Dtype</th>
+            </tr>
+          </thead>
+          <tbody id="tensor-rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/scripts/inspect.js"></script>
+</body>
+</html>
