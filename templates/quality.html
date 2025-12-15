@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Quality Analysis - ML Bench</title>
+    <link rel="stylesheet" href="/static/common.css" />
+    <link rel="stylesheet" href="/static/styles/quality.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+
+<body>
+    <main class="quality-page">
+        <header class="quality-header">
+            <h1><a href="/" style="text-decoration:none; color:inherit;">ML Bench</a> / Quality Analysis</h1>
+            <p class="lead">Analyze video compression quality using SSIM comparisons.</p>
+        </header>
+
+        <form method="POST" action="/quality" class="quality-form">
+            <div class="form-group">
+                <label for="source">Source Video Path</label>
+                <input type="text" id="source" name="source" placeholder="C:\path\to\video.mp4" required
+                    value="{{ last_input.source if last_input else '' }}">
+            </div>
+
+            <div class="flex-row">
+                <div class="form-group flex-col">
+                    <label for="resolution">Target Resolution (Height)</label>
+                    <input type="number" id="resolution" name="resolution"
+                        value="{{ last_input.resolution if last_input else '768' }}" required>
+                </div>
+
+                <div class="form-group flex-col">
+                    <label for="qualities">Qualities (CRFs)</label>
+                    <input type="text" id="qualities" name="qualities"
+                        value="{{ last_input.qualities if last_input else '15, 20, 25, 30, 35, 40' }}" required>
+                </div>
+            </div>
+
+            <div class="flex-row">
+                <div class="form-group flex-col">
+                    <label for="sample_len">Sample Length (s)</label>
+                    <input type="number" id="sample_len" name="sample_len"
+                        value="{{ last_input.sample_len if last_input else '8' }}" step="0.1">
+                </div>
+                <div class="form-group flex-col">
+                    <label for="num_samples">Number of Samples</label>
+                    <input type="number" id="num_samples" name="num_samples"
+                        value="{{ last_input.num_samples if last_input else '32' }}">
+                </div>
+            </div>
+
+            <button type="submit" class="btn-submit">Analyze</button>
+        </form>
+
+        {% if error %}
+        <div class="error-msg">{{ error }}</div>
+        {% endif %}
+
+        {% if results %}
+        <section class="panel">
+            <header class="panel-header">
+                <h2>Analysis Results</h2>
+            </header>
+            <p>Report saved to: <code>{{ results.report_path }}</code></p>
+
+            {% if results.knee_point %}
+            <h3>Knee Point Analysis</h3>
+            <p><strong>Optimal CRF:</strong> {{ results.knee_point.crf }} (SSIM: {{
+                "%.4f"|format(results.knee_point.ssim) }})</p>
+            {% endif %}
+
+            <h3>Mean SSIM</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>CRF</th>
+                            <th>Mean SSIM</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in results.mean_table %}
+                        <tr>
+                            <td>{{ row.crf }}</td>
+                            <td>{{ "%.4f"|format(row.mean_ssim) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <h3>Sample Details</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Index</th>
+                            <th>CRF</th>
+                            <th>SSIM</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in results.samples %}
+                        <tr>
+                            <td>{{ row.sample_index }}</td>
+                            <td>{{ row.crf }}</td>
+                            <td>{{ "%.4f"|format(row.ssim) }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </section>
+        {% endif %}
+    </main>
+</body>
+
+</html>
