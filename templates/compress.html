@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>ML-B Video Compression</title>
+    <link rel="stylesheet" href="/static/common.css" />
+    <link rel="stylesheet" href="/static/styles/compress.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+
+<body>
+    <main class="compress-page">
+        <header class="compress-header">
+            <h1>Video Compression</h1>
+            <p class="lead">Compress video stream using HEVC while preserving audio and subtitles.</p>
+        </header>
+
+        <form method="POST" action="/compress" class="compress-form">
+            <div class="form-group">
+                <label for="source">Source Video Path or Directory (Absolute)</label>
+                <input type="text" id="source" name="source" placeholder="C:\path\to\video.mp4 OR C:\path\to\folder"
+                    required value="{{ last_input.source if last_input else '' }}">
+            </div>
+
+            <div class="form-group">
+                <label for="output">Output Directory (Absolute)</label>
+                <input type="text" id="output" name="output" placeholder="C:\path\to\folder" required
+                    value="{{ last_input.output if last_input else '' }}">
+            </div>
+
+            <div class="flex-row">
+                <div class="form-group flex-col">
+                    <label for="resolution">Target Resolution (Height)</label>
+                    <input type="number" id="resolution" name="resolution"
+                        value="{{ last_input.resolution if last_input else '768' }}" required>
+                </div>
+
+                <div class="form-group flex-col">
+                    <label for="crf">CRF (Quality)</label>
+                    <input type="number" id="crf" name="crf" value="{{ last_input.crf if last_input else '25' }}"
+                        required>
+                </div>
+            </div>
+
+            <button type="submit" class="btn-submit">Compress</button>
+        </form>
+
+        {% if error %}
+        <div class="error-msg">{{ error }}</div>
+        {% endif %}
+
+        {% if results %}
+        <div class="success-msg">
+            <h3>Compression Job Complete</h3>
+
+            {% if summary %}
+            <div
+                style="display: flex; gap: 30px; margin-bottom: 20px; padding-bottom: 15px; border-bottom: 1px solid rgba(42, 161, 152, 0.3);">
+                <div>
+                    <span style="display:block; font-size: 0.85em; opacity: 0.8;">Total Files</span>
+                    <span style="font-size: 1.2em; font-weight: bold;">{{ summary.total_files }}</span>
+                </div>
+                <div>
+                    <span style="display:block; font-size: 0.85em; opacity: 0.8;">Total Original</span>
+                    <span style="font-size: 1.2em; font-weight: bold;">{{ summary.total_source_mb }} MB</span>
+                </div>
+                <div>
+                    <span style="display:block; font-size: 0.85em; opacity: 0.8;">Total Compressed</span>
+                    <span style="font-size: 1.2em; font-weight: bold;">{{ summary.total_output_mb }} MB</span>
+                </div>
+                <div>
+                    <span style="display:block; font-size: 0.85em; opacity: 0.8;">Space Saved</span>
+                    <span style="font-size: 1.2em; font-weight: bold;">{{ summary.saved_mb }} MB</span>
+                </div>
+            </div>
+            {% endif %}
+
+            <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; text-align: left; font-size: 0.95rem;">
+                    <thead>
+                        <tr style="border-bottom: 2px solid rgba(42, 161, 152, 0.4);">
+                            <th style="padding: 10px;">Filename</th>
+                            <th style="padding: 10px;">Original (MB)</th>
+                            <th style="padding: 10px;">Compressed (MB)</th>
+                            <th style="padding: 10px;">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for res in results %}
+                        <tr style="border-bottom: 1px solid rgba(42, 161, 152, 0.1);">
+                            <td style="padding: 10px;">{{ res.filename }}</td>
+                            <td style="padding: 10px;">{{ res.source_size_mb }}</td>
+                            <td style="padding: 10px;">{{ res.output_size_mb }}</td>
+                            <td style="padding: 10px;">
+                                {% if res.success %}
+                                <span style="color: #2aa198;">&#10004; Success</span>
+                                {% else %}
+                                <span style="color: #dc322f;">&#10008; {{ res.error }}</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+
+        <div style="margin-top: 2rem;">
+            <a href="/" style="color: #2aa198; text-decoration: none;">&larr; Back to Home</a>
+        </div>
+    </main>
+</body>
+
+</html>

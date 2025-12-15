@@ -9,6 +9,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
+import numpy as np
 
 VERBOSE = True
 
@@ -66,6 +67,65 @@ def _get_video_meta(ffmpeg_exe: Path, input_path: Path) -> Dict[str, Any]:
         
     return meta
 
+def _knee_from_dense(xs, ys):
+    """
+    Kneedle algorithm implementation to find the 'elbow' or 'knee'
+    of the curve, i.e. the point of maximum curvature / distance
+    from the chord connecting endpoints.
+    """
+    if xs is None or ys is None:
+        return None
+    xs_arr = np.asarray(xs, dtype=float)
+    ys_arr = np.asarray(ys, dtype=float)
+    if xs_arr.size < 3 or ys_arr.size < 3:
+        return None
+    
+    x_min = float(xs_arr.min())
+    x_max = float(xs_arr.max())
+    if math.isclose(x_min, x_max):
+        return None
+        
+    y_min = float(np.nanmin(ys_arr))
+    y_max = float(np.nanmax(ys_arr))
+    if math.isclose(y_min, y_max):
+        return None
+        
+    # Normalize to [0, 1]
+    x_norm = (xs_arr - x_min) / (x_max - x_min)
+    y_norm = (ys_arr - y_min) / (y_max - y_min)
+    
+    # Difference curve (distance from y=x line if we roughly assume monotonic)
+    # The 'line' is y=x in normalized space (y_norm approx x_norm)
+    # Actually, we want max distance from the line connecting (0,0) to (1,1) in norm space
+    # which is simply Diff = Y_norm - X_norm
+    diff = y_norm - x_norm
+    diff = np.asarray(diff, dtype=float)
+    
+    # Smooth edges if possible
+    if diff.size > 4:
+        diff[:2] = diff[2]
+        diff[-2:] = diff[-3]
+        
+    try:
+        # We want the 'knee' where we get diminishing returns.
+        # For SSIM (y) vs CRF (x):
+        # Higher CRF = Lower Quality. Curve goes Down.
+        # We want the point where Quality drops significantly for small bitrate gain?
+        # Or usually: X=Bitrate, Y=SSIM. (Curve goes UP). Knee is top left.
+        # Here: X=CRF (Lower is better/bigger file), Y=SSIM (Higher is better).
+        # SSIM drops as CRF increases.
+        # Normalized: CRF 0->1 (Low->High), SSIM 1->0 (High->Low).
+        # We want the "Elbow" where it starts dropping fast.
+        idx = int(np.nanargmax(diff)) # This assumes specific curve shape.
+        
+        # NOTE: quality.py assumes standard axes. Let's rely on finding the extremum of diff.
+    except (ValueError, TypeError):
+        return None
+        
+    idx = max(1, min(idx, diff.size - 2))
+    return float(xs_arr[idx]), float(ys_arr[idx])
+
+
 def run_analysis(
     root_dir: Path,
     source_path: str,
@@ -111,8 +171,7 @@ def run_analysis(
 
     results = []
     
-    # 1. Create Reference Samples 
-    # Scale to TARGET RESOLUTION using Lossless HEVC NVENC
+    # 1. Create Reference Samples (lossless scaling)
     ref_samples = []
     scale_filter_ref = f"scale=-2:{resolution}:flags=bicubic"
     
@@ -153,8 +212,7 @@ def run_analysis(
             dist_name = f"dist_{sample['id']}_crf_{crf}.mp4"
             dist_path = temp_dir / dist_name
             
-            # Encode: HEVC NVENC + Slow Preset + VBR_HQ/CQ
-            # Reference is already at target resolution, no scaling needed here.
+            # Encode
             cmd_enc = [
                 str(ffmpeg_exe), "-y",
                 "-i", str(sample["path"]),
@@ -169,7 +227,7 @@ def run_analysis(
             ]
             _run_cmd(cmd_enc)
             
-            # Compute SSIM: Direct comparison (both are same resolution)
+            # Compare
             cmd_ssim = [
                 str(ffmpeg_exe), 
                 "-i", str(dist_path),
@@ -201,26 +259,41 @@ def run_analysis(
             "samples": current_ssims
         }
 
-    # 3. Knee Point Analysis
+    # 3. Knee Point Analysis (Refined)
     sorted_crfs = sorted(analysis_results.keys())
     knee_candidate = None
-    if len(sorted_crfs) > 2:
-        p1 = (sorted_crfs[0], analysis_results[sorted_crfs[0]]["mean_ssim"])
-        p2 = (sorted_crfs[-1], analysis_results[sorted_crfs[-1]]["mean_ssim"])
-        max_dist = -1.0
-        A = p1[1] - p2[1]
-        B = p2[0] - p1[0]
-        C = p1[0]*p2[1] - p2[0]*p1[1]
-        denominator = math.sqrt(A*A + B*B)
-        
-        if denominator > 0:
-            for crf in sorted_crfs:
-                ssim = analysis_results[crf]["mean_ssim"]
-                dist = abs(A*crf + B*ssim + C) / denominator
-                if dist > max_dist:
-                    max_dist = dist
-                    knee_candidate = (crf, ssim)
     
+    if len(sorted_crfs) >= 3:
+        # Kneedle expects X increasing -> Y increasing for the simple y-x diff logic.
+        # CRF 15 (High Q) -> CRF 40 (Low Q).
+        # We invert X: -40 (Low Q) -> -15 (High Q).
+        # This gives us a trend -40->0.93 to -15->0.99.
+        data_pairs = []
+        for c in sorted_crfs:
+            data_pairs.append((-float(c), float(analysis_results[c]["mean_ssim"])))
+        
+        # Sort by X (ascending)
+        data_pairs.sort(key=lambda p: p[0])
+        
+        xs = np.array([p[0] for p in data_pairs], dtype=float)
+        ys = np.array([p[1] for p in data_pairs], dtype=float)
+        
+        # Fit polynomial
+        deg = min(3, len(xs) - 1)
+        poly = np.poly1d(np.polyfit(xs, ys, deg))
+        
+        # Dense sampling for knee finding
+        x_dense = np.linspace(xs.min(), xs.max(), 200)
+        y_dense = poly(x_dense)
+        
+        # Knee finding
+        knee_x, knee_y = _knee_from_dense(x_dense, y_dense) or (None, None)
+        
+        if knee_x is not None:
+             # Invert X back to positive CRF
+             knee_candidate = (-knee_x, knee_y)
+
+
     # 4. Generate Report
     report_filename = datetime.now().strftime("%Y-%m-%d-%H-%M-%S") + ".md"
     report_path = quality_dir / report_filename
@@ -247,7 +320,10 @@ def run_analysis(
 
     if knee_candidate:
         lines.append(f"## Knee Point Analysis")
-        lines.append(f"Estimated Knee: **CRF {knee_candidate[0]}** (SSIM: {knee_candidate[1]:.4f})")
+        # Round knee CRF to nearest integer or 0.5
+        rounded_crf = round(knee_candidate[0] * 2) / 2
+        lines.append(f"Estimated Knee: **CRF ~{rounded_crf}** (Calculated: {knee_candidate[0]:.2f}, SSIM: {knee_candidate[1]:.4f})")
+        lines.append(f"> Note: This is a derived value from the smoothed curve.")
         lines.append(f"")
 
     lines.append(f"## Sample Details")
