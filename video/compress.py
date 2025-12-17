@@ -29,7 +29,11 @@ def _compress_file(
     cmd = [
         str(ffmpeg_exe), "-y",
         "-i", str(source),
-        "-map", "0",
+        "-map", "0:v:0",       # First video stream only
+        "-map", "0:a?",        # All audio streams
+        "-map", "0:s?",        # All subtitle streams
+        "-map", "0:t?",        # All attachment streams
+        "-dn",                 # No data streams
         "-vf", scale_filter,
         "-c:v", "hevc_nvenc",
         "-pix_fmt", "yuv420p",
@@ -44,7 +48,6 @@ def _compress_file(
         "-fps_mode", "vfr",
         "-c:a", "copy",
         "-c:s", "copy",
-        "-c:d", "copy",
         "-c:t", "copy",
         str(output_path)
     ]

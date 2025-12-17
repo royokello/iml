@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Photo Viewer - ML Bench</title>
+    <link rel="stylesheet" href="/static/common.css" />
+    <link rel="stylesheet" href="/static/styles/viewer.css" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+
+<body>
+    <div class="viewer-container">
+        <div class="controls">
+            <h1>Photo Viewer</h1>
+            <p class="lead">Browse photos from a directory with keyboard navigation.</p>
+            <div class="input-group">
+                <input type="text" id="pathInput" placeholder="Enter directory path (e.g., C:\Photos)" />
+                <button id="scanBtn">Scan</button>
+            </div>
+            <div id="errorMsg" class="error-message" style="display: none;"></div>
+            <div class="help-text">
+                Navigation: ← → (prev/next image) | Page Up/Down (prev/next folder) | <a href="/">Back to Home</a>
+            </div>
+        </div>
+
+        <div class="image-viewport">
+            <img id="imageDisplay" style="display: none;" />
+            <div id="placeholder" class="loading">Enter a directory path and click Scan to begin</div>
+        </div>
+
+        <div class="info-bar">
+            <div class="info-item">
+                <span class="info-label">Folder:</span>
+                <span id="folderPath">-</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Image:</span>
+                <span id="imageCount">-</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Total:</span>
+                <span id="globalCount">-</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const state = {
+            folders: [],
+            folderIndex: 0,
+            imageIndex: 0,
+            totalImages: 0
+        };
+
+        const elements = {
+            pathInput: document.getElementById('pathInput'),
+            scanBtn: document.getElementById('scanBtn'),
+            errorMsg: document.getElementById('errorMsg'),
+            imageDisplay: document.getElementById('imageDisplay'),
+            placeholder: document.getElementById('placeholder'),
+            folderPath: document.getElementById('folderPath'),
+            imageCount: document.getElementById('imageCount'),
+            globalCount: document.getElementById('globalCount')
+        };
+
+        function showError(message) {
+            elements.errorMsg.textContent = message;
+            elements.errorMsg.style.display = 'block';
+        }
+
+        function hideError() {
+            elements.errorMsg.style.display = 'none';
+        }
+
+        async function scanDirectory() {
+            const path = elements.pathInput.value.trim();
+            if (!path) {
+                showError('Please enter a directory path');
+                return;
+            }
+
+            hideError();
+            elements.scanBtn.disabled = true;
+            elements.scanBtn.textContent = 'Scanning...';
+
+            try {
+                const response = await fetch('/api/scan', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    showError(data.error || 'Scan failed');
+                    return;
+                }
+
+                if (data.total_images === 0) {
+                    showError('No images found in the specified directory');
+                    return;
+                }
+
+                state.folders = data.folders;
+                state.totalImages = data.total_images;
+                state.folderIndex = 0;
+                state.imageIndex = 0;
+
+                elements.placeholder.style.display = 'none';
+                renderImage();
+
+            } catch (error) {
+                showError('Network error: ' + error.message);
+            } finally {
+                elements.scanBtn.disabled = false;
+                elements.scanBtn.textContent = 'Scan';
+            }
+        }
+
+        async function renderImage() {
+            if (state.folders.length === 0) return;
+
+            // Clamp indices
+            state.folderIndex = Math.max(0, Math.min(state.folderIndex, state.folders.length - 1));
+            const currentFolder = state.folders[state.folderIndex];
+            state.imageIndex = Math.max(0, Math.min(state.imageIndex, currentFolder.count - 1));
+
+            // Update image source
+            const imageUrl = `/api/view?f=${state.folderIndex}&i=${state.imageIndex}`;
+            elements.imageDisplay.src = imageUrl;
+            elements.imageDisplay.style.display = 'block';
+
+            // Fetch and update metadata
+            try {
+                const response = await fetch(`/api/meta?f=${state.folderIndex}&i=${state.imageIndex}`);
+                const meta = await response.json();
+
+                elements.folderPath.textContent = meta.folder;
+                elements.imageCount.textContent = `${meta.image_index + 1} / ${meta.folder_count}`;
+                elements.globalCount.textContent = `${meta.global_index} / ${meta.total_images}`;
+            } catch (error) {
+                console.error('Failed to fetch metadata:', error);
+            }
+        }
+
+        function navigate(direction) {
+            if (state.folders.length === 0) return;
+
+            const currentFolder = state.folders[state.folderIndex];
+
+            switch (direction) {
+                case 'next':
+                    state.imageIndex++;
+                    if (state.imageIndex >= currentFolder.count) {
+                        // Move to next folder
+                        if (state.folderIndex < state.folders.length - 1) {
+                            state.folderIndex++;
+                            state.imageIndex = 0;
+                        } else {
+                            state.imageIndex = currentFolder.count - 1; // Stay at last image
+                        }
+                    }
+                    break;
+
+                case 'prev':
+                    state.imageIndex--;
+                    if (state.imageIndex < 0) {
+                        // Move to previous folder
+                        if (state.folderIndex > 0) {
+                            state.folderIndex--;
+                            state.imageIndex = state.folders[state.folderIndex].count - 1;
+                        } else {
+                            state.imageIndex = 0; // Stay at first image
+                        }
+                    }
+                    break;
+
+                case 'nextFolder':
+                    if (state.folderIndex < state.folders.length - 1) {
+                        state.folderIndex++;
+                        state.imageIndex = 0;
+                    }
+                    break;
+
+                case 'prevFolder':
+                    if (state.folderIndex > 0) {
+                        state.folderIndex--;
+                        state.imageIndex = 0;
+                    }
+                    break;
+            }
+
+            renderImage();
+        }
+
+        // Event listeners
+        elements.scanBtn.addEventListener('click', scanDirectory);
+        elements.pathInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') scanDirectory();
+        });
+
+        document.addEventListener('keydown', (e) => {
+            // Don't navigate if typing in input
+            if (document.activeElement === elements.pathInput) return;
+
+            switch (e.key) {
+                case 'ArrowRight':
+                    e.preventDefault();
+                    navigate('next');
+                    break;
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    navigate('prev');
+                    break;
+                case 'PageDown':
+                    e.preventDefault();
+                    navigate('nextFolder');
+                    break;
+                case 'PageUp':
+                    e.preventDefault();
+                    navigate('prevFolder');
+                    break;
+            }
+        });
+    </script>
+</body>
+
+</html>

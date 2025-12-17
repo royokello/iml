@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.blocks.linear import LinearFP16, LinearInt8
+from models.blocks.linear import LinearFP16, LinearInt8, LinearBlock32U8F16
 
 
 class AttentionBlock(nn.Module):
@@ -34,7 +34,7 @@ class AttentionBlock(nn.Module):
             out_features=self.inner_dim,
             bias=False,
         )
-        self.to_v = LinearFP16(
+        self.to_v = LinearBlock32U8F16(
             in_features=self.cross_attention_dim,
             out_features=self.inner_dim,
             bias=False,

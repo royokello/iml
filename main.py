@@ -1,4 +1,5 @@
 import argparse
+import os
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -7,7 +8,7 @@ from typing import Any, Dict, List
 from video.analysis import run_analysis
 from video.compress import run_batch_compression
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 
 try:
     from safetensors.torch import safe_open
@@ -18,6 +19,7 @@ ALLOWED_EXTENSIONS = {".safetensors"}
 
 app = Flask(__name__)
 ROOT_DIR: Path | None = None
+SCAN_RESULT: List[Dict[str, Any]] = []  # Stores [{"folder_path": str, "images": [str]}]
 
 
 def _ensure_root_configured() -> Path:
@@ -92,35 +94,7 @@ def _load_model_summary(model_path: Path) -> Dict[str, Dict[str, List[Dict[str, 
     return summary
 
 
-def _list_directory(relative_path: str) -> Dict[str, Any]:
-    """
-    Return directory entries within the root for browsing from the UI.
-    """
-    base = _resolve_path(relative_path)
-    if not base.exists():
-        raise FileNotFoundError(f"Path not found: {base}")
-    if not base.is_dir():
-        raise ValueError("Requested path is not a directory.")
 
-    dirs = []
-    files = []
-    for child in sorted(base.iterdir(), key=lambda p: p.name.lower()):
-        if child.name.startswith("."):
-            continue
-
-        rel = child.relative_to(_ensure_root_configured()).as_posix()
-        if child.is_dir():
-            dirs.append({"name": child.name, "path": rel})
-        elif child.is_file():
-            files.append(
-                {
-                    "name": child.name,
-                    "path": rel,
-                    "size": child.stat().st_size,
-                    "ext": child.suffix.lower(),
-                }
-            )
-    return {"path": relative_path, "dirs": dirs, "files": files}
 
 
 @app.route("/")
@@ -211,7 +185,7 @@ def compress_page():
                 )
                 
                 # Check for global error in first item
-                if results_list and "error" in results_list[0] and len(results_list) == 1:
+                if results_list and results_list[0].get("error") and len(results_list) == 1:
                      context["error"] = results_list[0]["error"]
                 elif not results_list:
                      context["error"] = "No results returned."
@@ -249,6 +223,113 @@ def compress_page():
     return render_template("compress.html", **context)
 
 
+@app.route("/viewer")
+def viewer():
+    return render_template("viewer.html")
+
+
+@app.route("/api/scan", methods=["POST"])
+def api_scan():
+    global SCAN_RESULT
+    data = request.get_json()
+    path = data.get("path", "").strip()
+    
+    if not path:
+        return jsonify({"error": "Path is required"}), 400
+    
+    path_obj = Path(path)
+    if not path_obj.exists() or not path_obj.is_dir():
+        return jsonify({"error": "Invalid directory path"}), 400
+    
+    # Scan directory recursively
+    SCAN_RESULT = []
+    image_extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+    
+    for root, dirs, files in os.walk(path):
+        # Sort directories for consistent ordering
+        dirs.sort()
+        
+        # Filter and sort image files
+        images = sorted([
+            os.path.join(root, f) for f in files
+            if Path(f).suffix.lower() in image_extensions
+        ])
+        
+        if images:
+            SCAN_RESULT.append({
+                "folder_path": root,
+                "images": images
+            })
+    
+    # Calculate totals
+    total_images = sum(len(folder["images"]) for folder in SCAN_RESULT)
+    
+    # Return metadata only
+    folders_meta = [
+        {"path": folder["folder_path"], "count": len(folder["images"])}
+        for folder in SCAN_RESULT
+    ]
+    
+    return jsonify({
+        "folders": folders_meta,
+        "total_images": total_images,
+        "total_folders": len(SCAN_RESULT)
+    })
+
+
+@app.route("/api/view")
+def api_view():
+    f = request.args.get("f", type=int)
+    i = request.args.get("i", type=int)
+    
+    if f is None or i is None:
+        return jsonify({"error": "Missing folder or image index"}), 400
+    
+    if f < 0 or f >= len(SCAN_RESULT):
+        return jsonify({"error": "Invalid folder index"}), 400
+    
+    folder = SCAN_RESULT[f]
+    if i < 0 or i >= len(folder["images"]):
+        return jsonify({"error": "Invalid image index"}), 400
+    
+    image_path = folder["images"][i]
+    return send_file(image_path)
+
+
+@app.route("/api/meta")
+def api_meta():
+    f = request.args.get("f", type=int)
+    i = request.args.get("i", type=int)
+    
+    if f is None or i is None:
+        return jsonify({"error": "Missing folder or image index"}), 400
+    
+    if f < 0 or f >= len(SCAN_RESULT):
+        return jsonify({"error": "Invalid folder index"}), 400
+    
+    folder = SCAN_RESULT[f]
+    if i < 0 or i >= len(folder["images"]):
+        return jsonify({"error": "Invalid image index"}), 400
+    
+    image_path = folder["images"][i]
+    
+    # Calculate global index
+    global_index = sum(len(SCAN_RESULT[j]["images"]) for j in range(f)) + i + 1
+    total_images = sum(len(folder["images"]) for folder in SCAN_RESULT)
+    
+    return jsonify({
+        "filename": os.path.basename(image_path),
+        "folder": folder["folder_path"],
+        "global_index": global_index,
+        "total_images": total_images,
+        "folder_index": f,
+        "image_index": i,
+        "folder_count": len(folder["images"])
+    })
+
+
+
+
 @app.route("/inspect/<path:model_filepath>")
 def inspect_model(model_filepath: str):
     """
@@ -268,31 +349,7 @@ def inspect_model(model_filepath: str):
         return jsonify({"error": f"Unexpected error: {exc}"}), 500
 
 
-@app.route("/inspect/browse")
-def browse_models():
-    """
-    Browse the root directory to pick a model file.
-    """
-    rel_path = request.args.get("path", "").strip()
-    try:
-        listing = _list_directory(rel_path)
-        return jsonify(
-            {
-                "path": listing["path"],
-                "dirs": listing["dirs"],
-                "files": listing["files"],
-                "root": str(_ensure_root_configured()),
-                "allowed_extensions": sorted(ALLOWED_EXTENSIONS),
-            }
-        )
-    except FileNotFoundError as exc:
-        return jsonify({"error": str(exc)}), 404
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 500
-    except Exception as exc:  # pragma: no cover
-        return jsonify({"error": f"Unexpected error: {exc}"}), 500
+
 
 
 def main(root: str):

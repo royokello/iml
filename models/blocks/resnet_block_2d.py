@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from models.blocks.conv_2d import Conv2d, Conv2d1x1Int8
+from models.blocks.conv_2d import Conv2d
 from models.blocks.linear import LinearFP16
 
 
@@ -33,7 +33,6 @@ class ResnetBlock2D(nn.Module):
 
         if in_channels != out_channels:
             self.conv_shortcut = Conv2d(in_channels, out_channels, kernel_size=1)
-            # self.conv_shortcut = Conv2d1x1Int8(in_channels=in_channels, out_channels=out_channels)
         else:
             self.conv_shortcut = None
 

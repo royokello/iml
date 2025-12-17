@@ -1,0 +1,142 @@
+body {
+    margin: 0;
+}
+
+.viewer-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    background: #002b36;
+}
+
+.controls {
+    background: #073642;
+    padding: 1.5rem;
+    border-bottom: 1px solid #0f3b46;
+}
+
+.controls h1 {
+    margin: 0 0 0.35rem 0;
+    font-size: 1.5rem;
+    color: #fdf6e3;
+}
+
+.controls .lead {
+    margin: 0 0 1rem 0;
+    color: #93a1a1;
+    font-size: 0.95rem;
+}
+
+.input-group {
+    display: flex;
+    gap: 0.75rem;
+    max-width: 900px;
+}
+
+.input-group input {
+    flex: 1;
+    padding: 0.75rem 0.9rem;
+    background: #002b36;
+    border: 1px solid #073642;
+    color: #fdf6e3;
+    border-radius: 10px;
+    box-sizing: border-box;
+}
+
+.input-group input:focus {
+    border-color: #2aa198;
+    outline: none;
+}
+
+.input-group button {
+    padding: 0.75rem 1.5rem;
+    background: #2aa198;
+    border: 1px solid #2aa198;
+    color: #002b36;
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: transform 0.05s ease, box-shadow 0.15s ease;
+}
+
+.input-group button:hover {
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+    transform: translateY(-1px);
+}
+
+.input-group button:active {
+    transform: translateY(0);
+}
+
+.input-group button:disabled {
+    background: #586e75;
+    border-color: #586e75;
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.image-viewport {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+    background: #002b36;
+}
+
+.image-viewport img {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+}
+
+.info-bar {
+    background: #073642;
+    padding: 0.75rem 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.9rem;
+    border-top: 1px solid #0f3b46;
+    color: #fdf6e3;
+}
+
+.info-item {
+    display: flex;
+    gap: 0.5rem;
+}
+
+.info-label {
+    color: #93a1a1;
+}
+
+.error-message {
+    color: #dc322f;
+    font-weight: bold;
+    padding: 0.75rem 1rem;
+    margin-top: 0.75rem;
+    border: 1px solid #dc322f;
+    border-radius: 10px;
+    background: rgba(220, 50, 47, 0.1);
+}
+
+.loading {
+    color: #93a1a1;
+    font-style: italic;
+}
+
+.help-text {
+    color: #93a1a1;
+    font-size: 0.85rem;
+    margin-top: 0.75rem;
+}
+
+.help-text a {
+    color: #2aa198;
+    text-decoration: none;
+}
+
+.help-text a:hover {
+    text-decoration: underline;
+}

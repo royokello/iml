@@ -23,11 +23,50 @@ UNET_PREFIXES = (
 )
 
 
-def _parse_precision(value: str) -> str:
-    value_lower = value.lower()
-    if value_lower not in {"fp16", "fp32", "int8"}:
-        raise argparse.ArgumentTypeError("Precision must be one of: fp16, fp32, int8.")
-    return value_lower
+def _parse_dtype(name: str) -> np.dtype:
+    if name == "fp32":
+        return np.float32
+    if name == "fp16":
+        return np.float16
+    if name == "int8":
+        return np.int8
+    raise ValueError(f"Unknown dtype: {name}")
+
+
+def _normalize_dtype_str(s: str) -> str:
+    if s == "f16": return "fp16"
+    if s == "f32": return "fp32"
+    if s == "i8": return "int8"
+    return s
+
+def _parse_config(value: str) -> Tuple[str, int | None, np.dtype, np.dtype | None]:
+    # e.g. cast_f16, channel_i8_f16, block32_i8_f16
+    parts = value.lower().split("_")
+    head = parts[0]
+
+    if head == "cast":
+        # cast_f16 -> (cast, None, float16, None)
+        if len(parts) != 2:
+             raise argparse.ArgumentTypeError(f"Invalid cast format '{value}'. Expected cast_<dtype>.")
+        return "cast", None, _parse_dtype(_normalize_dtype_str(parts[1])), None
+
+    if head == "channel":
+        # channel_i8_f16 -> (channel, None, int8, float16)
+        if len(parts) != 3:
+             raise argparse.ArgumentTypeError(f"Invalid channel format '{value}'. Expected channel_<w_dtype>_<s_dtype>.")
+        return "channel", None, _parse_dtype(_normalize_dtype_str(parts[1])), _parse_dtype(_normalize_dtype_str(parts[2]))
+
+    if head.startswith("block"):
+        # block32_i8_f16 -> (block, 32, int8, float16)
+        if len(parts) != 3:
+             raise argparse.ArgumentTypeError(f"Invalid block format '{value}'. Expected block<N>_<w_dtype>_<s_dtype>.")
+        try:
+            block_size = int(head[5:])
+        except ValueError:
+             raise argparse.ArgumentTypeError(f"Invalid block size in '{head}'.")
+        return "block", block_size, _parse_dtype(_normalize_dtype_str(parts[1])), _parse_dtype(_normalize_dtype_str(parts[2]))
+
+    raise argparse.ArgumentTypeError(f"Unknown strategy in '{value}'. Must start with cast, channel, or block.")
 
 
 def _derive_output_dir(input_path: str, out_dir: str) -> Path:
@@ -47,15 +86,15 @@ def _is_unet_tensor(name: str) -> bool:
 
 def _target_precision(
     name: str,
-    base: str,
-    to_q: str,
-    to_k: str,
-    to_v: str,
-    to_out: str,
-    proj_in: str,
-    proj_out: str,
-    conv_shortcut: str,
-) -> str:
+    base: Tuple,
+    to_q: Tuple,
+    to_k: Tuple,
+    to_v: Tuple,
+    to_out: Tuple,
+    proj_in: Tuple,
+    proj_out: Tuple,
+    conv_shortcut: Tuple,
+) -> Tuple:
     if "to_q" in name:
         return to_q
     if "to_k" in name:
@@ -73,23 +112,23 @@ def _target_precision(
     return base
 
 
-def _quantize_int8(tensor: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def _quantize_int8(tensor: np.ndarray, scale_dtype: np.dtype = np.float16) -> Tuple[np.ndarray, np.ndarray]:
     arr32 = np.asarray(tensor, dtype=np.float32)
     if not arr32.size:
         scale_shape = arr32.shape[:1] if arr32.ndim else ()
-        return arr32.astype(np.int8), np.ones(scale_shape, dtype=np.float16)
+        return arr32.astype(np.int8), np.ones(scale_shape, dtype=scale_dtype)
 
     if arr32.ndim == 0:
         max_abs = float(np.abs(arr32))
         scale = np.array(max(max_abs / 127.0, SCALE_MIN), dtype=np.float32)
         quantized = np.clip(np.rint(arr32 / scale), INT8_MIN, INT8_MAX).astype(np.int8)
-        return quantized, np.asarray(scale, dtype=np.float16)
+        return quantized, np.asarray(scale, dtype=scale_dtype)
 
     if arr32.ndim == 1:
         max_abs = np.abs(arr32)
         scales = np.maximum(max_abs / 127.0, SCALE_MIN)
         quantized = np.clip(np.rint(arr32 / scales), INT8_MIN, INT8_MAX).astype(np.int8)
-        return quantized, scales.astype(np.float16)
+        return quantized, scales.astype(scale_dtype)
 
     reduce_axes = tuple(range(1, arr32.ndim))
     max_abs = np.max(np.abs(arr32), axis=reduce_axes, keepdims=False)
@@ -100,47 +139,71 @@ def _quantize_int8(tensor: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         INT8_MIN,
         INT8_MAX,
     ).astype(np.int8)
-    return quantized, scales.astype(np.float16)
+    return quantized, scales.astype(scale_dtype)
 
 
-def _cast_tensor(tensor: np.ndarray, precision: str) -> Tuple[np.ndarray, np.ndarray | None]:
-    if precision == "int8":
-        return _quantize_int8(tensor)
-    if precision == "fp16":
-        return np.asarray(tensor, dtype=np.float16), None
+def _quantize_block(
+    tensor: np.ndarray,
+    block_size: int,
+    scale_dtype: np.dtype = np.float16
+) -> Tuple[np.ndarray, np.ndarray]:
+    arr32 = np.asarray(tensor, dtype=np.float32)
+    if not arr32.size:
+        return arr32.astype(np.int8), np.ones((), dtype=scale_dtype)
+
+    original_shape = arr32.shape
+    flattened = arr32.flatten()
+
+    # Pad if necessary
+    pad_len = (block_size - (flattened.size % block_size)) % block_size
+    if pad_len > 0:
+        flattened = np.pad(flattened, (0, pad_len), mode="constant")
+
+    # Reshape to (num_blocks, block_size)
+    reshaped = flattened.reshape(-1, block_size)
+
+    max_abs = np.max(np.abs(reshaped), axis=1, keepdims=True)
+    scales = np.maximum(max_abs / 127.0, SCALE_MIN)
+
+    # Quantize
+    quantized_flat = np.clip(
+        np.rint(reshaped / scales), INT8_MIN, INT8_MAX
+    ).astype(np.int8)
+
+    # Remove padding and restore shape
+    if pad_len > 0:
+        quantized_flat = quantized_flat.flatten()[:-pad_len]
+    else:
+        quantized_flat = quantized_flat.flatten()
+
+    quantized = quantized_flat.reshape(original_shape)
+    return quantized, scales.flatten().astype(scale_dtype)
+
+
+def _cast_tensor(
+    tensor: np.ndarray,
+    config: Tuple[str, int | None, np.dtype, np.dtype | None]
+) -> Tuple[np.ndarray, np.ndarray | None]:
+    strategy, block_size, w_dtype, s_dtype = config
+
+    if strategy == "channel":
+        # We need to pass dtypes to quantizer if we want to be strict,
+        # but for now we assume int8/fp16 as before or update _quantize_int8
+        # The user requested "channel and block must specify the scale precision as well"
+        return _quantize_int8(tensor, scale_dtype=s_dtype or np.float16)
+    
+    if strategy == "block":
+         assert block_size is not None
+         return _quantize_block(tensor, block_size, scale_dtype=s_dtype or np.float16)
+
+    if strategy == "cast":
+         return np.asarray(tensor, dtype=w_dtype), None
+    
     return np.asarray(tensor, dtype=np.float32), None
 
 
-def _convert_unet_tensors(
-    tensors: Dict[str, np.ndarray],
-    base_precision: str,
-    to_q_precision: str,
-    to_k_precision: str,
-    to_v_precision: str,
-    to_out_precision: str,
-    proj_in_precision: str,
-    proj_out_precision: str,
-    conv_shortcut_precision: str,
-) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
-    converted: Dict[str, np.ndarray] = {}
-    scales: Dict[str, np.ndarray] = {}
-    for name, tensor in tensors.items():
-        precision = _target_precision(
-            name,
-            base_precision,
-            to_q_precision,
-            to_k_precision,
-            to_v_precision,
-            to_out_precision,
-            proj_in_precision,
-            proj_out_precision,
-            conv_shortcut_precision,
-        )
-        cast_tensor, scale = _cast_tensor(tensor, precision)
-        converted[name] = cast_tensor
-        if scale is not None:
-            scales[f"{name}{SCALE_SUFFIX}"] = scale
-    return converted, scales
+
+
 
 
 def _bytes_to_mb(num_bytes: int) -> float:
@@ -166,52 +229,52 @@ def parse_args() -> argparse.Namespace:
         help="Overwrite the UNet safetensors referenced by --input instead of writing to --output.",
     )
     parser.add_argument(
-        "--base-precision",
-        default="fp16",
-        type=_parse_precision,
-        help="Precision for tensors that are not to_q, to_k, to_v, to_out, proj_in, or proj_out (default: fp16).",
+        "--base",
+        default="cast_f16",
+        type=_parse_config,
+        help="Precision for tensors that are not to_q, to_k, to_v, to_out, proj_in, or proj_out (default: cast_f16).",
     )
     parser.add_argument(
-        "--to-q-precision",
-        default="int8",
-        type=_parse_precision,
-        help="Precision override for to_q tensors (default: int8).",
+        "--to-q",
+        default="channel_i8_f16",
+        type=_parse_config,
+        help="Precision override for to_q tensors (default: channel_i8_f16).",
     )
     parser.add_argument(
-        "--to-k-precision",
-        default="int8",
-        type=_parse_precision,
-        help="Precision override for to_k tensors (default: int8).",
+        "--to-k",
+        default="channel_i8_f16",
+        type=_parse_config,
+        help="Precision override for to_k tensors (default: channel_i8_f16).",
     )
     parser.add_argument(
-        "--to-v-precision",
-        default="fp16",
-        type=_parse_precision,
-        help="Precision override for to_v tensors (default: int8).",
+        "--to-v",
+        default="block32_i8_f16",
+        type=_parse_config,
+        help="Precision override for to_v tensors (default: block32_i8_f16).",
     )
     parser.add_argument(
-        "--to-out-precision",
-        default="fp16",
-        type=_parse_precision,
-        help="Precision override for to_out tensors (default: int8).",
+        "--to-out",
+        default="cast_f16",
+        type=_parse_config,
+        help="Precision override for to_out tensors (default: cast_f16).",
     )
     parser.add_argument(
-        "--proj-in-precision",
-        default="fp16",
-        type=_parse_precision,
-        help="Precision override for proj_in tensors (default: int8).",
+        "--proj-in",
+        default="cast_f16",
+        type=_parse_config,
+        help="Precision override for proj_in tensors (default: cast_f16).",
     )
     parser.add_argument(
-        "--proj-out-precision",
-        default="fp16",
-        type=_parse_precision,
-        help="Precision override for proj_out tensors (default: int8).",
+        "--proj-out",
+        default="cast_f16",
+        type=_parse_config,
+        help="Precision override for proj_out tensors (default: cast_f16).",
     )
     parser.add_argument(
-        "--conv-shortcut-precision",
-        default="fp16",
-        type=_parse_precision,
-        help="Precision override for conv_shortcut tensors (default: int8).",
+        "--conv-shortcut",
+        default="cast_f16",
+        type=_parse_config,
+        help="Precision override for conv_shortcut tensors (default: cast_f16).",
     )
     
     args = parser.parse_args()
@@ -221,14 +284,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def _log_precisions(args: argparse.Namespace) -> None:
-    print(f"[precision] base={args.base_precision}")
-    print(f"[precision] to_q={args.to_q_precision}")
-    print(f"[precision] to_k={args.to_k_precision}")
-    print(f"[precision] to_v={args.to_v_precision}")
-    print(f"[precision] to_out={args.to_out_precision}")
-    print(f"[precision] proj_in={args.proj_in_precision}")
-    print(f"[precision] proj_out={args.proj_out_precision}")
-    print(f"[precision] conv_shortcut={args.conv_shortcut_precision}")
+    print(f"[precision] base={args.base}")
+    print(f"[precision] to_q={args.to_q}")
+    print(f"[precision] to_k={args.to_k}")
+    print(f"[precision] to_v={args.to_v}")
+    print(f"[precision] to_out={args.to_out}")
+    print(f"[precision] proj_in={args.proj_in}")
+    print(f"[precision] proj_out={args.proj_out}")
+    print(f"[precision] conv_shortcut={args.conv_shortcut}")
 
 
 def _resolve_input_path(input_arg: str) -> str:
@@ -260,17 +323,24 @@ def main() -> None:
         unet_tensors = tensors
     original_bytes = sum(tensor.nbytes for tensor in unet_tensors.values())
 
-    converted, scale_tensors = _convert_unet_tensors(
-        unet_tensors,
-        args.base_precision,
-        args.to_q_precision,
-        args.to_k_precision,
-        args.to_v_precision,
-        args.to_out_precision,
-        args.proj_in_precision,
-        args.proj_out_precision,
-        args.conv_shortcut_precision,
-    )
+    converted: Dict[str, np.ndarray] = {}
+    scale_tensors: Dict[str, np.ndarray] = {}
+    for name, tensor in unet_tensors.items():
+        config = _target_precision(
+            name,
+            args.base,
+            args.to_q,
+            args.to_k,
+            args.to_v,
+            args.to_out,
+            args.proj_in,
+            args.proj_out,
+            args.conv_shortcut,
+        )
+        cast_tensor, scale = _cast_tensor(tensor, config)
+        converted[name] = cast_tensor
+        if scale is not None:
+            scale_tensors[f"{name}{SCALE_SUFFIX}"] = scale
     all_tensors: Dict[str, np.ndarray] = {**converted, **scale_tensors}
     if args.inplace:
         out_path = Path(resolved_input)

@@ -6,11 +6,11 @@ from typing import Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-from models.blocks.conv_2d import Conv2d
+from models.blocks.conv_2d import Conv2d, Conv2dBlock32U8F16
 from models.blocks.cross_attn_down_block_2d import CrossAttnDownBlock2D
 from models.blocks.cross_attn_up_block_2d import CrossAttnUpBlock2D
 from models.blocks.down_block_2d import DownBlock2D
-from models.blocks.linear import LinearFP16, LinearInt8
+from models.blocks.linear import LinearFP16, LinearInt8, LinearBlock32U8F16
 from models.blocks.unet_mid_block_2d_cross_attn import UNetMidBlock2DCrossAttn
 from models.blocks.up_block_2d import UpBlock2D
 from models.embeddings import GaussianFourierProjection, ImageHintTimeEmbedding, ImageProjection, ImageTimeEmbedding, TextImageProjection, TextImageTimeEmbedding, TextTimeEmbedding, TimestepEmbedding, Timesteps, get_activation
@@ -361,7 +361,7 @@ class SDXLUNet(nn.Module):
         self.load_state_dict(state, strict=False)
 
         for module in self.modules():
-            if isinstance(module, LinearInt8):
+            if isinstance(module, (LinearInt8, LinearBlock32U8F16, Conv2dBlock32U8F16)):
                 module._weights_loaded = True
 
     def get_time_embed(

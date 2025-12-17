@@ -491,6 +491,7 @@ class StableDiffusionXLPipeline(
 
         self._num_timesteps = len(timesteps)
         
+        diffusion_start = time.perf_counter()
         for i, t in enumerate(timesteps):
             step_start = time.perf_counter()
             # always use classifier free guidance
@@ -528,6 +529,9 @@ class StableDiffusionXLPipeline(
 
             step_duration = time.perf_counter() - step_start
             print(f"Step {i + 1}/{len(timesteps)} ({step_duration:.2f}s)")
+
+        total_duration = time.perf_counter() - diffusion_start
+        print(f"Total diffusion time: {total_duration:.2f}s")
 
         # Move UNet off GPU before loading the VAE for decoding.
         self.unet.to(device="cpu")
