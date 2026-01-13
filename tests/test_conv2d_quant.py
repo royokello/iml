@@ -2,18 +2,18 @@ import torch
 import sys
 import os
 sys.path.append(os.getcwd())
-from models.blocks.conv_2d import Conv2dBlock32U8F16
+from models.blocks.conv_2d import QuantConv1x1
 import math
 import torch.nn.functional as F
 
 def test_conv2d_block_quant():
-    print("Testing Conv2dBlock32U8F16 (1x1)...")
+    print("Testing QuantConv1x1...")
     in_channels = 64
     out_channels = 128
     kernel_size = 1
     
     # 1. Instantiate
-    block = Conv2dBlock32U8F16(in_channels, out_channels, kernel_size=kernel_size, bias=True)
+    block = QuantConv1x1(in_channels, out_channels, bias=True)
     
     # 2. Create random data
     # Int8 weights
@@ -28,7 +28,7 @@ def test_conv2d_block_quant():
     print(f"Scale shape: {weight_scale.shape}")
     
     # 3. Load weights
-    block.enable_int8(weight_int8, weight_scale)
+    block.load_quantized_weights(weight_int8, weight_scale)
     
     # 4. Input
     x = torch.randn(1, in_channels, 32, 32, dtype=torch.float16)

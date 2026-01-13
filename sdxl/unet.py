@@ -6,14 +6,19 @@ from typing import Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-from models.blocks.conv_2d import Conv2d, Conv2dBlock32U8F16
+from models.blocks.conv_2d import QuantConv1x1
 from models.blocks.cross_attn_down_block_2d import CrossAttnDownBlock2D
 from models.blocks.cross_attn_up_block_2d import CrossAttnUpBlock2D
 from models.blocks.down_block_2d import DownBlock2D
-from models.blocks.linear import LinearFP16, LinearInt8, LinearBlock32U8F16
+from models.blocks.linear import QuantLinear
 from models.blocks.unet_mid_block_2d_cross_attn import UNetMidBlock2DCrossAttn
 from models.blocks.up_block_2d import UpBlock2D
 from models.embeddings import GaussianFourierProjection, ImageHintTimeEmbedding, ImageProjection, ImageTimeEmbedding, TextImageProjection, TextImageTimeEmbedding, TextTimeEmbedding, TimestepEmbedding, Timesteps, get_activation
+
+
+def _linear_fp16(in_features: int, out_features: int, bias: bool = True) -> nn.Linear:
+    layer = nn.Linear(in_features, out_features, bias=bias)
+    return layer.to(torch.float16)
 
 
 def load_unet_key_mapping(base_dir: str) -> Dict[str, str]:
@@ -27,12 +32,12 @@ def load_unet_key_mapping(base_dir: str) -> Dict[str, str]:
 class AddEmbedding(nn.Module):
     def __init__(self, input_dim: int, embed_dim: int):
         super().__init__()
-        self.linear_1 = LinearFP16(
+        self.linear_1 = _linear_fp16(
             in_features=input_dim,
             out_features=embed_dim,
             bias=True,
         )
-        self.linear_2 = LinearFP16(
+        self.linear_2 = _linear_fp16(
             in_features=embed_dim,
             out_features=embed_dim,
             bias=True,
@@ -143,13 +148,13 @@ class SDXLUNet(nn.Module):
 
 
         # 1) input conv
-        self.conv_in = Conv2d(
+        self.conv_in = nn.Conv2d(
             in_channels=self.config["in_channels"],
             out_channels=self.config["block_out_channels"][0],
             kernel_size=3,
             stride=1,
             padding=1,
-        )
+        ).to(torch.float16)
 
         # 2) time embedding
         self.label_emb_in_dim = 2816
@@ -291,13 +296,13 @@ class SDXLUNet(nn.Module):
         # 6) output head
         self.conv_norm_out = nn.GroupNorm(32, self.config["block_out_channels"][0], eps=1e-5, affine=True)
         self.conv_act = nn.SiLU()
-        self.conv_out = Conv2d(
+        self.conv_out = nn.Conv2d(
             in_channels=self.config["block_out_channels"][0],
             out_channels=self.config["out_channels"],
             kernel_size=3,
             stride=1,
             padding=1,
-        )
+        ).to(torch.float16)
 
         # 7) optional filtered weight loading from safetensors/state_dict
         if model is not None:
@@ -361,7 +366,7 @@ class SDXLUNet(nn.Module):
         self.load_state_dict(state, strict=False)
 
         for module in self.modules():
-            if isinstance(module, (LinearInt8, LinearBlock32U8F16, Conv2dBlock32U8F16)):
+            if isinstance(module, (QuantLinear, QuantConv1x1)):
                 module._weights_loaded = True
 
     def get_time_embed(

@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.blocks.conv_2d import Conv2d
-
 
 class UpSample2D(nn.Module):
     def __init__(
@@ -17,12 +15,12 @@ class UpSample2D(nn.Module):
         self.use_conv = use_conv
 
         if use_conv:
-            self.conv = Conv2d(
+            self.conv = nn.Conv2d(
                 in_channels=channels,
                 out_channels=channels,
                 kernel_size=3,
                 padding=1,
-            )
+            ).to(torch.float16)
         else:
             self.conv = None
 
@@ -32,7 +30,7 @@ class UpSample2D(nn.Module):
         if self.conv is not None:
             if debug:
                 print("[debug] upsample conv input stats:", float(x.min()), float(x.max()))
-            x = self.conv(x, debug=debug)
+            x = self.conv(x)
             if debug:
                 print("[debug] upsample conv output stats:", float(x.min()), float(x.max()))
 

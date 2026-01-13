@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>ML-B SDXL</title>
+  <link rel="stylesheet" href="/static/common.css" />
+  <link rel="stylesheet" href="/static/styles/sdxl.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+
+<body>
+  <main class="sdxl-page">
+    <header class="sdxl-header">
+      <h1>Generate with SDXL</h1>
+      <p class="lead">Run the SDXL pipeline and store outputs under the configured root.</p>
+    </header>
+
+    {% set prompt_value = last_input.prompt if last_input else defaults.prompt %}
+    {% set negative_value = last_input.negative if last_input else defaults.negative %}
+    {% set seed_value = last_input.seed if last_input else defaults.seed %}
+    {% set width_value = last_input.width if last_input else defaults.width %}
+    {% set height_value = last_input.height if last_input else defaults.height %}
+    {% set steps_value = last_input.steps if last_input else defaults.steps %}
+    {% set cfg_value = last_input.cfg if last_input else defaults.cfg %}
+
+    <p class="sdxl-note">Base model directory: <code>{{ model_base }}</code></p>
+
+    <form method="POST" action="/sdxl" class="sdxl-form">
+
+      <div class="form-group">
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" name="prompt" rows="3">{{ prompt_value }}</textarea>
+      </div>
+
+      <div class="form-group">
+        <label for="negative">Negative prompt</label>
+        <textarea id="negative" name="negative" rows="2">{{ negative_value }}</textarea>
+      </div>
+
+      <div class="flex-row">
+        <div class="form-group flex-col">
+          <label for="width">Width</label>
+          <input type="number" id="width" name="width" min="64" value="{{ width_value }}">
+        </div>
+        <div class="form-group flex-col">
+          <label for="height">Height</label>
+          <input type="number" id="height" name="height" min="64" value="{{ height_value }}">
+        </div>
+        <div class="form-group flex-col">
+          <label for="steps">Steps</label>
+          <input type="number" id="steps" name="steps" min="1" value="{{ steps_value }}">
+        </div>
+      </div>
+
+      <div class="flex-row">
+        <div class="form-group flex-col">
+          <label for="cfg">CFG</label>
+          <input type="number" step="0.1" id="cfg" name="cfg" value="{{ cfg_value }}">
+        </div>
+        <div class="form-group flex-col">
+          <label for="seed">Seed</label>
+          <input type="number" id="seed" name="seed" value="{{ seed_value }}">
+        </div>
+      </div>
+
+      <button type="submit" class="btn-submit">Generate</button>
+    </form>
+
+    {% if error %}
+    <div class="error-msg">{{ error }}</div>
+    {% endif %}
+
+    {% if result %}
+    <section class="panel">
+      <header class="panel-header">
+        <h2>Result</h2>
+      </header>
+      <p>Output folder: <code>{{ result.output_dir }}</code></p>
+      <div class="sdxl-gallery">
+        {% for image in result.images %}
+        <figure class="sdxl-card">
+          <img src="/api/sdxl-image?file={{ image.filename }}" alt="SDXL output {{ loop.index }}">
+          <figcaption><code>{{ image.filename }}</code></figcaption>
+        </figure>
+        {% endfor %}
+      </div>
+    </section>
+    {% endif %}
+
+    <div class="back-link">
+      <a href="/">&larr; Back to Home</a>
+    </div>
+  </main>
+</body>
+
+</html>

@@ -6,7 +6,9 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from video.analysis import run_analysis
+from video.animate import create_image_animation
 from video.compress import run_batch_compression
+from video.grid import create_video_grids
 
 from flask import Flask, jsonify, render_template, request, send_file
 
@@ -36,6 +38,39 @@ def _resolve_path(relative_path: str) -> Path:
     if not candidate.is_absolute():
         raise ValueError("Please provide an absolute path to the safetensors file.")
     return candidate.resolve()
+
+
+def _grid_output_dir() -> Path:
+    return _ensure_root_configured() / "outputs" / "grids"
+
+
+def _animation_output_dir() -> Path:
+    return _ensure_root_configured() / "animations"
+
+
+def _sdxl_output_dir() -> Path:
+    return _ensure_root_configured() / "sdxl"
+
+
+def _parse_pair(value: str, label: str) -> tuple[int, int]:
+    if not value:
+        raise ValueError(f"{label} is required.")
+
+    cleaned = value.lower().replace(":", "x")
+    parts = [part.strip() for part in cleaned.split("x") if part.strip()]
+    if len(parts) != 2:
+        raise ValueError(f"{label} must look like 2x2.")
+
+    try:
+        first = int(parts[0])
+        second = int(parts[1])
+    except ValueError as exc:
+        raise ValueError(f"{label} must contain integers.") from exc
+
+    if first <= 0 or second <= 0:
+        raise ValueError(f"{label} must use positive numbers.")
+
+    return first, second
 
 
 def _summarize_safetensors(model_path: Path) -> Dict[str, Any]:
@@ -223,6 +258,190 @@ def compress_page():
     return render_template("compress.html", **context)
 
 
+@app.route("/grids", methods=["GET", "POST"])
+def grids_page():
+    context = {}
+    if request.method == "POST":
+        video_path = request.form.get("video", "").strip()
+        grid_format = request.form.get("grid_format", "2x2").strip()
+        cell_ratio = request.form.get("cell_ratio", "1x1").strip()
+        alignment = request.form.get("alignment", "center").strip().lower()
+        frame_interval_raw = request.form.get("frame_interval", "1").strip()
+        cell_height_raw = request.form.get("cell_height", "384").strip()
+
+        context["last_input"] = {
+            "video": video_path,
+            "grid_format": grid_format,
+            "cell_ratio": cell_ratio,
+            "alignment": alignment,
+            "frame_interval": frame_interval_raw,
+            "cell_height": cell_height_raw,
+        }
+
+        if not video_path:
+            context["error"] = "Please provide a video path."
+        else:
+            try:
+                rows, cols = _parse_pair(grid_format, "Grid format")
+                ratio_w, ratio_h = _parse_pair(cell_ratio, "Cell ratio")
+                frame_interval = float(frame_interval_raw)
+                cell_height = int(cell_height_raw)
+
+                result = create_video_grids(
+                    video_path=video_path,
+                    output_dir=_grid_output_dir(),
+                    grid_rows=rows,
+                    grid_cols=cols,
+                    cell_ratio=(ratio_w, ratio_h),
+                    cell_height=cell_height,
+                    frame_interval_sec=frame_interval,
+                    alignment=alignment,
+                )
+                context["result"] = result
+            except Exception as exc:
+                context["error"] = f"Grid generation failed: {exc}"
+
+    return render_template("grids.html", **context)
+
+
+@app.route("/animate-grid", methods=["GET", "POST"])
+def animate_grid_page():
+    context: Dict[str, Any] = {}
+    if request.method == "POST":
+        image_path = request.form.get("image_path", "").strip()
+        length_raw = request.form.get("length", "4").strip()
+        context["last_input"] = {
+            "image_path": image_path,
+            "length": length_raw,
+        }
+
+        try:
+            length_secs = float(length_raw)
+            if length_secs <= 0:
+                raise ValueError("Length must be greater than 0.")
+        except ValueError as exc:
+            context["error"] = f"Invalid length: {exc}"
+            return render_template("animate.html", **context)
+
+        if not image_path:
+            context["error"] = "Please provide an absolute path to the grid image."
+        else:
+            try:
+                video_result = create_image_animation(
+                    image_path=image_path,
+                    output_root=_animation_output_dir(),
+                    length_seconds=length_secs,
+                )
+                context["result"] = {
+                    "run_path": str(_animation_output_dir()),
+                    "length": length_secs,
+                    "video": video_result,
+                    "frame_count": video_result["frame_count"],
+                    "cell_count": video_result["cells"],
+                }
+            except Exception as exc:
+                context["error"] = f"Failed to create animation: {exc}"
+
+    return render_template("animate.html", **context)
+
+
+@app.route("/sdxl", methods=["GET", "POST"])
+def sdxl_page():
+    fallback_defaults = {
+        "prompt": "A propaganda poster depicting a cat dressed as french emperor napoleon holding a piece of cheese.",
+        "negative": "",
+        "seed": 19930625,
+        "height": 512,
+        "width": 512,
+        "steps": 20,
+        "cfg": 5.0,
+    }
+
+    sdxl_inference = None
+    defaults = dict(fallback_defaults)
+    load_error = None
+
+    try:
+        from sdxl import _inference as sdxl_inference
+
+        defaults = {
+            "prompt": sdxl_inference.DEFAULT_PROMPT,
+            "negative": sdxl_inference.DEFAULT_NEGATIVE,
+            "seed": sdxl_inference.DEFAULT_SEED,
+            "height": sdxl_inference.DEFAULT_HEIGHT,
+            "width": sdxl_inference.DEFAULT_WIDTH,
+            "steps": sdxl_inference.DEFAULT_STEPS,
+            "cfg": sdxl_inference.DEFAULT_CFG,
+        }
+    except Exception as exc:
+        load_error = f"Unable to load SDXL inference dependencies: {exc}"
+
+    model_base = _ensure_root_configured() / "sdxl" / "base"
+    context = {"defaults": defaults, "model_base": str(model_base)}
+
+    if request.method == "POST":
+        prompt = request.form.get("prompt", "").strip()
+        negative = request.form.get("negative", "").strip()
+        seed_raw = request.form.get("seed", "").strip()
+        width_raw = request.form.get("width", "").strip()
+        height_raw = request.form.get("height", "").strip()
+        steps_raw = request.form.get("steps", "").strip()
+        cfg_raw = request.form.get("cfg", "").strip()
+
+        context["last_input"] = {
+            "prompt": prompt,
+            "negative": negative,
+            "seed": seed_raw,
+            "width": width_raw,
+            "height": height_raw,
+            "steps": steps_raw,
+            "cfg": cfg_raw,
+        }
+
+        if load_error:
+            context["error"] = load_error
+            return render_template("sdxl.html", **context)
+
+        if not model_base.is_dir():
+            context["error"] = f"SDXL base directory not found: {model_base}"
+            return render_template("sdxl.html", **context)
+
+        try:
+            seed = int(seed_raw) if seed_raw else defaults["seed"]
+            width = int(width_raw) if width_raw else defaults["width"]
+            height = int(height_raw) if height_raw else defaults["height"]
+            steps = int(steps_raw) if steps_raw else defaults["steps"]
+            cfg = float(cfg_raw) if cfg_raw else defaults["cfg"]
+        except ValueError as exc:
+            context["error"] = f"Invalid numeric value: {exc}"
+            return render_template("sdxl.html", **context)
+
+        try:
+            output_dir = _sdxl_output_dir()
+            output_paths = sdxl_inference.generate_images(
+                output_dir=str(output_dir),
+                base_dir=str(model_base),
+                prompt=prompt or defaults["prompt"],
+                negative=negative,
+                seed=seed,
+                height=height,
+                width=width,
+                steps=steps,
+                cfg=cfg,
+            )
+        except Exception as exc:
+            context["error"] = f"SDXL generation failed: {exc}"
+        else:
+            context["result"] = {
+                "output_dir": str(output_dir),
+                "images": [{"filename": Path(path).name, "path": path} for path in output_paths],
+            }
+    elif load_error:
+        context["error"] = load_error
+
+    return render_template("sdxl.html", **context)
+
+
 @app.route("/viewer")
 def viewer():
     return render_template("viewer.html")
@@ -244,21 +463,23 @@ def api_scan():
     # Scan directory recursively
     SCAN_RESULT = []
     image_extensions = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif"}
+    video_extensions = {".mp4", ".webm", ".mov", ".avi", ".mkv"}
+    media_extensions = image_extensions | video_extensions
     
     for root, dirs, files in os.walk(path):
         # Sort directories for consistent ordering
         dirs.sort()
         
-        # Filter and sort image files
-        images = sorted([
+        # Filter and sort media files (images and videos)
+        media_files = sorted([
             os.path.join(root, f) for f in files
-            if Path(f).suffix.lower() in image_extensions
+            if Path(f).suffix.lower() in media_extensions
         ])
         
-        if images:
+        if media_files:
             SCAN_RESULT.append({
                 "folder_path": root,
-                "images": images
+                "images": media_files  # Keep 'images' key for backward compatibility
             })
     
     # Calculate totals
@@ -292,8 +513,24 @@ def api_view():
     if i < 0 or i >= len(folder["images"]):
         return jsonify({"error": "Invalid image index"}), 400
     
-    image_path = folder["images"][i]
-    return send_file(image_path)
+    media_path = folder["images"][i]
+    
+    # Detect file type and set appropriate mimetype
+    ext = Path(media_path).suffix.lower()
+    video_extensions = {".mp4", ".webm", ".mov", ".avi", ".mkv"}
+    
+    if ext in video_extensions:
+        # Set mimetype for videos
+        mimetype_map = {
+            ".mp4": "video/mp4",
+            ".webm": "video/webm",
+            ".mov": "video/quicktime",
+            ".avi": "video/x-msvideo",
+            ".mkv": "video/x-matroska"
+        }
+        return send_file(media_path, mimetype=mimetype_map.get(ext, "video/mp4"))
+    else:
+        return send_file(media_path)
 
 
 @app.route("/api/meta")
@@ -326,6 +563,109 @@ def api_meta():
         "image_index": i,
         "folder_count": len(folder["images"])
     })
+
+
+@app.route("/api/grid-image")
+def api_grid_image():
+    run_dir = request.args.get("run", "").strip()
+    filename = request.args.get("file", "").strip()
+    if not run_dir or not filename:
+        return jsonify({"error": "Missing run or file name"}), 400
+
+    try:
+        datetime.strptime(run_dir, "%Y-%m-%d-%H-%M-%S")
+    except ValueError:
+        return jsonify({"error": "Invalid run name"}), 400
+
+    if Path(filename).name != filename:
+        return jsonify({"error": "Invalid file name"}), 400
+
+    try:
+        image_path = _grid_output_dir() / run_dir / filename
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+    if not image_path.is_file():
+        return jsonify({"error": "File not found"}), 404
+
+    return send_file(image_path, mimetype="image/png")
+
+
+@app.route("/api/grid-video")
+def api_grid_video():
+    run_dir = request.args.get("run", "").strip()
+    filename = request.args.get("file", "").strip()
+    if not run_dir or not filename:
+        return jsonify({"error": "Missing run or file name"}), 400
+
+    try:
+        datetime.strptime(run_dir, "%Y-%m-%d-%H-%M-%S")
+    except ValueError:
+        return jsonify({"error": "Invalid run name"}), 400
+
+    if Path(filename).name != filename or not filename.lower().endswith(".mp4"):
+        return jsonify({"error": "Invalid file name"}), 400
+
+    try:
+        video_path = _grid_output_dir() / run_dir / filename
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    if not video_path.is_file():
+        return jsonify({"error": "File not found"}), 404
+
+    return send_file(video_path, mimetype="video/mp4")
+
+
+@app.route("/api/animation-video")
+def api_animation_video():
+    filename = request.args.get("file", "").strip()
+    if not filename:
+        return jsonify({"error": "Missing file name"}), 400
+
+    if Path(filename).name != filename:
+        return jsonify({"error": "Invalid file name"}), 400
+
+    try:
+        video_path = _animation_output_dir() / filename
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    if not video_path.is_file():
+        return jsonify({"error": "File not found"}), 404
+
+    mimetype_map = {
+        ".mp4": "video/mp4",
+        ".avi": "video/x-msvideo",
+        ".webm": "video/webm",
+        ".gif": "image/gif",
+    }
+    return send_file(video_path, mimetype=mimetype_map.get(video_path.suffix.lower(), "video/mp4"))
+
+
+@app.route("/api/sdxl-image")
+def api_sdxl_image():
+    filename = request.args.get("file", "").strip()
+    if not filename:
+        return jsonify({"error": "Missing file name"}), 400
+
+    if Path(filename).name != filename:
+        return jsonify({"error": "Invalid file name"}), 400
+
+    try:
+        image_path = _sdxl_output_dir() / filename
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 500
+
+    if not image_path.is_file():
+        return jsonify({"error": "File not found"}), 404
+
+    mimetype_map = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
+    return send_file(image_path, mimetype=mimetype_map.get(image_path.suffix.lower(), "image/png"))
 
 
 

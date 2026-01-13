@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 
-from models.blocks.conv_2d import Conv2d
-
 
 class Downsample2D(nn.Module):
     def __init__(
@@ -16,13 +14,13 @@ class Downsample2D(nn.Module):
         self.use_conv = use_conv
 
         if use_conv:
-            self.conv = Conv2d(
+            self.conv = nn.Conv2d(
                 in_channels=channels,
                 out_channels=channels,
                 kernel_size=3,
                 stride=2,
                 padding=1,
-            )
+            ).to(torch.float16)
             self.pool = None
         else:
             self.conv = None
@@ -30,5 +28,5 @@ class Downsample2D(nn.Module):
 
     def forward(self, x: torch.Tensor, debug: bool = False) -> torch.Tensor:
         if self.use_conv and self.conv is not None:
-            return self.conv(x, debug=debug)
+            return self.conv(x)
         return self.pool(x)

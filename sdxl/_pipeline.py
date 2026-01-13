@@ -454,7 +454,7 @@ class StableDiffusionXLPipeline(
             device=device,
             generator=generator,
         )
-        print(f"Latent {tuple(latents.shape)} ...")
+        print(f"Latent {tuple(latents.shape)} ...", flush=True)
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -528,10 +528,10 @@ class StableDiffusionXLPipeline(
                     latents = latents.to(latents_dtype)
 
             step_duration = time.perf_counter() - step_start
-            print(f"Step {i + 1}/{len(timesteps)} ({step_duration:.2f}s)")
+            print(f"Step {i + 1}/{len(timesteps)} ({step_duration:.2f}s)", flush=True)
 
         total_duration = time.perf_counter() - diffusion_start
-        print(f"Total diffusion time: {total_duration:.2f}s")
+        print(f"Total diffusion time: {total_duration:.2f}s", flush=True)
 
         # Move UNet off GPU before loading the VAE for decoding.
         self.unet.to(device="cpu")

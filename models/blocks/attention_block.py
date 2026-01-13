@@ -2,7 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.blocks.linear import LinearFP16, LinearInt8, LinearBlock32U8F16
+from models.blocks.linear import QuantLinear
+
+
+def _linear_fp16(in_features: int, out_features: int, bias: bool = True) -> nn.Linear:
+    layer = nn.Linear(in_features, out_features, bias=bias)
+    return layer.to(torch.float16)
 
 
 class AttentionBlock(nn.Module):
@@ -24,24 +29,24 @@ class AttentionBlock(nn.Module):
 
         self.cross_attention_dim = cross_attention_dim or dim
 
-        self.to_q = LinearInt8(
+        self.to_q = _linear_fp16(
             in_features=dim,
             out_features=self.inner_dim,
             bias=False,
         )
-        self.to_k = LinearInt8(
+        self.to_k = _linear_fp16(
             in_features=self.cross_attention_dim,
             out_features=self.inner_dim,
             bias=False,
         )
-        self.to_v = LinearBlock32U8F16(
+        self.to_v = QuantLinear(
             in_features=self.cross_attention_dim,
             out_features=self.inner_dim,
             bias=False,
         )
 
         self.to_out = nn.Sequential(
-            LinearFP16(
+            QuantLinear(
                 in_features=self.inner_dim,
                 out_features=dim,
                 bias=True,

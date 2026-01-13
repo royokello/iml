@@ -2,7 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models.blocks.linear import LinearFP16
+
+def _linear_fp16(in_features: int, out_features: int, bias: bool = True) -> nn.Linear:
+    layer = nn.Linear(in_features, out_features, bias=bias)
+    return layer.to(torch.float16)
 
 
 class GatedActivation(nn.Module):
@@ -12,7 +15,7 @@ class GatedActivation(nn.Module):
 
     def __init__(self, in_features: int, hidden_dim: int, use_gelu: bool = True):
         super().__init__()
-        self.proj = LinearFP16(
+        self.proj = _linear_fp16(
             in_features=in_features,
             out_features=hidden_dim * 2,
             bias=True,
@@ -41,7 +44,7 @@ class FeedForward(nn.Module):
         self.net = nn.Sequential(
             GatedActivation(dim, hidden_dim, use_gelu=use_gelu),
             nn.Dropout(dropout),
-            LinearFP16(
+            _linear_fp16(
                 in_features=hidden_dim,
                 out_features=dim,
                 bias=True,

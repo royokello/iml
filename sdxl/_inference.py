@@ -10,7 +10,6 @@ single combined `.safetensors` checkpoint, then denoises with the INT8
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import time
@@ -18,16 +17,8 @@ from typing import Iterable
 
 import torch
 from PIL import Image
-import numpy as np
-import copy
 from diffusers import AutoencoderKL
-from diffusers.schedulers import (
-    DDIMScheduler,
-    DPMSolverMultistepScheduler,
-    EulerAncestralDiscreteScheduler,
-    EulerDiscreteScheduler,
-    HeunDiscreteScheduler,
-)
+from diffusers.schedulers import EulerAncestralDiscreteScheduler
 from safetensors.torch import load_file as load_safetensors
 from transformers import (
     CLIPTextModel,
@@ -40,6 +31,12 @@ from sdxl._pipeline import StableDiffusionXLPipeline
 from sdxl.unet import SDXLUNet
 
 DEFAULT_PROMPT = "A propaganda poster depicting a cat dressed as french emperor napoleon holding a piece of cheese."
+DEFAULT_NEGATIVE = ""
+DEFAULT_SEED = 19930625
+DEFAULT_HEIGHT = 512
+DEFAULT_WIDTH = 512
+DEFAULT_STEPS = 20
+DEFAULT_CFG = 5.0
 
 # DEFAULT_PROMPT = "a close-up of a fire spitting dragon, cinematic shot."
 
@@ -52,6 +49,10 @@ def _auto_name(out_dir: str) -> str:
         if not os.path.exists(candidate):
             return candidate
     raise RuntimeError("Unable to derive unique filename for output image.")
+
+
+def _coerce_dimension(value: int) -> int:
+    return max(64, (value // 8) * 8)
 
 
 def _ensure_unet_config(unet_dir: str, base_dir: str) -> None:
@@ -107,30 +108,7 @@ def _load_quantized_unet(
 
 
 def _build_scheduler(base_dir: str):
-    scheduler_dir = os.path.join(base_dir, "scheduler")
-    config_path = os.path.join(scheduler_dir, "scheduler_config.json")
-    if not os.path.isfile(config_path):
-        raise SystemExit(f"Missing scheduler config: {config_path}")
-
-    with open(config_path, "r", encoding="utf-8") as fp:
-        config = json.load(fp)
-
-    class_name = config.get("_class_name", "").strip()
-    scheduler_classes = {
-        "EulerAncestralDiscreteScheduler": EulerAncestralDiscreteScheduler,
-        "EulerDiscreteScheduler": EulerDiscreteScheduler,
-        "HeunDiscreteScheduler": HeunDiscreteScheduler,
-        "DDIMScheduler": DDIMScheduler,
-        "DPMSolverMultistepScheduler": DPMSolverMultistepScheduler,
-    }
-    cls = scheduler_classes.get(class_name)
-    if cls is None:
-        raise SystemExit(
-            "Unsupported scheduler class in config: "
-            f"'{class_name}'"
-        )
-
-    return cls.from_pretrained(base_dir, subfolder="scheduler")
+    return EulerAncestralDiscreteScheduler.from_pretrained(base_dir, subfolder="scheduler")
 
 
 def parse_args() -> argparse.Namespace:
@@ -156,14 +134,14 @@ def parse_args() -> argparse.Namespace:
         "--negative",
         "--neg-prompt",
         dest="negative",
-        default="",
+        default=DEFAULT_NEGATIVE,
         help="Negative (unconditional) prompt.",
     )
-    parser.add_argument("--seed", type=int, default=19930625, help="Random seed.")
-    parser.add_argument("--height", type=int, default=512, help="Image height (multiple of 8).")
-    parser.add_argument("--width", type=int, default=512, help="Image width (multiple of 8).")
-    parser.add_argument("--steps", type=int, default=20, help="Number of sampling steps.")
-    parser.add_argument("--cfg", type=float, default=5.0, help="Classifier-free guidance scale.")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Random seed.")
+    parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT, help="Image height (multiple of 8).")
+    parser.add_argument("--width", type=int, default=DEFAULT_WIDTH, help="Image width (multiple of 8).")
+    parser.add_argument("--steps", type=int, default=DEFAULT_STEPS, help="Number of sampling steps.")
+    parser.add_argument("--cfg", type=float, default=DEFAULT_CFG, help="Classifier-free guidance scale.")
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -173,38 +151,53 @@ def parse_args() -> argparse.Namespace:
 
 
 @torch.inference_mode()
-def main() -> None:
-    args = parse_args()
+def generate_images(
+    *,
+    output_dir: str,
+    base_dir: str,
+    unet_dir: str | None = None,
+    prompt: str = DEFAULT_PROMPT,
+    negative: str = DEFAULT_NEGATIVE,
+    seed: int = DEFAULT_SEED,
+    height: int = DEFAULT_HEIGHT,
+    width: int = DEFAULT_WIDTH,
+    steps: int = DEFAULT_STEPS,
+    cfg: float = DEFAULT_CFG,
+    enable_compile: bool = True,
+    enable_cpu_offload: bool = False,
+) -> list[str]:
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA GPU is required for SDXL inference.")
 
-    base_dir = args.base
-    unet_dir = args.unet if args.unet else os.path.join(base_dir, "unet")
+    base_dir = os.path.abspath(base_dir)
+    unet_dir = os.path.abspath(unet_dir) if unet_dir else os.path.join(base_dir, "unet")
 
-    width = max(64, (args.width // 8) * 8)
-    height = max(64, (args.height // 8) * 8)
+    width = _coerce_dimension(width)
+    height = _coerce_dimension(height)
 
     gpu_device = torch.device("cuda")
     cpu_device = torch.device("cpu")
 
-    torch.manual_seed(args.seed)
-    generator = torch.Generator(device=gpu_device).manual_seed(args.seed)
+    torch.manual_seed(seed)
+    generator = torch.Generator(device=gpu_device).manual_seed(seed)
 
-    print("Loading tokenizer 1 ...")
+    print("Loading tokenizer 1 ...", flush=True)
     tokenizer_path = os.path.join(base_dir, "tokenizer")
     tokenizer = CLIPTokenizer.from_pretrained(tokenizer_path)
 
-    print("Loading tokenizer 2 ...")
+    print("Loading tokenizer 2 ...", flush=True)
     tokenizer_2_path = os.path.join(base_dir, "tokenizer_2")
     tokenizer_2 = CLIPTokenizer.from_pretrained(tokenizer_2_path)
 
-    print("Loading text encoder 1 ...")
+    print("Loading text encoder 1 ...", flush=True)
     text_encoder_path = os.path.join(base_dir, "text_encoder")
     text_encoder = CLIPTextModel.from_pretrained(
         pretrained_model_name_or_path=text_encoder_path,
         dtype=torch.float16,
         local_files_only=True,
     ).to(device=gpu_device, dtype=torch.float16).eval()
-    
-    print("Loading text encoder 2 ...")
+
+    print("Loading text encoder 2 ...", flush=True)
     text_encoder_2_path = os.path.join(base_dir, "text_encoder_2")
     text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
         pretrained_model_name_or_path=text_encoder_2_path,
@@ -212,11 +205,11 @@ def main() -> None:
         local_files_only=True,
     ).to(device=gpu_device, dtype=torch.float16).eval()
 
-    print("Loading scheduler ...")
-    scheduler = _build_scheduler(base_dir)
-    scheduler.set_timesteps(args.steps, device=gpu_device)
+    print("Loading scheduler ...", flush=True)
+    scheduler_obj = _build_scheduler(base_dir)
+    scheduler_obj.set_timesteps(steps, device=gpu_device)
 
-    print("Loading unet ...")
+    print("Loading unet ...", flush=True)
     _ensure_unet_config(unet_dir, base_dir)
     unet = _load_quantized_unet(
         base_dir=base_dir,
@@ -224,15 +217,15 @@ def main() -> None:
         device=cpu_device,
     )
 
-    print("Loading vae ...")
+    print("Loading vae ...", flush=True)
     vae = AutoencoderKL.from_pretrained(
         pretrained_model_name_or_path=base_dir,
         subfolder="vae",
-        torch_dtype=torch.float32
+        torch_dtype=torch.float32,
     )
     vae.to(device=cpu_device, dtype=torch.float32).eval()
 
-    print("Loading pipeline ...")
+    print("Loading pipeline ...", flush=True)
     sdxl_pipe = StableDiffusionXLPipeline(
         vae=vae,
         text_encoder=text_encoder,
@@ -240,31 +233,31 @@ def main() -> None:
         tokenizer=tokenizer,
         tokenizer_2=tokenizer_2,
         unet=unet,
-        scheduler=scheduler
-        # scheduler: KarrasDiffusionSchedulers,
+        scheduler=scheduler_obj,
     )
 
     torch_version = version.parse(torch.__version__.split("+")[0])
-    if hasattr(torch, "compile") and torch_version >= version.parse("2.0.0"):
+    if enable_compile and hasattr(torch, "compile") and torch_version >= version.parse("2.0.0"):
         try:
-            print("Compiling UNet with torch.compile for faster inference ...")
+            print("Compiling UNet with torch.compile for faster inference ...", flush=True)
             sdxl_pipe.unet = torch.compile(sdxl_pipe.unet, mode="reduce-overhead", fullgraph=True)
         except Exception as exc:
-            print(f"torch.compile failed, continuing with eager mode: {exc}")
-    else:
-        print("torch.compile not available (requires torch>=2.0). Continuing without compilation.")
+            print(f"torch.compile failed, continuing with eager mode: {exc}", flush=True)
+    elif enable_compile:
+        print("torch.compile not available (requires torch>=2.0). Continuing without compilation.", flush=True)
 
-    print("Enabling CPU offload to reduce VRAM requirements ...")
-    # sdxl_pipe.enable_model_cpu_offload()
+    if enable_cpu_offload:
+        print("Enabling CPU offload to reduce VRAM requirements ...", flush=True)
+        sdxl_pipe.enable_model_cpu_offload()
 
-    print("generating image ...")
+    print("generating image ...", flush=True)
     output = sdxl_pipe.generate(
-        prompt=args.prompt,
+        prompt=prompt,
         height=height,
         width=width,
-        num_inference_steps=args.steps,
-        guidance_scale=args.cfg,
-        negative_prompt=args.negative,
+        num_inference_steps=steps,
+        guidance_scale=cfg,
+        negative_prompt=negative,
         generator=generator,
         gpu_device=gpu_device,
     )
@@ -278,10 +271,30 @@ def main() -> None:
     else:
         raise TypeError(f"Unexpected output from pipeline: {type(output).__name__}")
 
+    saved_paths = []
     for image in images:
-        out_path = _auto_name(args.output)
+        out_path = _auto_name(output_dir)
         image.save(out_path)
-        print(f"[done] Saved '{out_path}'")
+        print(f"[done] Saved '{out_path}'", flush=True)
+        saved_paths.append(out_path)
+    return saved_paths
+
+
+@torch.inference_mode()
+def main() -> None:
+    args = parse_args()
+    generate_images(
+        output_dir=args.output,
+        base_dir=args.base,
+        unet_dir=args.unet,
+        prompt=args.prompt,
+        negative=args.negative,
+        seed=args.seed,
+        height=args.height,
+        width=args.width,
+        steps=args.steps,
+        cfg=args.cfg,
+    )
 
 
 if __name__ == "__main__":

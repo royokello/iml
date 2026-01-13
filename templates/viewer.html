@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="utf-8" />
-    <title>Photo Viewer - ML Bench</title>
+    <title>Media Viewer - ML Bench</title>
     <link rel="stylesheet" href="/static/common.css" />
     <link rel="stylesheet" href="/static/styles/viewer.css" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -12,20 +12,25 @@
 <body>
     <div class="viewer-container">
         <div class="controls">
-            <h1>Photo Viewer</h1>
-            <p class="lead">Browse photos from a directory with keyboard navigation.</p>
+            <h1>Media Viewer</h1>
+            <p class="lead">Browse photos and videos from a directory with keyboard navigation.</p>
             <div class="input-group">
                 <input type="text" id="pathInput" placeholder="Enter directory path (e.g., C:\Photos)" />
                 <button id="scanBtn">Scan</button>
             </div>
             <div id="errorMsg" class="error-message" style="display: none;"></div>
             <div class="help-text">
-                Navigation: ← → (prev/next image) | Page Up/Down (prev/next folder) | <a href="/">Back to Home</a>
+                Navigation: ← → (prev/next image) | Page Up/Down (prev/next folder) | Z (toggle zoom) | ↑ ↓ (pan when
+                zoomed) | <a href="/">Back to Home</a>
             </div>
         </div>
 
-        <div class="image-viewport">
-            <img id="imageDisplay" style="display: none;" />
+        <div class="image-viewport" id="viewport">
+            <div id="imageContainer"
+                style="overflow: hidden; width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
+                <img id="imageDisplay" style="display: none;" />
+                <video id="videoDisplay" style="display: none;" controls loop autoplay muted></video>
+            </div>
             <div id="placeholder" class="loading">Enter a directory path and click Scan to begin</div>
         </div>
 
@@ -35,7 +40,7 @@
                 <span id="folderPath">-</span>
             </div>
             <div class="info-item">
-                <span class="info-label">Image:</span>
+                <span class="info-label">Media:</span>
                 <span id="imageCount">-</span>
             </div>
             <div class="info-item">
@@ -50,7 +55,9 @@
             folders: [],
             folderIndex: 0,
             imageIndex: 0,
-            totalImages: 0
+            totalImages: 0,
+            zoomed: false,
+            panY: 0
         };
 
         const elements = {
@@ -58,6 +65,8 @@
             scanBtn: document.getElementById('scanBtn'),
             errorMsg: document.getElementById('errorMsg'),
             imageDisplay: document.getElementById('imageDisplay'),
+            videoDisplay: document.getElementById('videoDisplay'),
+            imageContainer: document.getElementById('imageContainer'),
             placeholder: document.getElementById('placeholder'),
             folderPath: document.getElementById('folderPath'),
             imageCount: document.getElementById('imageCount'),
@@ -99,7 +108,7 @@
                 }
 
                 if (data.total_images === 0) {
-                    showError('No images found in the specified directory');
+                    showError('No images or videos found in the specified directory');
                     return;
                 }
 
@@ -127,22 +136,113 @@
             const currentFolder = state.folders[state.folderIndex];
             state.imageIndex = Math.max(0, Math.min(state.imageIndex, currentFolder.count - 1));
 
-            // Update image source
-            const imageUrl = `/api/view?f=${state.folderIndex}&i=${state.imageIndex}`;
-            elements.imageDisplay.src = imageUrl;
-            elements.imageDisplay.style.display = 'block';
+            // Reset zoom when changing images
+            state.zoomed = false;
+            state.panY = 0;
 
-            // Fetch and update metadata
+            // Update media source
+            const mediaUrl = `/api/view?f=${state.folderIndex}&i=${state.imageIndex}`;
+
+            // Detect if it's a video or image based on URL
+            // We'll need to fetch metadata to determine file type
             try {
                 const response = await fetch(`/api/meta?f=${state.folderIndex}&i=${state.imageIndex}`);
                 const meta = await response.json();
 
+                const filename = meta.filename.toLowerCase();
+                const isVideo = filename.endsWith('.mp4') || filename.endsWith('.webm') ||
+                    filename.endsWith('.mov') || filename.endsWith('.avi') ||
+                    filename.endsWith('.mkv');
+
+                if (isVideo) {
+                    // Show video, hide image
+                    elements.videoDisplay.src = mediaUrl;
+                    elements.videoDisplay.style.display = 'block';
+                    elements.imageDisplay.style.display = 'none';
+                    elements.placeholder.style.display = 'none';
+                } else {
+                    // Show image, hide video
+                    elements.imageDisplay.src = mediaUrl;
+                    elements.imageDisplay.style.display = 'block';
+                    elements.videoDisplay.style.display = 'none';
+                    elements.placeholder.style.display = 'none';
+                }
+
+                updateImageTransform();
+
+                // Update metadata display
                 elements.folderPath.textContent = meta.folder;
                 elements.imageCount.textContent = `${meta.image_index + 1} / ${meta.folder_count}`;
                 elements.globalCount.textContent = `${meta.global_index} / ${meta.total_images}`;
             } catch (error) {
                 console.error('Failed to fetch metadata:', error);
             }
+        }
+
+        function updateImageTransform() {
+            // Get the currently visible media element
+            const activeMedia = elements.imageDisplay.style.display !== 'none' ?
+                elements.imageDisplay : elements.videoDisplay;
+
+            if (state.zoomed && elements.imageDisplay.style.display !== 'none') {
+                // Only zoom images, not videos
+                elements.imageDisplay.style.maxWidth = '100%';
+                elements.imageDisplay.style.maxHeight = '100%';
+                elements.imageDisplay.style.transform = `scale(2) translateY(${state.panY / 2}px)`;
+                elements.imageDisplay.style.transformOrigin = 'center center';
+                elements.imageDisplay.style.cursor = 'move';
+            } else {
+                // Reset both elements
+                elements.imageDisplay.style.maxWidth = '100%';
+                elements.imageDisplay.style.maxHeight = '100%';
+                elements.imageDisplay.style.transform = 'none';
+                elements.imageDisplay.style.cursor = 'default';
+
+                elements.videoDisplay.style.maxWidth = '100%';
+                elements.videoDisplay.style.maxHeight = '100%';
+                elements.videoDisplay.style.transform = 'none';
+                elements.videoDisplay.style.cursor = 'default';
+            }
+        }
+
+
+        function toggleZoom() {
+            if (state.folders.length === 0) return;
+            state.zoomed = !state.zoomed;
+            state.panY = 0;
+            updateImageTransform();
+        }
+
+        function pan(direction) {
+            if (!state.zoomed) return;
+            const panStep = 50;
+
+            switch (direction) {
+                case 'up':
+                    state.panY += panStep;
+                    break;
+                case 'down':
+                    state.panY -= panStep;
+                    break;
+            }
+
+            // Clamp pan values to prevent image from going completely out of view
+            const img = elements.imageDisplay;
+            const container = elements.imageContainer;
+
+            if (img.naturalWidth && img.naturalHeight) {
+                // Calculate scaled dimensions
+                const scale = 2;
+                const imgRect = img.getBoundingClientRect();
+                const containerRect = container.getBoundingClientRect();
+
+                // Calculate max vertical pan offset (allow panning until edge reaches center)
+                const maxPanY = (imgRect.height * (scale - 1)) / (2 * scale);
+
+                state.panY = Math.max(-maxPanY, Math.min(maxPanY, state.panY));
+            }
+
+            updateImageTransform();
         }
 
         function navigate(direction) {
@@ -214,6 +314,18 @@
                     e.preventDefault();
                     navigate('prev');
                     break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    if (state.zoomed) {
+                        pan('up');
+                    }
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    if (state.zoomed) {
+                        pan('down');
+                    }
+                    break;
                 case 'PageDown':
                     e.preventDefault();
                     navigate('nextFolder');
@@ -221,6 +333,11 @@
                 case 'PageUp':
                     e.preventDefault();
                     navigate('prevFolder');
+                    break;
+                case 'z':
+                case 'Z':
+                    e.preventDefault();
+                    toggleZoom();
                     break;
             }
         });
