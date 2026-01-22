@@ -3,3 +3,12 @@ body {
     color: white;
     background-color: #002b36;
 }
+
+.menu-link,
+.menu-link:visited,
+.menu-link:hover,
+.menu-link:active,
+.menu-link:focus {
+    color: #ffffff;
+    text-decoration: none;
+}

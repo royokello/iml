@@ -18,6 +18,8 @@ class QuantLinear(nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
+        total_elems = out_features * in_features
+        self._pad_len = (32 - (total_elems % 32)) % 32
 
         self.register_buffer(
             "weight",
@@ -64,28 +66,17 @@ class QuantLinear(nn.Module):
         self._weights_loaded = True
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.shape[-1] != self.in_features:
-            raise ValueError(
-                f"Expected last dimension {self.in_features}, got {x.shape[-1]}"
-            )
-        if not self._weights_loaded:
-            raise RuntimeError(
-                "Block-quantized int8 weights must be loaded before calling forward."
-            )
+        x_fp16 = x if x.dtype == torch.float16 else x.to(torch.float16)
+        bias_fp16 = self.bias
 
-        x_fp16 = x.to(torch.float16)
-        bias_fp16 = self.bias.to(torch.float16) if self.bias is not None else None
-
-        w_fp16 = self.weight.to(torch.float16)
-        w_flat = w_fp16.flatten()
-        target_len = w_flat.numel()
-        pad_len = (32 - (target_len % 32)) % 32
+        w_flat = self.weight.flatten()
+        pad_len = self._pad_len
 
         if pad_len > 0:
             w_flat = F.pad(w_flat, (0, pad_len))
 
         w_reshaped = w_flat.view(-1, 32)
-        scale_reshaped = self.weight_scale.to(torch.float16).view(-1, 1)
+        scale_reshaped = self.weight_scale.view(-1, 1)
 
         w_dequant = w_reshaped * scale_reshaped
         w_dequant_flat = w_dequant.flatten()
@@ -96,4 +87,4 @@ class QuantLinear(nn.Module):
         weight_fp16 = w_dequant_flat.view(self.out_features, self.in_features)
 
         y_fp16 = F.linear(x_fp16, weight_fp16, bias_fp16)
-        return y_fp16.to(torch.float16)
+        return y_fp16

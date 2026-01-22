@@ -5,11 +5,6 @@ import torch.nn.functional as F
 from models.blocks.linear import QuantLinear
 
 
-def _linear_fp16(in_features: int, out_features: int, bias: bool = True) -> nn.Linear:
-    layer = nn.Linear(in_features, out_features, bias=bias)
-    return layer.to(torch.float16)
-
-
 class AttentionBlock(nn.Module):
     def __init__(
         self,
@@ -29,12 +24,12 @@ class AttentionBlock(nn.Module):
 
         self.cross_attention_dim = cross_attention_dim or dim
 
-        self.to_q = _linear_fp16(
+        self.to_q = QuantLinear(
             in_features=dim,
             out_features=self.inner_dim,
             bias=False,
         )
-        self.to_k = _linear_fp16(
+        self.to_k = QuantLinear(
             in_features=self.cross_attention_dim,
             out_features=self.inner_dim,
             bias=False,

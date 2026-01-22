@@ -15,6 +15,8 @@ SCALE_MIN = 1e-8
 SCALE_SUFFIX = "_scale"
 BLOCK_SIZE = 32
 QUANTIZE_KEYS = (
+    "to_q",
+    "to_k",
     "to_v",
     "proj_in",
     "proj_out",

@@ -25,8 +25,6 @@ from transformers import (
     CLIPTextModelWithProjection,
     CLIPTokenizer,
 )
-from packaging import version
-
 from sdxl._pipeline import StableDiffusionXLPipeline
 from sdxl.unet import SDXLUNet
 
@@ -163,7 +161,6 @@ def generate_images(
     width: int = DEFAULT_WIDTH,
     steps: int = DEFAULT_STEPS,
     cfg: float = DEFAULT_CFG,
-    enable_compile: bool = True,
     enable_cpu_offload: bool = False,
 ) -> list[str]:
     if not torch.cuda.is_available():
@@ -235,16 +232,6 @@ def generate_images(
         unet=unet,
         scheduler=scheduler_obj,
     )
-
-    torch_version = version.parse(torch.__version__.split("+")[0])
-    if enable_compile and hasattr(torch, "compile") and torch_version >= version.parse("2.0.0"):
-        try:
-            print("Compiling UNet with torch.compile for faster inference ...", flush=True)
-            sdxl_pipe.unet = torch.compile(sdxl_pipe.unet, mode="reduce-overhead", fullgraph=True)
-        except Exception as exc:
-            print(f"torch.compile failed, continuing with eager mode: {exc}", flush=True)
-    elif enable_compile:
-        print("torch.compile not available (requires torch>=2.0). Continuing without compilation.", flush=True)
 
     if enable_cpu_offload:
         print("Enabling CPU offload to reduce VRAM requirements ...", flush=True)
