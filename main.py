@@ -7,10 +7,11 @@ from typing import Any, Dict, List
 
 from video.analysis import run_analysis
 from video.animate import create_image_animation
-from video.compress import run_batch_compression
 from video.grid import create_video_grids
 
 from flask import Flask, jsonify, render_template, request, send_file
+from routes.compress import register as register_compress
+from routes.fp16 import register as register_fp16
 
 try:
     from safetensors.torch import safe_open
@@ -34,10 +35,24 @@ def _resolve_path(relative_path: str) -> Path:
     """
     Only allow absolute filesystem paths. Relative paths are rejected.
     """
-    candidate = Path(relative_path).expanduser()
+    candidate = Path(_strip_outer_quotes(relative_path)).expanduser()
     if not candidate.is_absolute():
         raise ValueError("Please provide an absolute path to the safetensors file.")
     return candidate.resolve()
+
+
+def _resolve_dir(dir_path: str) -> Path:
+    candidate = Path(_strip_outer_quotes(dir_path)).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("Please provide an absolute output directory.")
+    return candidate.resolve()
+
+
+def _strip_outer_quotes(value: str) -> str:
+    cleaned = value.strip()
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        return cleaned[1:-1].strip()
+    return cleaned
 
 
 def _grid_output_dir() -> Path:
@@ -129,6 +144,10 @@ def _load_model_summary(model_path: Path) -> Dict[str, Dict[str, List[Dict[str, 
     return summary
 
 
+register_compress(app, _ensure_root_configured)
+register_fp16(app, _resolve_path, _resolve_dir)
+
+
 
 
 
@@ -146,7 +165,7 @@ def inspect():
 def quality_page():
     context = {}
     if request.method == "POST":
-        source = request.form.get("source", "").strip()
+        source = _strip_outer_quotes(request.form.get("source", "")).strip()
         resolution = int(request.form.get("resolution", 768))
         qualities_str = request.form.get("qualities", "")
         # Parse qualities
@@ -190,79 +209,11 @@ def quality_page():
     return render_template("quality.html", **context)
 
 
-@app.route("/compress", methods=["GET", "POST"])
-def compress_page():
-    context = {}
-    if request.method == "POST":
-        source = request.form.get("source", "").strip()
-        output_dir = request.form.get("output", "").strip()
-        resolution = int(request.form.get("resolution", 768))
-        crf = int(request.form.get("crf", 25))
-
-        context["last_input"] = {
-            "source": source,
-            "output": output_dir,
-            "resolution": resolution,
-            "crf": crf
-        }
-        
-        if not source or not output_dir:
-            context["error"] = "Please provide valid source path and output directory."
-        else:
-            try:
-                # Call compression logic
-                results_list = run_batch_compression(
-                    _ensure_root_configured(),
-                    source,
-                    output_dir,
-                    resolution,
-                    crf
-                )
-                
-                # Check for global error in first item
-                if results_list and results_list[0].get("error") and len(results_list) == 1:
-                     context["error"] = results_list[0]["error"]
-                elif not results_list:
-                     context["error"] = "No results returned."
-                else:
-                    # Process results for display
-                    total_source_size = 0
-                    total_output_size = 0
-                    processed_results = []
-                    
-                    for r in results_list:
-                        if r.get("success"):
-                            s_size = r.get("source_size", 0)
-                            o_size = r.get("output_size", 0)
-                            total_source_size += s_size
-                            total_output_size += o_size
-                            
-                            r["source_size_mb"] = f"{(s_size / 1048576):.2f}"
-                            r["output_size_mb"] = f"{(o_size / 1048576):.2f}"
-                            r["filename"] = r.get("source", "").split("\\")[-1] # Basic name extraction
-                        else:
-                            r["filename"] = r.get("source", "Unknown").split("\\")[-1]
-                        processed_results.append(r)
-
-                    context["results"] = processed_results
-                    context["summary"] = {
-                        "total_files": len(processed_results),
-                        "total_source_mb": f"{(total_source_size / 1048576):.2f}",
-                        "total_output_mb": f"{(total_output_size / 1048576):.2f}",
-                        "saved_mb": f"{((total_source_size - total_output_size) / 1048576):.2f}"
-                    }
-                    
-            except Exception as e:
-                context["error"] = f"Compression failed: {str(e)}"
-
-    return render_template("compress.html", **context)
-
-
 @app.route("/grids", methods=["GET", "POST"])
 def grids_page():
     context = {}
     if request.method == "POST":
-        video_path = request.form.get("video", "").strip()
+        video_path = _strip_outer_quotes(request.form.get("video", "")).strip()
         grid_format = request.form.get("grid_format", "2x2").strip()
         cell_ratio = request.form.get("cell_ratio", "1x1").strip()
         alignment = request.form.get("alignment", "center").strip().lower()
@@ -308,7 +259,7 @@ def grids_page():
 def animate_grid_page():
     context: Dict[str, Any] = {}
     if request.method == "POST":
-        image_path = request.form.get("image_path", "").strip()
+        image_path = _strip_outer_quotes(request.form.get("image_path", "")).strip()
         length_raw = request.form.get("length", "4").strip()
         context["last_input"] = {
             "image_path": image_path,
@@ -451,7 +402,7 @@ def viewer():
 def api_scan():
     global SCAN_RESULT
     data = request.get_json()
-    path = data.get("path", "").strip()
+    path = _strip_outer_quotes(data.get("path", "")).strip()
     
     if not path:
         return jsonify({"error": "Path is required"}), 400

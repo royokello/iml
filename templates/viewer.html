@@ -22,7 +22,7 @@
             <div id="errorMsg" class="error-message" style="display: none;"></div>
             <div class="help-text">
                 Navigation: ← → (prev/next image) | Page Up/Down (prev/next folder) | Z (toggle zoom) | ↑ ↓ (pan when
-                zoomed) | <a href="/">Back to Home</a>
+                zoomed) | Mouse wheel (prev/next) | Middle-click (toggle zoom) | <a href="/">Back to Home</a>
             </div>
         </div>
 
@@ -342,7 +342,32 @@
                     break;
             }
         });
+    
+        // Mouse-only navigation for the viewer
+        elements.imageContainer.addEventListener('wheel', (e) => {
+            if (state.folders.length === 0) return;
+            if (document.activeElement === elements.pathInput) return;
+            e.preventDefault();
+
+            if (e.deltaY > 0) {
+                navigate('next');
+            } else if (e.deltaY < 0) {
+                navigate('prev');
+            }
+        }, { passive: false });
+
+        elements.imageContainer.addEventListener('mousedown', (e) => {
+            if (state.folders.length === 0) return;
+            if (document.activeElement === elements.pathInput) return;
+
+            if (e.button === 1) {
+                e.preventDefault();
+                toggleZoom();
+            }
+        });
     </script>
 </body>
 
 </html>
+
+
