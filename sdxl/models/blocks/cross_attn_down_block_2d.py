@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 
-from models.blocks.down_sample_2d import Downsample2D
-from models.blocks.resnet_block_2d import ResnetBlock2D
-from models.blocks.spatial_transformer import SpatialTransformer
+from ..blocks.down_sample_2d import Downsample2D
+from ..blocks.resnet_block_2d import ResnetBlock2D
+from ..blocks.spatial_transformer import SpatialTransformer
 
 class CrossAttnDownBlock2D(nn.Module):
     def __init__(

@@ -1,4 +1,5 @@
 import inspect
+import time
 from typing import Any, Dict, List, Union, Optional
 import torch
 from transformers import (
@@ -7,16 +8,14 @@ from transformers import (
     CLIPTokenizer,
 )
 
-from diffusers import (
-    AutoencoderKL,
-    UNet2DConditionModel,
-)
-
+from diffusers import AutoencoderKL
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.schedulers import KarrasDiffusionSchedulers
 from diffusers.loaders import TextualInversionLoaderMixin
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, StableDiffusionMixin
 from diffusers.utils.torch_utils import randn_tensor
+
+from .models._unet import SDXLUNet
 
 def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
     r"""
@@ -115,7 +114,7 @@ class StableDiffusionXLPipeline(
         text_encoder_2: CLIPTextModelWithProjection,
         tokenizer: CLIPTokenizer,
         tokenizer_2: CLIPTokenizer,
-        unet: UNet2DConditionModel,
+        unet: SDXLUNet,
         scheduler: KarrasDiffusionSchedulers,
     ):
         super().__init__()
@@ -306,7 +305,7 @@ class StableDiffusionXLPipeline(
         add_time_ids = list(original_size + crops_coords_top_left + target_size)
 
         passed_add_embed_dim = (
-            256 * len(add_time_ids) + text_encoder_projection_dim  # SDXL UNet addition time embed dim is fixed at 256
+            self.unet.config["addition_time_embed_dim"] * len(add_time_ids) + text_encoder_projection_dim
         )
         expected_add_embed_dim = self.unet.add_embedding.linear_1.in_features
 
@@ -344,7 +343,7 @@ class StableDiffusionXLPipeline(
         prompt: str,
         height: int,
         width: int,
-        num_inference_steps: int = 50,
+        num_inference_steps: int = 20,
         timesteps: List[int] = None,
         sigmas: List[float] = None,
         guidance_scale: float = 5.0,
@@ -431,10 +430,14 @@ class StableDiffusionXLPipeline(
             clip_skip=self._clip_skip,
         )
 
-        cpu_offload_active = bool(getattr(self, "_all_hooks", []))
-        if not cpu_offload_active:
-            torch.cuda.empty_cache()
-            self.unet.to(device=device)
+        # Offload the text encoders now that embeddings are materialized.
+        if self.text_encoder is not None:
+            self.text_encoder.to(device="cpu")
+        if self.text_encoder_2 is not None:
+            self.text_encoder_2.to(device="cpu")
+
+        torch.cuda.empty_cache()
+        self.unet.to(device=device)
 
         # 4. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(
@@ -442,16 +445,16 @@ class StableDiffusionXLPipeline(
         )
 
         # 5. Prepare latent variables
-        num_channels_latents = 4  # SDXLUNet uses four latent channels
         latents = self.prepare_latents(
-            batch_size,
-            num_channels_latents,
-            height,
-            width,
-            prompt_embeds.dtype,
-            device,
-            generator,
+            batch_size=batch_size,
+            num_channels_latents=self.unet.config["in_channels"],
+            height=height,
+            width=width,
+            dtype=prompt_embeds.dtype,
+            device=device,
+            generator=generator,
         )
+        print(f"Latent {tuple(latents.shape)} ...", flush=True)
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -487,51 +490,53 @@ class StableDiffusionXLPipeline(
         timestep_cond = None
 
         self._num_timesteps = len(timesteps)
-        with self.progress_bar(total=num_inference_steps) as progress_bar:
-            for i, t in enumerate(timesteps):
-                # always use classifier free guidance
-                latent_model_input = torch.cat([latents, latents], dim=0)
+        
+        diffusion_start = time.perf_counter()
+        for i, t in enumerate(timesteps):
+            step_start = time.perf_counter()
+            # always use classifier free guidance
+            latent_model_input = torch.cat([latents, latents], dim=0)
 
-                latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
+            latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
-                # predict the noise residual
-                added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
-                noise_pred = self.unet(
-                    latent_model_input,
-                    t,
-                    encoder_hidden_states=prompt_embeds,
-                    timestep_cond=timestep_cond,
-                    cross_attention_kwargs=self._cross_attention_kwargs,
-                    added_cond_kwargs=added_cond_kwargs,
-                    return_dict=False,
-                )[0]
+            # predict the noise residual
+            added_cond_kwargs = {"text_embeds": add_text_embeds, "time_ids": add_time_ids}
+            noise_pred = self.unet(
+                latent_model_input,
+                t,
+                encoder_hidden_states=prompt_embeds,
+                timestep_cond=timestep_cond,
+                cross_attention_kwargs=self._cross_attention_kwargs,
+                added_cond_kwargs=added_cond_kwargs,
+                return_dict=False,
+            )
 
-                # perform guidance
-                noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                noise_pred = noise_pred_uncond + self._guidance_scale * (noise_pred_text - noise_pred_uncond)
+            # perform guidance
+            noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+            noise_pred = noise_pred_uncond + self._guidance_scale * (noise_pred_text - noise_pred_uncond)
 
-                if self._guidance_rescale > 0.0:
-                    # Based on 3.4. in https://huggingface.co/papers/2305.08891
-                    noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self._guidance_rescale)
+            if self._guidance_rescale > 0.0:
+                # Based on 3.4. in https://huggingface.co/papers/2305.08891
+                noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self._guidance_rescale)
 
-                # compute the previous noisy sample x_t -> x_t-1
-                latents_dtype = latents.dtype
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
-                if latents.dtype != latents_dtype:
-                    if torch.backends.mps.is_available():
-                        # some platforms (eg. apple mps) misbehave due to a pytorch bug: https://github.com/pytorch/pytorch/pull/99272
-                        latents = latents.to(latents_dtype)
+            # compute the previous noisy sample x_t -> x_t-1
+            latents_dtype = latents.dtype
+            latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+            if latents.dtype != latents_dtype:
+                if torch.backends.mps.is_available():
+                    # some platforms (eg. apple mps) misbehave due to a pytorch bug: https://github.com/pytorch/pytorch/pull/99272
+                    latents = latents.to(latents_dtype)
 
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
-                    progress_bar.update()
+            step_duration = time.perf_counter() - step_start
+            print(f"Step {i + 1}/{len(timesteps)} ({step_duration:.2f}s)", flush=True)
 
-        if not cpu_offload_active:
-            self.unet.to(device="cpu")
-            torch.cuda.empty_cache()
-            self.vae.to(device=device, dtype=torch.float32)
-        else:
-            # keep the VAE in float32 for higher decode fidelity
-            self.vae.to(dtype=torch.float32)
+        total_duration = time.perf_counter() - diffusion_start
+        print(f"Total diffusion time: {total_duration:.2f}s", flush=True)
+
+        # Move UNet off GPU before loading the VAE for decoding.
+        self.unet.to(device="cpu")
+        torch.cuda.empty_cache()
+        self.vae.to(device=device, dtype=torch.float32)
 
         vae_dtype = next(iter(self.vae.post_quant_conv.parameters())).dtype
         latents = latents.to(dtype=vae_dtype)

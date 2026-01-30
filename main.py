@@ -1,24 +1,18 @@
 import argparse
 import os
-from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
-from video.analysis import run_analysis
-from video.animate import create_image_animation
-from video.grid import create_video_grids
 
 from flask import Flask, jsonify, render_template, request, send_file
 from routes.compress import register as register_compress
 from routes.fp16 import register as register_fp16
-
-try:
-    from safetensors.torch import safe_open
-except ImportError:  # pragma: no cover - optional dependency
-    safe_open = None
-
-ALLOWED_EXTENSIONS = {".safetensors"}
+from routes.grid_animate import register as register_grid_animate
+from routes.grid_generate import register_grid_generate
+from routes.inspect import register as register_inspect
+from routes.quality import register as register_quality
+from routes.sdxl_generate import register as register_sdxl_generate
 
 app = Flask(__name__)
 ROOT_DIR: Path | None = None
@@ -64,7 +58,7 @@ def _animation_output_dir() -> Path:
 
 
 def _sdxl_output_dir() -> Path:
-    return _ensure_root_configured() / "sdxl"
+    return _ensure_root_configured() / "sdxl" / "outputs"
 
 
 def _parse_pair(value: str, label: str) -> tuple[int, int]:
@@ -88,67 +82,13 @@ def _parse_pair(value: str, label: str) -> tuple[int, int]:
     return first, second
 
 
-def _summarize_safetensors(model_path: Path) -> Dict[str, Any]:
-    if safe_open is None:
-        raise RuntimeError("safetensors is not installed in this environment.")
-
-    tensors: List[Dict[str, Any]] = []
-    dtype_counts: Counter[str] = Counter()
-    total_elements = 0
-    user_metadata: Dict[str, Any] = {}
-
-    with safe_open(model_path, framework="pt", device="cpu") as handle:
-        user_metadata = handle.metadata() or {}
-        for key in handle.keys():
-            tensor = handle.get_tensor(key)
-            dtype = str(tensor.dtype).replace("torch.", "")
-            numel = tensor.numel()
-            tensors.append(
-                {
-                    "name": key,
-                    "shape": list(tensor.shape),
-                    "dtype": dtype,
-                }
-            )
-            dtype_counts[dtype] += 1
-            total_elements += numel
-
-    metadata = {
-        "tensor_count": len(tensors),
-        "total_elements": total_elements,
-        "dtypes": dict(dtype_counts),
-        "format": "safetensors",
-        "_metadata": user_metadata,
-    }
-    return {"metadata": metadata, "tensors": tensors}
-
-
-def _load_model_summary(model_path: Path) -> Dict[str, Dict[str, List[Dict[str, object]]]]:
-    if model_path.suffix.lower() not in ALLOWED_EXTENSIONS:
-        raise ValueError("Only .safetensors files are supported.")
-    if not model_path.is_file():
-        raise FileNotFoundError(f"Model file not found: {model_path}")
-
-    file_size = model_path.stat().st_size
-    modified_at = datetime.fromtimestamp(model_path.stat().st_mtime).isoformat()
-
-    summary = _summarize_safetensors(model_path)
-
-    summary["metadata"].update(
-        {
-            "source": str(model_path),
-            "file_size_bytes": file_size,
-            "modified_at": modified_at,
-        }
-    )
-    return summary
-
-
 register_compress(app, _ensure_root_configured)
 register_fp16(app, _resolve_path, _resolve_dir)
-
-
-
+register_grid_animate(app, _strip_outer_quotes, _animation_output_dir)
+register_grid_generate(app, _strip_outer_quotes, _parse_pair, _grid_output_dir)
+register_inspect(app, _resolve_path)
+register_quality(app, _ensure_root_configured, _strip_outer_quotes)
+register_sdxl_generate(app, _ensure_root_configured, _sdxl_output_dir)
 
 
 @app.route("/")
@@ -159,238 +99,6 @@ def index():
 @app.route("/inspect")
 def inspect():
     return render_template("inspect.html")
-
-
-@app.route("/quality", methods=["GET", "POST"])
-def quality_page():
-    context = {}
-    if request.method == "POST":
-        source = _strip_outer_quotes(request.form.get("source", "")).strip()
-        resolution = int(request.form.get("resolution", 768))
-        qualities_str = request.form.get("qualities", "")
-        # Parse qualities
-        crfs = []
-        for q in qualities_str.split(","):
-            q = q.strip()
-            if q.isdigit():
-                crfs.append(int(q))
-        
-        sample_len = float(request.form.get("sample_len", 8.0))
-        num_samples = int(request.form.get("num_samples", 32))
-        
-        context["last_input"] = {
-            "source": source,
-            "resolution": resolution,
-            "qualities": qualities_str,
-            "sample_len": sample_len,
-            "num_samples": num_samples
-        }
-        
-        if not source or not crfs:
-            context["error"] = "Please provide valid source and qualities."
-        else:
-            try:
-                results = run_analysis(
-                    _ensure_root_configured(),
-                    source,
-                    resolution,
-                    0, # start_crf unused in this signature
-                    crfs,
-                    sample_len,
-                    num_samples
-                )
-                if "error" in results:
-                    context["error"] = results["error"]
-                else:
-                    context["results"] = results
-            except Exception as e:
-                context["error"] = f"Analysis failed: {str(e)}"
-
-    return render_template("quality.html", **context)
-
-
-@app.route("/grids", methods=["GET", "POST"])
-def grids_page():
-    context = {}
-    if request.method == "POST":
-        video_path = _strip_outer_quotes(request.form.get("video", "")).strip()
-        grid_format = request.form.get("grid_format", "2x2").strip()
-        cell_ratio = request.form.get("cell_ratio", "1x1").strip()
-        alignment = request.form.get("alignment", "center").strip().lower()
-        frame_interval_raw = request.form.get("frame_interval", "1").strip()
-        cell_height_raw = request.form.get("cell_height", "384").strip()
-
-        context["last_input"] = {
-            "video": video_path,
-            "grid_format": grid_format,
-            "cell_ratio": cell_ratio,
-            "alignment": alignment,
-            "frame_interval": frame_interval_raw,
-            "cell_height": cell_height_raw,
-        }
-
-        if not video_path:
-            context["error"] = "Please provide a video path."
-        else:
-            try:
-                rows, cols = _parse_pair(grid_format, "Grid format")
-                ratio_w, ratio_h = _parse_pair(cell_ratio, "Cell ratio")
-                frame_interval = float(frame_interval_raw)
-                cell_height = int(cell_height_raw)
-
-                result = create_video_grids(
-                    video_path=video_path,
-                    output_dir=_grid_output_dir(),
-                    grid_rows=rows,
-                    grid_cols=cols,
-                    cell_ratio=(ratio_w, ratio_h),
-                    cell_height=cell_height,
-                    frame_interval_sec=frame_interval,
-                    alignment=alignment,
-                )
-                context["result"] = result
-            except Exception as exc:
-                context["error"] = f"Grid generation failed: {exc}"
-
-    return render_template("grids.html", **context)
-
-
-@app.route("/animate-grid", methods=["GET", "POST"])
-def animate_grid_page():
-    context: Dict[str, Any] = {}
-    if request.method == "POST":
-        image_path = _strip_outer_quotes(request.form.get("image_path", "")).strip()
-        length_raw = request.form.get("length", "4").strip()
-        context["last_input"] = {
-            "image_path": image_path,
-            "length": length_raw,
-        }
-
-        try:
-            length_secs = float(length_raw)
-            if length_secs <= 0:
-                raise ValueError("Length must be greater than 0.")
-        except ValueError as exc:
-            context["error"] = f"Invalid length: {exc}"
-            return render_template("animate.html", **context)
-
-        if not image_path:
-            context["error"] = "Please provide an absolute path to the grid image."
-        else:
-            try:
-                video_result = create_image_animation(
-                    image_path=image_path,
-                    output_root=_animation_output_dir(),
-                    length_seconds=length_secs,
-                )
-                context["result"] = {
-                    "run_path": str(_animation_output_dir()),
-                    "length": length_secs,
-                    "video": video_result,
-                    "frame_count": video_result["frame_count"],
-                    "cell_count": video_result["cells"],
-                }
-            except Exception as exc:
-                context["error"] = f"Failed to create animation: {exc}"
-
-    return render_template("animate.html", **context)
-
-
-@app.route("/sdxl", methods=["GET", "POST"])
-def sdxl_page():
-    fallback_defaults = {
-        "prompt": "A propaganda poster depicting a cat dressed as french emperor napoleon holding a piece of cheese.",
-        "negative": "",
-        "seed": 19930625,
-        "height": 512,
-        "width": 512,
-        "steps": 20,
-        "cfg": 5.0,
-    }
-
-    sdxl_inference = None
-    defaults = dict(fallback_defaults)
-    load_error = None
-
-    try:
-        from sdxl import _inference as sdxl_inference
-
-        defaults = {
-            "prompt": sdxl_inference.DEFAULT_PROMPT,
-            "negative": sdxl_inference.DEFAULT_NEGATIVE,
-            "seed": sdxl_inference.DEFAULT_SEED,
-            "height": sdxl_inference.DEFAULT_HEIGHT,
-            "width": sdxl_inference.DEFAULT_WIDTH,
-            "steps": sdxl_inference.DEFAULT_STEPS,
-            "cfg": sdxl_inference.DEFAULT_CFG,
-        }
-    except Exception as exc:
-        load_error = f"Unable to load SDXL inference dependencies: {exc}"
-
-    model_base = _ensure_root_configured() / "sdxl" / "base"
-    context = {"defaults": defaults, "model_base": str(model_base)}
-
-    if request.method == "POST":
-        prompt = request.form.get("prompt", "").strip()
-        negative = request.form.get("negative", "").strip()
-        seed_raw = request.form.get("seed", "").strip()
-        width_raw = request.form.get("width", "").strip()
-        height_raw = request.form.get("height", "").strip()
-        steps_raw = request.form.get("steps", "").strip()
-        cfg_raw = request.form.get("cfg", "").strip()
-
-        context["last_input"] = {
-            "prompt": prompt,
-            "negative": negative,
-            "seed": seed_raw,
-            "width": width_raw,
-            "height": height_raw,
-            "steps": steps_raw,
-            "cfg": cfg_raw,
-        }
-
-        if load_error:
-            context["error"] = load_error
-            return render_template("sdxl.html", **context)
-
-        if not model_base.is_dir():
-            context["error"] = f"SDXL base directory not found: {model_base}"
-            return render_template("sdxl.html", **context)
-
-        try:
-            seed = int(seed_raw) if seed_raw else defaults["seed"]
-            width = int(width_raw) if width_raw else defaults["width"]
-            height = int(height_raw) if height_raw else defaults["height"]
-            steps = int(steps_raw) if steps_raw else defaults["steps"]
-            cfg = float(cfg_raw) if cfg_raw else defaults["cfg"]
-        except ValueError as exc:
-            context["error"] = f"Invalid numeric value: {exc}"
-            return render_template("sdxl.html", **context)
-
-        try:
-            output_dir = _sdxl_output_dir()
-            output_paths = sdxl_inference.generate_images(
-                output_dir=str(output_dir),
-                base_dir=str(model_base),
-                prompt=prompt or defaults["prompt"],
-                negative=negative,
-                seed=seed,
-                height=height,
-                width=width,
-                steps=steps,
-                cfg=cfg,
-            )
-        except Exception as exc:
-            context["error"] = f"SDXL generation failed: {exc}"
-        else:
-            context["result"] = {
-                "output_dir": str(output_dir),
-                "images": [{"filename": Path(path).name, "path": path} for path in output_paths],
-            }
-    elif load_error:
-        context["error"] = load_error
-
-    return render_template("sdxl.html", **context)
 
 
 @app.route("/viewer")
@@ -617,30 +325,6 @@ def api_sdxl_image():
         ".webp": "image/webp",
     }
     return send_file(image_path, mimetype=mimetype_map.get(image_path.suffix.lower(), "image/png"))
-
-
-
-
-@app.route("/inspect/<path:model_filepath>")
-def inspect_model(model_filepath: str):
-    """
-    Inspect a model by path (relative to the configured root).
-    """
-    try:
-        model_path = _resolve_path(model_filepath)
-        summary = _load_model_summary(model_path)
-        return jsonify(summary)
-    except FileNotFoundError as exc:
-        return jsonify({"error": str(exc)}), 404
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 500
-    except Exception as exc:  # pragma: no cover - catch-all for unexpected errors
-        return jsonify({"error": f"Unexpected error: {exc}"}), 500
-
-
-
 
 
 def main(root: str):

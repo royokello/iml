@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 
-from models.blocks.attention_block import AttentionBlock
-from models.blocks.feed_forward import FeedForward
+from ..blocks.attention_block import AttentionBlock
+from ..blocks.feed_forward import FeedForward
 
 # assuming AttentionBlock and FeedForward are already defined as we wrote before
 

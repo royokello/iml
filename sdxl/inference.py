@@ -13,29 +13,20 @@ import argparse
 import os
 import shutil
 import time
-from typing import Dict, Iterable
+from typing import Iterable
 
 import torch
 from PIL import Image
-import numpy as np
-import copy
-from diffusers import AutoencoderKL, UNet2DConditionModel
-from diffusers.schedulers import (
-    DDIMScheduler,
-    DPMSolverMultistepScheduler,
-    EulerAncestralDiscreteScheduler,
-    EulerDiscreteScheduler,
-    HeunDiscreteScheduler,
-)
+from diffusers import AutoencoderKL
+from diffusers.schedulers import EulerAncestralDiscreteScheduler
 from safetensors.torch import load_file as load_safetensors
 from transformers import (
     CLIPTextModel,
     CLIPTextModelWithProjection,
     CLIPTokenizer,
 )
-from packaging import version
-
-from sdxl.pipeline import StableDiffusionXLPipeline
+from .pipeline import StableDiffusionXLPipeline
+from .models._unet import SDXLUNet
 
 DEFAULT_PROMPT = "A propaganda poster depicting a cat dressed as french emperor napoleon holding a piece of cheese."
 DEFAULT_NEGATIVE = ""
@@ -43,8 +34,6 @@ DEFAULT_SEED = 19930625
 DEFAULT_HEIGHT = 512
 DEFAULT_WIDTH = 512
 DEFAULT_STEPS = 20
-DEFAULT_SAMPLER = "euler_a"
-DEFAULT_SCHEDULER = "karras"
 DEFAULT_CFG = 5.0
 
 # DEFAULT_PROMPT = "a close-up of a fire spitting dragon, cinematic shot."
@@ -64,10 +53,6 @@ def _coerce_dimension(value: int) -> int:
     return max(64, (value // 8) * 8)
 
 
-def _normalize_sampler(name: str) -> str:
-    return name.strip().lower().replace("-", "_").replace(" ", "_")
-
-
 def _ensure_unet_config(unet_dir: str, base_dir: str) -> None:
     base_unet_dir = os.path.join(base_dir, "unet")
     for filename in ("config.json",):
@@ -82,31 +67,46 @@ def _ensure_unet_config(unet_dir: str, base_dir: str) -> None:
             raise SystemExit(f"Missing UNet config file: {source}")
 
 
-def _build_scheduler(base_dir: str, sampler: str, schedule: str):
-    sampler_name = _normalize_sampler(sampler)
-    schedule_name = schedule.strip().lower()
+def _resolve_unet_checkpoint(unet_dir: str) -> str:
+    path = os.path.abspath(unet_dir)
+    if os.path.isfile(path):
+        if path.endswith(".safetensors"):
+            return path
+        raise SystemExit(f"Expected a .safetensors file for UNet weights: {path}")
 
-    if sampler_name in {"euler_a", "euler_ancestral"}:
-        cls = EulerAncestralDiscreteScheduler
-    elif sampler_name in {"euler", "euler_discrete"}:
-        cls = EulerDiscreteScheduler
-    elif sampler_name == "heun":
-        cls = HeunDiscreteScheduler
-    elif sampler_name == "ddim":
-        cls = DDIMScheduler
-    elif sampler_name in {"dpmpp_2m", "dpmpp2m"}:
-        cls = DPMSolverMultistepScheduler
-    else:
-        raise SystemExit(f"Unsupported sampler '{sampler}'.")
+    if not os.path.isdir(path):
+        raise SystemExit(f"UNet directory not found: {unet_dir}")
 
-    scheduler = cls.from_pretrained(base_dir, subfolder="scheduler")
-    use_karras = schedule_name.startswith("karras")
-    config = getattr(scheduler, "config", None)
-    if config is not None and hasattr(config, "use_karras_sigmas"):
-        config.use_karras_sigmas = use_karras
-    elif hasattr(scheduler, "use_karras_sigmas"):
-        scheduler.use_karras_sigmas = use_karras
-    return scheduler
+    preferred = os.path.join(path, "diffusion_pytorch_model.safetensors")
+    if os.path.isfile(preferred):
+        return preferred
+
+    safetensors = sorted(
+        filename for filename in os.listdir(path) if filename.endswith(".safetensors")
+    )
+    if safetensors:
+        return os.path.join(path, safetensors[0])
+
+    raise SystemExit(
+        f"No .safetensors file found in UNet directory: {path}. "
+        "Provide --unet pointing to a folder that contains quantized UNet weights."
+    )
+
+
+def _load_quantized_unet(
+    base_dir: str,
+    unet_dir: str,
+    device: torch.device,
+) -> SDXLUNet:
+    checkpoint_path = _resolve_unet_checkpoint(unet_dir)
+    print(f"Loading quantized UNet checkpoint '{checkpoint_path}' ...")
+    model = load_safetensors(checkpoint_path, device="cpu")
+    unet = SDXLUNet(model=model)
+    return unet.to(device=device, dtype=torch.float16).eval()
+
+
+def _build_scheduler(base_dir: str):
+    return EulerAncestralDiscreteScheduler.from_pretrained(base_dir, subfolder="scheduler")
 
 
 def parse_args() -> argparse.Namespace:
@@ -139,12 +139,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT, help="Image height (multiple of 8).")
     parser.add_argument("--width", type=int, default=DEFAULT_WIDTH, help="Image width (multiple of 8).")
     parser.add_argument("--steps", type=int, default=DEFAULT_STEPS, help="Number of sampling steps.")
-    parser.add_argument(
-        "--sampler",
-        default=DEFAULT_SAMPLER,
-        help="Sampler name (euler_a, euler, heun, ddim, dpmpp_2m).",
-    )
-    parser.add_argument("--scheduler", default=DEFAULT_SCHEDULER, help="Scheduler noise spacing (karras, linear).")
     parser.add_argument("--cfg", type=float, default=DEFAULT_CFG, help="Classifier-free guidance scale.")
     parser.add_argument(
         "--debug",
@@ -166,12 +160,8 @@ def generate_images(
     height: int = DEFAULT_HEIGHT,
     width: int = DEFAULT_WIDTH,
     steps: int = DEFAULT_STEPS,
-    sampler: str = DEFAULT_SAMPLER,
-    scheduler: str = DEFAULT_SCHEDULER,
     cfg: float = DEFAULT_CFG,
-    enable_compile: bool = True,
-    enable_cpu_offload: bool = True,
-    log: bool = True,
+    enable_cpu_offload: bool = False,
 ) -> list[str]:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA GPU is required for SDXL inference.")
@@ -188,18 +178,15 @@ def generate_images(
     torch.manual_seed(seed)
     generator = torch.Generator(device=gpu_device).manual_seed(seed)
 
-    if log:
-        print("Loading tokenizer 1 ...")
+    print("Loading tokenizer 1 ...", flush=True)
     tokenizer_path = os.path.join(base_dir, "tokenizer")
     tokenizer = CLIPTokenizer.from_pretrained(tokenizer_path)
 
-    if log:
-        print("Loading tokenizer 2 ...")
+    print("Loading tokenizer 2 ...", flush=True)
     tokenizer_2_path = os.path.join(base_dir, "tokenizer_2")
     tokenizer_2 = CLIPTokenizer.from_pretrained(tokenizer_2_path)
 
-    if log:
-        print("Loading text encoder 1 ...")
+    print("Loading text encoder 1 ...", flush=True)
     text_encoder_path = os.path.join(base_dir, "text_encoder")
     text_encoder = CLIPTextModel.from_pretrained(
         pretrained_model_name_or_path=text_encoder_path,
@@ -207,8 +194,7 @@ def generate_images(
         local_files_only=True,
     ).to(device=gpu_device, dtype=torch.float16).eval()
 
-    if log:
-        print("Loading text encoder 2 ...")
+    print("Loading text encoder 2 ...", flush=True)
     text_encoder_2_path = os.path.join(base_dir, "text_encoder_2")
     text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
         pretrained_model_name_or_path=text_encoder_2_path,
@@ -216,21 +202,19 @@ def generate_images(
         local_files_only=True,
     ).to(device=gpu_device, dtype=torch.float16).eval()
 
-    if log:
-        print("Loading scheduler ...")
-    scheduler_obj = _build_scheduler(base_dir, sampler, scheduler)
+    print("Loading scheduler ...", flush=True)
+    scheduler_obj = _build_scheduler(base_dir)
     scheduler_obj.set_timesteps(steps, device=gpu_device)
 
-    if log:
-        print("Loading unet ...")
+    print("Loading unet ...", flush=True)
     _ensure_unet_config(unet_dir, base_dir)
-    unet = UNet2DConditionModel.from_pretrained(
-        pretrained_model_name_or_path=unet_dir,
-        torch_dtype=torch.float16,
-    ).to(device=cpu_device).eval()
+    unet = _load_quantized_unet(
+        base_dir=base_dir,
+        unet_dir=unet_dir,
+        device=cpu_device,
+    )
 
-    if log:
-        print("Loading vae ...")
+    print("Loading vae ...", flush=True)
     vae = AutoencoderKL.from_pretrained(
         pretrained_model_name_or_path=base_dir,
         subfolder="vae",
@@ -238,8 +222,7 @@ def generate_images(
     )
     vae.to(device=cpu_device, dtype=torch.float32).eval()
 
-    if log:
-        print("Loading pipeline ...")
+    print("Loading pipeline ...", flush=True)
     sdxl_pipe = StableDiffusionXLPipeline(
         vae=vae,
         text_encoder=text_encoder,
@@ -250,25 +233,11 @@ def generate_images(
         scheduler=scheduler_obj,
     )
 
-    torch_version = version.parse(torch.__version__.split("+")[0])
-    if enable_compile and hasattr(torch, "compile") and torch_version >= version.parse("2.0.0"):
-        try:
-            if log:
-                print("Compiling UNet with torch.compile for faster inference ...")
-            sdxl_pipe.unet = torch.compile(sdxl_pipe.unet, mode="reduce-overhead", fullgraph=True)
-        except Exception as exc:
-            if log:
-                print(f"torch.compile failed, continuing with eager mode: {exc}")
-    elif log:
-        print("torch.compile not available (requires torch>=2.0). Continuing without compilation.")
-
     if enable_cpu_offload:
-        if log:
-            print("Enabling CPU offload to reduce VRAM requirements ...")
+        print("Enabling CPU offload to reduce VRAM requirements ...", flush=True)
         sdxl_pipe.enable_model_cpu_offload()
 
-    if log:
-        print("generating image ...")
+    print("generating image ...", flush=True)
     output = sdxl_pipe.generate(
         prompt=prompt,
         height=height,
@@ -293,8 +262,7 @@ def generate_images(
     for image in images:
         out_path = _auto_name(output_dir)
         image.save(out_path)
-        if log:
-            print(f"[done] Saved '{out_path}'")
+        print(f"[done] Saved '{out_path}'", flush=True)
         saved_paths.append(out_path)
     return saved_paths
 
@@ -312,8 +280,6 @@ def main() -> None:
         height=args.height,
         width=args.width,
         steps=args.steps,
-        sampler=args.sampler,
-        scheduler=args.scheduler,
         cfg=args.cfg,
     )
 

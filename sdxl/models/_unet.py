@@ -6,42 +6,38 @@ from typing import Any, Dict, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-from models.blocks.conv_2d import QuantConv1x1
-from models.blocks.cross_attn_down_block_2d import CrossAttnDownBlock2D
-from models.blocks.cross_attn_up_block_2d import CrossAttnUpBlock2D
-from models.blocks.down_block_2d import DownBlock2D
-from models.blocks.linear import QuantLinear
-from models.blocks.unet_mid_block_2d_cross_attn import UNetMidBlock2DCrossAttn
-from models.blocks.up_block_2d import UpBlock2D
-from models.embeddings import GaussianFourierProjection, ImageHintTimeEmbedding, ImageProjection, ImageTimeEmbedding, TextImageProjection, TextImageTimeEmbedding, TextTimeEmbedding, TimestepEmbedding, Timesteps, get_activation
-
-
-def _linear_fp16(in_features: int, out_features: int, bias: bool = True) -> nn.Linear:
-    layer = nn.Linear(in_features, out_features, bias=bias)
-    return layer.to(torch.float16)
-
-
-def load_unet_key_mapping(base_dir: str) -> Dict[str, str]:
-    """
-    Load `<base>/unet/mapping.json` and return it as-is.
-    """
-    mapping_path = Path(base_dir) / "unet" / "mapping.json"
-    return json.loads(mapping_path.read_text(encoding="utf-8"))
-
+from .blocks.cross_attn_down_block_2d import CrossAttnDownBlock2D
+from .blocks.cross_attn_up_block_2d import CrossAttnUpBlock2D
+from .blocks.down_block_2d import DownBlock2D
+from .blocks.unet_mid_block_2d_cross_attn import UNetMidBlock2DCrossAttn
+from .blocks.up_block_2d import UpBlock2D
+from .embeddings import (
+    GaussianFourierProjection,
+    ImageHintTimeEmbedding,
+    ImageProjection,
+    ImageTimeEmbedding,
+    TextImageProjection,
+    TextImageTimeEmbedding,
+    TextTimeEmbedding,
+    TimestepEmbedding,
+    Timesteps,
+    get_activation,
+)
+from .unet.loader import load_weights
 
 class AddEmbedding(nn.Module):
     def __init__(self, input_dim: int, embed_dim: int):
         super().__init__()
-        self.linear_1 = _linear_fp16(
+        self.linear_1 = nn.Linear(
             in_features=input_dim,
             out_features=embed_dim,
             bias=True,
-        )
-        self.linear_2 = _linear_fp16(
+        ).to(torch.float16)
+        self.linear_2 = nn.Linear(
             in_features=embed_dim,
             out_features=embed_dim,
             bias=True,
-        )
+        ).to(torch.float16)
         self.act = nn.SiLU()
 
     def forward(self, embeds: torch.Tensor) -> torch.Tensor:
@@ -51,22 +47,13 @@ class AddEmbedding(nn.Module):
         return x
 
 
-OPTIONAL_TENSORS = {
-    # Fourier time projection weights are procedurally re-created from config, so
-    # they are not serialized in the original SDXL checkpoints.
-    "time_proj.weight",
-}
-
-
 class SDXLUNet(nn.Module):
 
     def __init__(
         self,
         model: dict[str, torch.Tensor] | None = None,
-        key_mapping: Dict[str, str] | None = None,
     ):
         super().__init__()
-        self._key_mapping = dict(key_mapping or {})
 
         # SDXL-base UNet configuration
         self.config = {
@@ -306,7 +293,7 @@ class SDXLUNet(nn.Module):
 
         # 7) optional filtered weight loading from safetensors/state_dict
         if model is not None:
-            self._load_filtered_weights(model)
+            load_weights(self, model)
 
     def _collect_skip_channels_for_up_blocks(self) -> list[int]:
         """
@@ -323,51 +310,6 @@ class SDXLUNet(nn.Module):
             for downsampler in downsamplers:
                 skip_channels.append(downsampler.channels)
         return skip_channels
-
-    def _load_filtered_weights(self, model: dict[str, torch.Tensor]) -> None:
-        """
-        Filter-load only keys that exist in this UNet and match in shape.
-        `model` is expected to be a dict like from safetensors or state_dict().
-        """
-        state = self.state_dict()
-        updated: dict[str, torch.Tensor] = {}
-        matched = 0
-        missing: list[str] = []
-        missing_details: list[tuple[str, tuple[int, ...]]] = []
-
-        for name, target in state.items():
-            source_name = self._key_mapping.get(name, name)
-            tensor = model.get(source_name)
-            if tensor is None:
-                if name in OPTIONAL_TENSORS:
-                    # Skip optional tensors that Diffusers rebuilds on init.
-                    continue
-                missing.append(f"{name} (looked for {source_name})")
-                missing_details.append((name, tuple(int(dim) for dim in target.shape)))
-                continue
-
-            updated[name] = tensor.to(dtype=target.dtype)
-            matched += 1
-
-        missing_count = len(missing)
-        total_expected = len(state)
-
-        if missing_count:
-            for tensor_name, tensor_shape in missing_details:
-                print(f"[unet-load-missing] {tensor_name}: shape={tensor_shape}")
-            print(f"[unet-load] matched={matched}, missing={missing_count}")
-            print(f"[unet-load] expected={total_expected}, loaded={matched}")
-            raise SystemExit("[unet-load] aborting because tensors are missing (see above)")
-        else:
-            print(f"[unet-load] matched={matched}, missing={missing_count}")
-            print(f"[unet-load] expected={total_expected}, loaded={matched}")
-
-        state.update(updated)
-        self.load_state_dict(state, strict=False)
-
-        for module in self.modules():
-            if isinstance(module, (QuantLinear, QuantConv1x1)):
-                module._weights_loaded = True
 
     def get_time_embed(
         self, sample: torch.Tensor, timestep: Union[torch.Tensor, float, int]
