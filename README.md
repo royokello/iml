@@ -74,6 +74,14 @@ Notes
 - Example
   - `py -m image.group --root "images" --orientation longest --sizes 256 384 512 768 --dry-run`
 
+#### `image.collect` – Aggregate into one folder
+- Features
+  - Collects images from a directory tree into a single output folder
+  - Converts to PNG, optional resize by width/height, optional square padding
+  - Copies matching `.txt` captions alongside images
+- Example
+  - `py -m image.collect --input_dir "images" --output_dir "images_flat" --mode file`
+
 #### `image.shape` – Non-crop reshape
 - Features
   - Resizes only the chosen side (`width` or `height`), keeps the other side
@@ -102,43 +110,9 @@ Notes
   3) Run cropper using the trained weights
      - `py -m image.crop.main --project "C:\\proj" --stage 1 --resolution 768 --classes 0 1 2 3`
 
-### SD15
-
-#### `sd15.infer` – Text-to-image
-- Features
-  - CPU text encoding + GPU UNet/decoder for efficient VRAM use
-  - DDIM, CFG scale, seed, and size control
-- Example
-  - `py -m sd15.infer --model "C:\\models\\sd15" --output "C:\\out" --prompt "analogue photo, ultrawide waterfall" --steps 20 --scale 7.5 --size 512,512`
-
-#### `sd15.train` – LoRA training (manual injection)
-- Features
-  - Injects LoRA into UNet without PEFT; caches text embeddings; VAE on CPU
-  - Presets for face/person/object/style; periodic samples and checkpoints
-- Example
-  - `py -m sd15.train --model "C:\\models\\sd15" --project "C:\\proj" --preset face --name alice`
-
-#### `sd15.info` – Tensor inventory to CSV
-- Features
-  - Reads Diffusers directory or single `.safetensors`, filters by module(s)
-  - Writes `name,shape,precision` CSV for quick audits
-- Example
-  - `py -m sd15.info --model "C:\\models\\sd15" --modules unet vae text --output "C:\\out"`
-
-#### `sd15.quantize` – FP8 weight export (UNet)
-- Features
-  - Mixed-precision FP8 encoding per tensor category with optional per-tensor scaling
-  - Produces `_quantized.safetensors` and metadata
-- Example
-  - `py -m sd15.quantize --model "C:\\models\\sd15" --scaling-mode tensor --scaling-precision e8m0 --proj-precision e2m1`
-
 ### SDXL
 
-#### `sdxl.profile` – FP8 profile summary
-- Features
-  - Profiles checkpoint tensors by section and layer type; reports FP8/FP16 byte budgets
-- Example
-  - `py -m sdxl.profile --model "C:\\models\\sdxl.safetensors"`
+### Flux 2 Klein 4b 
 
 ### Utils
 
