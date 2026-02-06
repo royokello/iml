@@ -133,7 +133,7 @@ def run_analysis(
     start_crf: int,
     crfs: List[int],
     sample_len: float = 8.0,
-    num_samples: int = 32
+    num_samples: int = 8
 ) -> Dict[str, Any]:
     
     source = Path(source_path)

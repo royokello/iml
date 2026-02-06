@@ -78,10 +78,20 @@ def resize_long_side(img: Image.Image, target: int) -> Image.Image:
     return img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
 
+def parse_resolution(value: str) -> int | None:
+    lowered = value.strip().lower()
+    if lowered in {"none", "null"}:
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("--resolution must be a positive integer or 'none'")
+    return parsed
+
+
 def perform_cropping(
     project: str,
     stage: int | None,
-    resolution: int,
+    resolution: int | None,
     conf: float,
     iou: float,
     max_det: int,
@@ -151,7 +161,8 @@ def perform_cropping(
             if ex2 <= ex1 or ey2 <= ey1:
                 continue
             crop = im.crop((ex1, ey1, ex2, ey2))
-            crop = resize_long_side(crop, resolution)
+            if resolution is not None:
+                crop = resize_long_side(crop, resolution)
             save_path = os.path.join(out_dir, f"{counter}.png")
             crop.save(save_path)
             counter += 1
@@ -163,7 +174,12 @@ def main():
     ap = argparse.ArgumentParser("YOLO-based cropper")
     ap.add_argument("--project", required=True)
     ap.add_argument("--stage", type=int)
-    ap.add_argument("--resolution", type=int, default=512)
+    ap.add_argument(
+        "--resolution",
+        type=parse_resolution,
+        default=None,
+        help="Long-side target size for output crops. Use an integer, or omit/'none' to keep native crop size.",
+    )
     ap.add_argument("--conf", type=float, default=0.25) # confidence threshold: only keep detections above this score
     ap.add_argument("--iou", type=float, default=0.7) # IoU threshold for non-max suppression (higher = fewer boxes kept)
     ap.add_argument("--max_det", type=int, default=50) # maximum number of detections per image to return

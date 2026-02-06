@@ -5,19 +5,19 @@ Author: Roy Okello, Stelar Labs
 IML is a toolkit for image, video, and diffusion model workflows. It includes:
 - Image preprocessing (group, shape), dataset curation (cull), and YOLO-based cropping (crop)
 - Video frame extraction, grouping, loop detection, and quality analysis
-- Stable Diffusion 1.5 utilities (inference, LoRA training, tensor info, quantization)
-- SDXL checkpoint profiling and a lightweight web UI for loop labeling
+- SDXL
+- Flux 2
 
 ## Installation
 
 Prerequisites
 - Python 3.10+ and a virtual environment
-- NVIDIA GPU + CUDA for GPU-accelerated tools (recommended)
+- NVIDIA GPU + CUDA for GPU-accelerated tools
 - FFmpeg/FFprobe on PATH for video modules
 
 Create and activate a venv
 - Windows
-  - `py -m venv venv`
+  - `python -m venv venv`
   - `venv\Scripts\activate`
 - macOS/Linux
   - `python3 -m venv .venv`
@@ -27,7 +27,7 @@ Install dependencies
 - `pip install -r requirements.txt`
 
 Notes
-- Some modules expect CUDA (e.g., `video.loop`, `sd15.*`, YOLO inference/training). CPU may work for a subset but is not the target path.
+- Some modules expect CUDA (e.g., `video.loop`, YOLO inference/training).
 - FFmpeg/FFprobe binaries are required by `video.group`, `video.loop`, and `video.quality`.
 
 ## Groups
@@ -40,8 +40,8 @@ Notes
   - Short-side resize while preserving aspect ratio
   - Collated output or per-video subfolders
 - Examples
-  - `py -m video.extract --input "videos" --output "frames" --frames 2 --time second --resolution 768`
-  - `py -m video.extract --input "videos" --output "frames_all" --frames 50 --random --collate --resolution 512`
+  - `python -m video.extract --input "videos" --output "frames" --frames 2 --time second --resolution 768`
+  - `python -m video.extract --input "videos" --output "frames_all" --frames 50 --random --collate --resolution 512`
 
 #### `video.group` – Organize by orientation + size
 - Features
@@ -49,21 +49,21 @@ Notes
   - Moves files into `_<orientation>/_<short-side>` buckets and prefixes non-group path to filename
   - Dry-run support
 - Example
-  - `py -m video.group --root "videos" --ffprobe "C:\\tools\\ffprobe.exe" --sizes 256 384 512 768 1024 --dry-run`
+  - `python -m video.group --root "videos" --ffprobe "C:\\tools\\ffprobe.exe" --sizes 256 384 512 768 1024 --dry-run`
 
 #### `video.loop` – Detect seamless loops (CUDA + FFmpeg)
 - Features
   - GPU-decoded thumbnails via FFmpeg (`scale_cuda`), SSIM-based loop detection, batched exports
   - Exports lossless H.264 `.mkv` loops at target `--fps` and `--out-res`
 - Example
-  - `py -m video.loop --input "videos" --output "loops" --lengths 33 49 --fps 30 --in-res 64 --out-res 768 --ffmpeg "C:\\tools\\ffmpeg.exe"`
+  - `python -m video.loop --input "videos" --output "loops" --lengths 33 49 --fps 30 --in-res 64 --out-res 768 --ffmpeg "C:\\tools\\ffmpeg.exe"`
 
 #### `video.quality` – VMAF/SSIM/PSNR + bitrate curve
 - Features
   - Compares all videos in a folder to the largest file as reference
   - Produces CSVs and a bitrate vs. quality plot; tries VMAF first, falls back to SSIM/PSNR
 - Example
-  - `py -m video.quality --input "videos" --ffmpeg-dir "C:\\tools\\ffmpeg" -v`
+  - `python -m video.quality --input "videos" --ffmpeg-dir "C:\\tools\\ffmpeg" -v`
 
 ### Image
 
@@ -72,7 +72,7 @@ Notes
   - Group by `width`, `height`, or `longest` side into size thresholds
   - Prefixes filename with path segments outside grouping folders
 - Example
-  - `py -m image.group --root "images" --orientation longest --sizes 256 384 512 768 --dry-run`
+  - `python -m image.group --root "images" --orientation longest --sizes 256 384 512 768 --dry-run`
 
 #### `image.collect` – Aggregate into one folder
 - Features
@@ -80,22 +80,22 @@ Notes
   - Converts to PNG, optional resize by width/height, optional square padding
   - Copies matching `.txt` captions alongside images
 - Example
-  - `py -m image.collect --input_dir "images" --output_dir "images_flat" --mode file`
+  - `python -m image.collect --input_dir "images" --output_dir "images_flat" --mode file`
 
 #### `image.shape` – Non-crop reshape
 - Features
   - Resizes only the chosen side (`width` or `height`), keeps the other side
   - Format-aware saves with sane defaults (JPEG/WebP/PNG/TIFF)
 - Example
-  - `py -m image.shape --input "images" --side width --size 1024`
+  - `python -m image.shape --input "images" --side width --size 1024`
 
 #### `image.cull` – Keep/Cull classifier
 - Features
   - Train a DeiT-based binary classifier on labeled images per stage
   - Inference copies kept images to next stage; logs and metrics saved
 - Usage pattern (stages live under project root)
-  - Train: `py -m image.cull.train --project "C:\\proj" --stage 1 --batch-size 32`
-  - Predict: `py -m image.cull.main --project "C:\\proj" --stage 1`
+  - Train: `python -m image.cull.train --project "C:\\proj" --stage 1 --batch-size 32`
+  - Predict: `python -m image.cull.main --project "C:\\proj" --stage 1`
   - Expects `stage_<N>` with images and `stage_<N>_cull_labels.csv` for training; writes `stage_<N>_cull_model.pth`
 
 #### `image.crop` – YOLO-based cropping
@@ -103,12 +103,16 @@ Notes
   - Train a YOLO detector from CSV labels, then crop one best box per class
   - Crops are expanded to fixed aspect ratios per class and resized by long side
 - Typical flow
-  1) Prepare YOLO dataset from labels CSV
-     - `py -m image.crop.prepare --project "C:\\proj" --stage 1 --val_split 0.2`
-  2) Train a detector (Ultralytics)
-     - `py -m image.crop.train --project "C:\\proj" --stage 1 --variant yolo11n --epochs 100 --batch 16`
-  3) Run cropper using the trained weights
-     - `py -m image.crop.main --project "C:\\proj" --stage 1 --resolution 768 --classes 0 1 2 3`
+  1) Label boxes (first step)
+     - `python -m image.crop.label.main --project "C:\\proj" --stage 1` then open `http://localhost:5051`
+     - Writes `stage_<N>_crop_labels.csv` under the project root (resumes if present)
+  2) Prepare YOLO dataset from labels CSV
+     - `python -m image.crop.prepare --project "C:\\proj" --stage 1 --val_split 0.2`
+  3) Train a detector (Ultralytics)
+     - `python -m image.crop.train --project "C:\\proj" --stage 1 --variant yolo11n --epochs 100 --batch 16`
+  4) Run cropper using the trained weights
+     - Native crop size (no resize): `python -m image.crop.main --project "C:\\proj" --stage 1 --classes 0 1 2 3`
+     - Resize long side: `python -m image.crop.main --project "C:\\proj" --stage 1 --resolution 768 --classes 0 1 2 3`
 
 ### SDXL
 
@@ -123,4 +127,4 @@ Notes
 - Features
   - Minimal Flask app to tag exported loops; writes `caption.txt` in each loop folder
 - Example
-  - `py -m utils.cap.label --input "C:\\loops" --port 7860` then open `http://localhost:7860`
+  - `python -m utils.cap.label --input "C:\\loops" --port 7860` then open `http://localhost:7860`

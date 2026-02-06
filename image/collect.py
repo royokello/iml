@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 import random
+import shutil
 from pathlib import Path
 
 from PIL import Image
@@ -23,6 +24,7 @@ def main(
     height: int | None = None,
     square: bool = False,
     mode: str = "folder",
+    verbose: bool = False,
 ) -> None:
     """
     Collects all image files (and their captions, if present) from a directory and its
@@ -65,7 +67,25 @@ def main(
 
     file_counter = 1
     for file_path in image_files:
+        src_suffix = Path(file_path).suffix.lower()
         try:
+            if width is None and height is None and not square and src_suffix == ".png":
+                output_file_path = out_dir / f"{file_counter}.png"
+                shutil.copy2(file_path, output_file_path)
+
+                caption_file_path = os.path.splitext(file_path)[0] + ".txt"
+                if os.path.exists(caption_file_path):
+                    with open(caption_file_path, "r", encoding="utf-8") as caption_file:
+                        caption_text = caption_file.read()
+                    caption_output_path = out_dir / f"{file_counter}.txt"
+                    with open(caption_output_path, "w", encoding="utf-8") as output_caption_file:
+                        output_caption_file.write(caption_text)
+
+                if verbose:
+                    print(f"Copied: {output_file_path}")
+                file_counter += 1
+                continue
+
             with Image.open(file_path) as img:
                 if img.mode != "RGB":
                     img = img.convert("RGB")
@@ -109,7 +129,8 @@ def main(
                     with open(caption_output_path, "w", encoding="utf-8") as output_caption_file:
                         output_caption_file.write(caption_text)
 
-                print(f"Converted and saved: {output_file_path}")
+                if verbose:
+                    print(f"Converted and saved: {output_file_path}")
                 file_counter += 1
         except Exception as exc:
             print(f"Error processing {file_path}: {exc}")
@@ -154,6 +175,11 @@ def parse_args() -> argparse.Namespace:
         default="folder",
         help="Mode to gather files: folder, file, or random.",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-file output and config details.",
+    )
     return parser.parse_args()
 
 
@@ -166,6 +192,7 @@ def cli() -> None:
         height=args.height,
         square=args.square,
         mode=args.mode,
+        verbose=args.verbose,
     )
 
 
