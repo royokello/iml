@@ -136,6 +136,37 @@ button {
     align-items: center;
 }
 
+.toggle-row {
+    margin: 10px 0;
+}
+
+.toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+}
+
+.toggle.option {
+    font-weight: 500;
+    margin-right: 12px;
+}
+
+.toggle-label {
+    font-weight: 700;
+    margin-right: 10px;
+}
+
+.toggle input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+}
+
+.toggle input[type="radio"] {
+    width: 14px;
+    height: 14px;
+}
+
 .manual-nav input {
     padding: 8px;
     width: 120px;

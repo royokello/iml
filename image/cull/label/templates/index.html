@@ -54,11 +54,38 @@
 
             <p>Current label: <strong>{{ current_display_label if current_display_label else "None" }}</strong></p>
 
-            <form method="post">
+            <form method="post" id="cullForm">
                 <div class="buttons nav-buttons">
                     <button name="action" value="prev">← Previous</button>
                     <button name="action" value="next">Next →</button>
                     <button name="action" value="random">Random</button>
+                </div>
+                <div class="buttons nav-buttons labelled-nav">
+                    <button name="action" value="prev_labelled">Prev Labelled</button>
+                    <button name="action" value="next_labelled">Next Labelled</button>
+                </div>
+                <div class="toggle-row labelled-filter">
+                    <input type="hidden" name="labelled_nav_present" value="1">
+                    <span class="toggle-label">Labelled filter</span>
+                    <label class="toggle option">
+                        <input type="radio" name="labelled_nav_mode" value="all" {% if labelled_nav_mode == "all" %}checked{% endif %}>
+                        <span>All</span>
+                    </label>
+                    <label class="toggle option">
+                        <input type="radio" name="labelled_nav_mode" value="keep" {% if labelled_nav_mode == "keep" %}checked{% endif %}>
+                        <span>Keep</span>
+                    </label>
+                    <label class="toggle option">
+                        <input type="radio" name="labelled_nav_mode" value="cull" {% if labelled_nav_mode == "cull" %}checked{% endif %}>
+                        <span>Cull</span>
+                    </label>
+                </div>
+                <div class="toggle-row">
+                    <input type="hidden" name="toggle_present" value="1">
+                    <label class="toggle">
+                        <input type="checkbox" name="random_on_label" id="randomOnLabel" {% if random_on_label %}checked{% endif %}>
+                        <span>Randomize on label</span>
+                    </label>
                 </div>
                 <div class="manual-nav">
                     <input type="number" name="goto_index" min="1" max="{{ total if total > 0 else 1 }}" placeholder="Enter image #">

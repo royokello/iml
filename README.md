@@ -72,7 +72,7 @@ Notes
   - Group by `width`, `height`, or `longest` side into size thresholds
   - Prefixes filename with path segments outside grouping folders
 - Example
-  - `python -m image.group --root "images" --orientation longest --sizes 256 384 512 768 --dry-run`
+  - `python -m image.group --input "images" --orientation longest --sizes 256 384 512 768 --dry-run`
 
 #### `image.collect` – Aggregate into one folder
 - Features
@@ -84,19 +84,56 @@ Notes
 
 #### `image.shape` – Non-crop reshape
 - Features
-  - Resizes only the chosen side (`width` or `height`), keeps the other side
+  - Writes reshaped images to a required output directory
+    - `side` mode sets the chosen side (`width` or `height`) and scales the other side to preserve aspect ratio
+    - `ratio` mode picks the closest ratio by aspect, then rounds down to the nearest size that matches it and enforces width/height multiples
   - Format-aware saves with sane defaults (JPEG/WebP/PNG/TIFF)
+- Examples
+  - `python -m image.shape --input "images" --output "out" --mode side --side width --size 1024`
+  - `python -m image.shape --input "images" --output "out" --mode ratio --ratios 1x1 3x4 4x3 1x2 --length-multiple 64`
+
+#### `image.tagger` â€“ Tag images + write captions
+- Features
+  - Recursively scans the input folder for common image formats
+  - Downloads the WD14 tagger model (SmilingWolf) into a local cache (`wd14_model` by default)
+  - Writes comma-separated tags to `.txt` files beside each image (same basename)
 - Example
-  - `python -m image.shape --input "images" --side width --size 1024`
+  - `python -m image.tagger --input "images" --thresh 0.35 --max-tags 50`
+- Useful args
+  - `--thresh`, `--general-thresh`, `--character-thresh`, `--max-tags` (0 for none), `--model`
+
+#### `image.dedup` – Near-duplicate grouping + browser
+- Features
+  - Groups by identical resolution, then clusters with dHash and refines with SSIM
+  - Flask UI to browse groups (prev/next) and view images vertically
+- Example
+  - `python -m image.dedup.main --input "images" --dhash-threshold 8 --ssim-threshold 0.96` then open `http://localhost:7860`
+- Useful args
+  - `--dhash-size`, `--dhash-threshold`
+  - `--ssim-threshold`, `--ssim-width`, `--ssim-window`, `--ssim-gaussian/--no-ssim-gaussian`
+  - `--min-group-size`
 
 #### `image.cull` – Keep/Cull classifier
 - Features
   - Train a DeiT-based binary classifier on labeled images per stage
   - Inference copies kept images to next stage; logs and metrics saved
-- Usage pattern (stages live under project root)
-  - Train: `python -m image.cull.train --project "C:\\proj" --stage 1 --batch-size 32`
-  - Predict: `python -m image.cull.main --project "C:\\proj" --stage 1`
+- Typical flow (stages live under project root)
+  1) Label keep/cull (first step)
+     - `python -m image.cull.label.main --project "C:\\proj" --stage 1` then open `http://localhost:5050`
+     - Writes `stage_<N>_cull_labels.csv` under the project root (resumes if present)
+  2) Train
+     - `python -m image.cull.train --project "C:\\proj" --stage 1 --batch-size 32`
+  3) Predict
+     - `python -m image.cull.main --project "C:\\proj" --stage 1`
   - Expects `stage_<N>` with images and `stage_<N>_cull_labels.csv` for training; writes `stage_<N>_cull_model.pth`
+
+#### `image.rank` – Pairwise ranking labeler
+- Features
+  - Pairwise preference labeling UI (left/right) for images in a stage
+  - Writes `stage_<N>_rank_labels.csv` under the project root (resumes if present)
+  - If `--stage` omitted, uses the latest `stage_<N>` found
+- Example
+  - `python -m image.rank.label.main --project "C:\\proj" --stage 1` then open `http://localhost:5000`
 
 #### `image.crop` – YOLO-based cropping
 - Features

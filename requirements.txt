@@ -6,3 +6,5 @@ scikit-learn
 ultralytics
 diffusers
 matplotlib
+huggingface_hub
+tensorflow

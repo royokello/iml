@@ -1,7 +1,7 @@
 # image/group.py
 """
 Example:
-    py -m image.group --root "/images" --orientation height --dry-run
+    py -m image.group --input "/images" --orientation height --dry-run
 """
 
 from __future__ import annotations
@@ -29,17 +29,9 @@ def get_dimensions(path: Path) -> tuple[int | None, int | None]:
 
 def size_bucket(value: int, thresholds: list[int]) -> int:
     for t in thresholds:
-        if value <= t:
+        if value < t:
             return t
     return thresholds[-1]
-
-
-def build_prefix(path: Path, root: Path) -> str:
-    rel_parent = path.parent.relative_to(root)
-    parts: list[str] = [root.name]
-    if rel_parent != Path("."):
-        parts.extend(p for p in rel_parent.parts if not p.startswith("_"))
-    return "__".join(parts) + "__"
 
 
 def organise(root: Path, thresholds: list[int], orientation: str, *, dry_run: bool) -> None:
@@ -65,9 +57,7 @@ def organise(root: Path, thresholds: list[int], orientation: str, *, dry_run: bo
 
         dst_dir.mkdir(parents=True, exist_ok=True)
 
-        prefix = build_prefix(src, root)
-        new_name = src.name if src.name.startswith(prefix) else prefix + src.name
-        dst = dst_dir / new_name
+        dst = dst_dir / src.name
 
         if dst.exists():
             print(f"– duplicate, skipping: {dst}")
@@ -80,8 +70,8 @@ def organise(root: Path, thresholds: list[int], orientation: str, *, dry_run: bo
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Group images by chosen dimension and size.")
-    p.add_argument("--root", required=True, type=Path, help="Directory to scan (and where groups are created).")
-    p.add_argument("--sizes", nargs="*", type=int, metavar="N", default=[128, 192, 256, 320, 384, 448, 512, 768, 1024])
+    p.add_argument("-i", "--input", required=True, type=Path, help="Directory to scan (and where groups are created).")
+    p.add_argument("--sizes", nargs="*", type=int, metavar="N", default=[256, 384, 512, 768, 1024])
     p.add_argument("--orientation", choices=["width", "height", "longest"], default="height")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
@@ -90,7 +80,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    root: Path = args.root.expanduser().resolve()
+    root: Path = args.input.expanduser().resolve()
     if not root.is_dir():
         sys.exit(f"ERROR: {root} is not a directory.")
 

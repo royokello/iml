@@ -29,10 +29,12 @@ current_index = 0
 labels = {} 
 KEEP_LABELS_OPTS = []
 CULL_LABELS_OPTS = []
+RANDOM_ON_LABEL = True
+LABELLED_NAV_MODE = "all"
 
 # --- Helper Functions ---
 def load_data(project_path, current_stage=None):
-    global root_dir, src_dir_name, stage_number, images, labels, current_index, DATASET_DIR
+    global root_dir, src_dir_name, stage_number, images, labels, current_index, DATASET_DIR, RANDOM_ON_LABEL, LABELLED_NAV_MODE
     
 
     root_dir = project_path
@@ -62,6 +64,8 @@ def load_data(project_path, current_stage=None):
 
     current_index = 0
     labels = {}
+    RANDOM_ON_LABEL = True
+    LABELLED_NAV_MODE = "all"
     
     # Load labels from CSV
     csv_path = os.path.join(root_dir, f"stage_{stage_number}_cull_labels.csv")
@@ -182,10 +186,27 @@ def randomize_image_index():
     elif total == 1:
         current_index = 0 # Stay on the only image
 
+def labelled_indices():
+    return labelled_indices_by_mode(LABELLED_NAV_MODE)
+
+def labelled_indices_by_mode(mode):
+    labelled_names = set(labels.keys())
+    if mode == "keep":
+        return [
+            i for i, name in enumerate(images)
+            if name in labelled_names and labels.get(name, {}).get("label_value") == 0
+        ]
+    if mode == "cull":
+        return [
+            i for i, name in enumerate(images)
+            if name in labelled_names and labels.get(name, {}).get("label_value") == 1
+        ]
+    return [i for i, name in enumerate(images) if name in labelled_names]
+
 # --- Flask Routes ---
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    global current_index, labels, TAG_COUNTS
+    global current_index, labels, RANDOM_ON_LABEL, LABELLED_NAV_MODE
     if not images:
         # Attempt to reload data if images list is empty, might happen on first load if project/stage wasn't ready
         if root_dir:
@@ -197,7 +218,18 @@ def index():
     total_num_images = len(images)
 
     if request.method == 'POST':
+        if request.form.get('toggle_present') == '1':
+            RANDOM_ON_LABEL = 'random_on_label' in request.form
+        if request.form.get('labelled_nav_present') == '1':
+            mode = request.form.get('labelled_nav_mode', 'all')
+            if mode in {"all", "keep", "cull"}:
+                LABELLED_NAV_MODE = mode
+            else:
+                LABELLED_NAV_MODE = "all"
         action = request.form.get('action')
+        if not action:
+            save_labels()
+            return redirect(url_for('index'))
         current_image_name = images[current_index]
         previous_label_info = labels.get(current_image_name, {})
 
@@ -205,34 +237,47 @@ def index():
             chosen_label = action[len("keep_"):]
             if chosen_label in KEEP_LABELS_OPTS:
                 labels[current_image_name] = {"label_value": 0, "tag": chosen_label}
-                randomize_image_index()
+                if RANDOM_ON_LABEL:
+                    randomize_image_index()
             else:
                 flash(f'Unknown keep label: {chosen_label}', 'error')
         elif action.startswith("cull_"):
             chosen_label = action[len("cull_"):]
             if chosen_label in CULL_LABELS_OPTS:
                 labels[current_image_name] = {"label_value": 1, "tag": chosen_label}
-                randomize_image_index()
+                if RANDOM_ON_LABEL:
+                    randomize_image_index()
             else:
                 flash(f'Unknown cull label: {chosen_label}', 'error')
         elif action == 'keep':
-            # If previously tagged, decrement that tag's count
-            if previous_label_info.get("tag") and previous_label_info["tag"] in TAG_COUNTS:
-                TAG_COUNTS[previous_label_info["tag"]] = max(0, TAG_COUNTS[previous_label_info["tag"]] - 1)
             labels[current_image_name] = {"label_value": 0, "tag": None}
-            randomize_image_index()
+            if RANDOM_ON_LABEL:
+                randomize_image_index()
         elif action == 'remove':
             if current_image_name in labels:
-                if previous_label_info.get("tag") and previous_label_info["tag"] in TAG_COUNTS:
-                    TAG_COUNTS[previous_label_info["tag"]] = max(0, TAG_COUNTS[previous_label_info["tag"]] - 1)
                 del labels[current_image_name]
-            randomize_image_index()
+            if RANDOM_ON_LABEL:
+                randomize_image_index()
         elif action == 'prev':
             current_index = (current_index - 1 + total_num_images) % total_num_images if total_num_images > 0 else 0
         elif action == 'next':
             current_index = (current_index + 1) % total_num_images if total_num_images > 0 else 0
         elif action == 'random':
             randomize_image_index()
+        elif action == 'prev_labelled':
+            labelled = labelled_indices()
+            if not labelled:
+                flash("No labelled images yet.", "warning")
+            else:
+                prev = [i for i in labelled if i < current_index]
+                current_index = prev[-1] if prev else labelled[-1]
+        elif action == 'next_labelled':
+            labelled = labelled_indices()
+            if not labelled:
+                flash("No labelled images yet.", "warning")
+            else:
+                nxt = [i for i in labelled if i > current_index]
+                current_index = nxt[0] if nxt else labelled[0]
         elif action == 'goto':
             try:
                 goto_idx = int(request.form.get('goto_index', 1)) - 1
@@ -292,7 +337,9 @@ def index():
         keep_labels_opts=KEEP_LABELS_OPTS,
         cull_labels_opts=CULL_LABELS_OPTS,
         images=images,
-        current_label_info=current_label_info
+        current_label_info=current_label_info,
+        random_on_label=RANDOM_ON_LABEL,
+        labelled_nav_mode=LABELLED_NAV_MODE
     )
 
 
