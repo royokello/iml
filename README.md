@@ -34,7 +34,7 @@ Notes
 
 ### Video
 
-#### `video.extract` – Extract frames
+#### `video.extract`
 - Features
   - Evenly-spaced frames per time unit or random sampling
   - Short-side resize while preserving aspect ratio
@@ -43,7 +43,7 @@ Notes
   - `python -m video.extract --input "videos" --output "frames" --frames 2 --time second --resolution 768`
   - `python -m video.extract --input "videos" --output "frames_all" --frames 50 --random --collate --resolution 512`
 
-#### `video.group` – Organize by orientation + size
+#### `video.group`
 - Features
   - Uses `ffprobe` to read width/height
   - Moves files into `_<orientation>/_<short-side>` buckets and prefixes non-group path to filename
@@ -51,14 +51,14 @@ Notes
 - Example
   - `python -m video.group --root "videos" --ffprobe "C:\\tools\\ffprobe.exe" --sizes 256 384 512 768 1024 --dry-run`
 
-#### `video.loop` – Detect seamless loops (CUDA + FFmpeg)
+#### `video.loop`
 - Features
   - GPU-decoded thumbnails via FFmpeg (`scale_cuda`), SSIM-based loop detection, batched exports
   - Exports lossless H.264 `.mkv` loops at target `--fps` and `--out-res`
 - Example
   - `python -m video.loop --input "videos" --output "loops" --lengths 33 49 --fps 30 --in-res 64 --out-res 768 --ffmpeg "C:\\tools\\ffmpeg.exe"`
 
-#### `video.quality` – VMAF/SSIM/PSNR + bitrate curve
+#### `video.quality`
 - Features
   - Compares all videos in a folder to the largest file as reference
   - Produces CSVs and a bitrate vs. quality plot; tries VMAF first, falls back to SSIM/PSNR
@@ -67,14 +67,14 @@ Notes
 
 ### Image
 
-#### `image.group` – Bucket images
+#### `image.group`
 - Features
   - Group by `width`, `height`, or `longest` side into size thresholds
   - Prefixes filename with path segments outside grouping folders
 - Example
   - `python -m image.group --input "images" --orientation longest --sizes 256 384 512 768 --dry-run`
 
-#### `image.collect` – Aggregate into one folder
+#### `image.collect`
 - Features
   - Collects images from a directory tree into a single output folder
   - Converts to PNG, optional resize by width/height, optional square padding
@@ -82,7 +82,7 @@ Notes
 - Example
   - `python -m image.collect --input_dir "images" --output_dir "images_flat" --mode file`
 
-#### `image.shape` – Non-crop reshape
+#### `image.shape`
 - Features
   - Writes reshaped images to a required output directory
     - `side` mode sets the chosen side (`width` or `height`) and scales the other side to preserve aspect ratio
@@ -92,17 +92,35 @@ Notes
   - `python -m image.shape --input "images" --output "out" --mode side --side width --size 1024`
   - `python -m image.shape --input "images" --output "out" --mode ratio --ratios 1x1 3x4 4x3 1x2 --length-multiple 64`
 
-#### `image.tagger` â€“ Tag images + write captions
+#### `image.tag.main`
 - Features
   - Recursively scans the input folder for common image formats
   - Downloads the WD14 tagger model (SmilingWolf) into a local cache (`wd14_model` by default)
   - Writes comma-separated tags to `.txt` files beside each image (same basename)
-- Example
-  - `python -m image.tagger --input "images" --thresh 0.35 --max-tags 50`
-- Useful args
-  - `--thresh`, `--general-thresh`, `--character-thresh`, `--max-tags` (0 for none), `--model`
+  - Example
+    - `python -m image.tag.main --input "images" --thresh 0.35 --max-tags 50`
+  - Useful args
+    - `--thresh`, `--general-thresh`, `--character-thresh`, `--max-tags` (0 for none), `--model`, `--prefix`
 
-#### `image.dedup` – Near-duplicate grouping + browser
+#### `image.tag.extract`
+- Features
+  - Reads comma-separated tags from `.txt` captions beside each image
+  - Moves matching image + caption pairs into `<input>/<tag1>__<tag2>`
+  - All tags must be present (case-insensitive)
+- Example
+  - `python -m image.tag.extract --input "images" --tags "1girl, blonde_hair"`
+
+#### `image.tag.add`
+- Features
+  - Appends tags to every `.txt` caption in the input directory
+  - Avoids duplicates and can place tags at the start or end
+  - Uses comma-separated tag format
+- Example
+  - `python -m image.tag.add --input "images" --tags "1girl, blonde_hair"`
+- Useful args
+  - `--position` (`start` or `end`)
+
+#### `image.dedup`
 - Features
   - Groups by identical resolution, then clusters with dHash and refines with SSIM
   - Flask UI to browse groups (prev/next) and view images vertically
@@ -113,7 +131,7 @@ Notes
   - `--ssim-threshold`, `--ssim-width`, `--ssim-window`, `--ssim-gaussian/--no-ssim-gaussian`
   - `--min-group-size`
 
-#### `image.cull` – Keep/Cull classifier
+#### `image.cull`
 - Features
   - Train a DeiT-based binary classifier on labeled images per stage
   - Inference copies kept images to next stage; logs and metrics saved
@@ -127,7 +145,7 @@ Notes
      - `python -m image.cull.main --project "C:\\proj" --stage 1`
   - Expects `stage_<N>` with images and `stage_<N>_cull_labels.csv` for training; writes `stage_<N>_cull_model.pth`
 
-#### `image.rank` – Pairwise ranking labeler
+#### `image.rank`
 - Features
   - Pairwise preference labeling UI (left/right) for images in a stage
   - Writes `stage_<N>_rank_labels.csv` under the project root (resumes if present)
@@ -135,10 +153,11 @@ Notes
 - Example
   - `python -m image.rank.label.main --project "C:\\proj" --stage 1` then open `http://localhost:5000`
 
-#### `image.crop` – YOLO-based cropping
+#### `image.crop`
 - Features
   - Train a YOLO detector from CSV labels, then crop one best box per class
   - Crops are expanded to fixed aspect ratios per class and resized by long side
+  - Output crops are zero-padded (default width 6, starting at `000001.png` via `--filename-width`)
 - Typical flow
   1) Label boxes (first step)
      - `python -m image.crop.label.main --project "C:\\proj" --stage 1` then open `http://localhost:5051`
@@ -157,10 +176,10 @@ Notes
 
 ### Utils
 
-#### `utils.stages` – Stage discovery
+#### `utils.stages`
 - Feature: `find_latest_stage(project)` returns the highest `stage_<N>` folder
 
-#### `utils.cap.label` – Loop labeling UI
+#### `utils.cap.label`
 - Features
   - Minimal Flask app to tag exported loops; writes `caption.txt` in each loop folder
 - Example

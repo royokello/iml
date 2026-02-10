@@ -13,6 +13,7 @@ src_dir = ""
 labels_path = ""
 labels = {}
 image_ids = []
+LABEL_OPTIONS = ["out_of_focus", "motion_blur", "too_dark", "too_bright"]
 
 @app.route('/')
 def index():
@@ -22,13 +23,16 @@ def index():
         if e.is_file() and e.name.lower().endswith(('.png', '.jpg', '.jpeg'))
     )
     total_labels = 0
-    # inside index()
     label_stats = {'left': 0, 'right': 0}
+    label_reason_stats = {opt: 0 for opt in LABEL_OPTIONS}
     for v in labels.values():
-        k = v.lower()
-        if k in label_stats:
-            label_stats[k] += 1
+        choice = (v.get("preference") or "").lower()
+        if choice in label_stats:
+            label_stats[choice] += 1
             total_labels += 1
+        reason = (v.get("label") or "").lower()
+        if reason in label_reason_stats:
+            label_reason_stats[reason] += 1
 
     album_name = os.path.basename(album_dir)
     return render_template(
@@ -36,6 +40,8 @@ def index():
         total_images=total_images,
         total_labels=total_labels,
         label_stats=label_stats,
+        label_reason_stats=label_reason_stats,
+        label_options=LABEL_OPTIONS,
         album_name=album_name,
     )
 
@@ -54,21 +60,25 @@ def label_image():
     global labels, labels_path, image_ids
     try:
         data = request.json or {}
-        if 'img_1' not in data or 'img_2' not in data or 'choice' not in data:
+        if 'img_1' not in data or 'img_2' not in data or 'choice' not in data or 'label' not in data:
             missing = []
             if 'img_1' not in data: missing.append('img_1')
             if 'img_2' not in data: missing.append('img_2')
             if 'choice' not in data: missing.append('choice')
+            if 'label' not in data: missing.append('label')
             return jsonify(success=False, error=f"Missing required fields: {', '.join(missing)}"), 400
 
         img_1_id = data['img_1']
         img_2_id = data['img_2']
         choice = data['choice']
-        # inside /label
+        label = data['label']
         valid_choices = ['left', 'right']
+        valid_labels = set(LABEL_OPTIONS)
 
         if choice.lower() not in valid_choices:
             return jsonify(success=False, error=f"Invalid choice '{choice}'. Must be one of: {', '.join(valid_choices)}"), 400
+        if label.lower() not in valid_labels:
+            return jsonify(success=False, error=f"Invalid label '{label}'. Must be one of: {', '.join(LABEL_OPTIONS)}"), 400
         if img_1_id not in image_ids:
             return jsonify(success=False, error=f"Image ID '{img_1_id}' not found in available images"), 400
         if img_2_id not in image_ids:
@@ -76,15 +86,18 @@ def label_image():
 
         s = sorted([img_1_id, img_2_id])
         pair_id = f"{s[0]}|||{s[1]}"
-        labels[pair_id] = choice
+        labels[pair_id] = {
+            "preference": choice.lower(),
+            "label": label.lower(),
+        }
 
         # when saving CSV in /label
         with open(labels_path, 'w', newline='') as f:
             w = csv.writer(f)
-            w.writerow(['img_1', 'img_2', 'preference'])
-            for pair, c in labels.items():
+            w.writerow(['img_1', 'img_2', 'preference', 'label'])
+            for pair, info in labels.items():
                 a, b = pair.split('|||')
-                w.writerow([a, b, c])
+                w.writerow([a, b, info.get("preference", ""), info.get("label", "")])
 
 
         return jsonify(success=True)
@@ -123,7 +136,7 @@ def load_labels_from_csv(csv_path):
     d = {}
     if not os.path.exists(csv_path):
         with open(csv_path, 'w', newline='') as f:
-            csv.writer(f).writerow(['img_1', 'img_2', 'preference'])
+            csv.writer(f).writerow(['img_1', 'img_2', 'preference', 'label'])
         return d
     with open(csv_path, 'r', newline='') as f:
         r = csv.reader(f)
@@ -133,6 +146,7 @@ def load_labels_from_csv(csv_path):
         i1 = header.index('img_1')
         i2 = header.index('img_2')
         ip = header.index('preference')
+        il = header.index('label') if 'label' in header else None
         for row in r:
             if len(row) > max(i1, i2, ip):
                 a = row[i1].strip()
@@ -140,9 +154,15 @@ def load_labels_from_csv(csv_path):
                 c = row[ip].strip().lower()
                 if c not in ('left', 'right'):
                     continue
+                label_val = ""
+                if il is not None and len(row) > il:
+                    label_val = row[il].strip().lower()
                 s = sorted([a, b])
                 pid = f"{s[0]}|||{s[1]}"
-                d[pid] = c
+                d[pid] = {
+                    "preference": c,
+                    "label": label_val,
+                }
     return d
 
 

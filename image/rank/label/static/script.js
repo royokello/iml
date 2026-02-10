@@ -1,6 +1,8 @@
 const total_images = window.templateData.total_images;
 let total_labels = window.templateData.total_labels;
 let label_stats = window.templateData.label_stats;
+let label_reasons = window.templateData.label_reasons || {};
+const label_options = window.templateData.label_options || [];
 
 const totalLabelsCounter = document.querySelector('.counters');
 
@@ -12,6 +14,10 @@ const img2Element = document.getElementById('image-2');
 
 const leftCountElement = document.getElementById('left-count');
 const rightCountElement = document.getElementById('right-count');
+const reasonCountElements = {};
+label_options.forEach((opt) => {
+  reasonCountElements[opt] = document.getElementById(`reason-${opt}`);
+});
 
 
 getRandomPair();
@@ -59,10 +65,15 @@ function addLabel(choice) {
     alert('Error: Cannot add label with invalid images. Please get a new random pair.');
     return;
   }
+  const selectedReason = getSelectedReason();
+  if (!selectedReason) {
+    alert('Please select a reason before saving a label.');
+    return;
+  }
   fetch('/label', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ img_1, img_2, choice })
+    body: JSON.stringify({ img_1, img_2, choice, label: selectedReason })
   })
     .then(r => {
       if (!r.ok) return r.json().then(e => { throw new Error(`Server error (${r.status}): ${e.error || 'Unknown error'}`); });
@@ -72,7 +83,9 @@ function addLabel(choice) {
       if (d.success) {
         total_labels++;
         label_stats[choice]++;
+        label_reasons[selectedReason] = (label_reasons[selectedReason] || 0) + 1;
         updateLabelStats();
+        updateReasonStats();
         getRandomPair();
       } else if (d.error) {
         alert(`Error: ${d.error}`);
@@ -90,6 +103,18 @@ function updateLabelStats() {
   totalLabelsCounter.textContent = `Total Images: ${total_images} | Total Labels: ${total_labels}`;
 }
 
+function updateReasonStats() {
+  Object.keys(reasonCountElements).forEach((key) => {
+    if (reasonCountElements[key]) {
+      reasonCountElements[key].textContent = label_reasons[key] || 0;
+    }
+  });
+}
+
+function getSelectedReason() {
+  const selected = document.querySelector('input[name="rank_reason"]:checked');
+  return selected ? selected.value : '';
+}
 
 function randomizeImage(imageNumber) {
   if (imageNumber !== 1 && imageNumber !== 2) return;

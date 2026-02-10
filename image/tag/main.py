@@ -163,6 +163,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Directory containing model.onnx + selected_tags.csv.",
     )
+    p.add_argument("--prefix", type=str, default="", help="String to prepend to each caption.")
     p.add_argument("--thresh", type=float, default=0.35)
     p.add_argument("--general-thresh", type=float)
     p.add_argument("--character-thresh", type=float)
@@ -216,7 +217,7 @@ def main() -> None:
             )
             if args.max_tags is not None:
                 tags = tags[: args.max_tags]
-            caption = ", ".join([t for t, _ in tags])
+            caption = f"{args.prefix}{', '.join([t for t, _ in tags])}"
             out_path.write_text(caption, encoding="utf-8")
             print(f"{i}/{total}: {img_path} ... done")
         except Exception as exc:

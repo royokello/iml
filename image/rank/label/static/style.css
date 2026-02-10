@@ -76,6 +76,29 @@ body {
   width: 200px;
   margin-top: 20px;
 }
+.label-reasons {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background-color: #fafafa;
+}
+.label-reasons-title {
+  font-size: 13px;
+  color: #666666;
+  margin-bottom: 6px;
+}
+.label-reason-option {
+  display: flex;
+  align-items: center;
+  font-size: 14px;
+  color: #333333;
+  margin: 4px 0;
+  gap: 6px;
+}
+.label-reason-option input {
+  margin: 0;
+}
 .label-button {
   padding: 10px;
   margin: 5px 0;

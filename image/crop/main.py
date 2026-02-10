@@ -88,6 +88,13 @@ def parse_resolution(value: str) -> int | None:
     return parsed
 
 
+def parse_filename_width(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("--filename-width must be a positive integer")
+    return parsed
+
+
 def perform_cropping(
     project: str,
     stage: int | None,
@@ -96,7 +103,8 @@ def perform_cropping(
     iou: float,
     max_det: int,
     classes,
-    batch: int
+    batch: int,
+    filename_width: int,
 ):
     if stage is None:
         stage = find_latest_stage(project)
@@ -132,7 +140,7 @@ def perform_cropping(
         workers=0,
     )
 
-    counter = 0
+    counter = 1
     for res in results:
         imW, imH = res.orig_shape[1], res.orig_shape[0]
         boxes = res.boxes
@@ -163,7 +171,7 @@ def perform_cropping(
             crop = im.crop((ex1, ey1, ex2, ey2))
             if resolution is not None:
                 crop = resize_long_side(crop, resolution)
-            save_path = os.path.join(out_dir, f"{counter}.png")
+            save_path = os.path.join(out_dir, f"{counter:0{filename_width}d}.png")
             crop.save(save_path)
             counter += 1
 
@@ -185,6 +193,12 @@ def main():
     ap.add_argument("--max_det", type=int, default=50) # maximum number of detections per image to return
     ap.add_argument("--classes", type=int, nargs="*")
     ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument(
+        "--filename-width",
+        type=parse_filename_width,
+        default=6,
+        help="Zero-pad output filenames to this width.",
+    )
     args = ap.parse_args()
 
     perform_cropping(
@@ -195,7 +209,8 @@ def main():
         iou=args.iou,
         max_det=args.max_det,
         classes=args.classes,
-        batch=args.batch
+        batch=args.batch,
+        filename_width=args.filename_width,
     )
 
 if __name__ == "__main__":

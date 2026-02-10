@@ -10,7 +10,9 @@
     window.templateData = {
       total_images: {{ total_images|int }},
       total_labels: {{ total_labels|int }},
-      label_stats: {{ label_stats|tojson }}
+      label_stats: {{ label_stats|tojson }},
+      label_reasons: {{ label_reason_stats|tojson }},
+      label_options: {{ label_options|tojson }}
     };
   </script>
 </head>
@@ -38,6 +40,15 @@
         <h3>Select Label</h3>
         <button class="label-button label-left" onclick="addLabel('left')">Left is Better</button>
         <button class="label-button label-right" onclick="addLabel('right')">Right is Better</button>
+        <div class="label-reasons">
+          <div class="label-reasons-title">Reason (required)</div>
+          {% for opt in label_options %}
+          <label class="label-reason-option">
+            <input type="radio" name="rank_reason" value="{{ opt }}">
+            <span>{{ opt.replace('_', ' ').title() }} (<span id="reason-{{ opt }}">{{ label_reason_stats.get(opt, 0) }}</span>)</span>
+          </label>
+          {% endfor %}
+        </div>
       </div>
 
 

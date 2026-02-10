@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Group images by chosen dimension and size.")
     p.add_argument("-i", "--input", required=True, type=Path, help="Directory to scan (and where groups are created).")
     p.add_argument("--sizes", nargs="*", type=int, metavar="N", default=[256, 384, 512, 768, 1024])
-    p.add_argument("--orientation", choices=["width", "height", "longest"], default="height")
+    p.add_argument("--orientation", choices=["width", "height", "longest"], default="width")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
