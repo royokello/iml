@@ -5,6 +5,7 @@ import sys
 import re
 import argparse
 from flask import Flask, jsonify, render_template, request, send_from_directory
+from PIL import Image
 
 app = Flask(__name__)
 
@@ -13,15 +14,14 @@ src_dir = ""
 labels_path = ""
 labels = {}
 image_ids = []
+image_sizes = {}
+resolution_buckets = {}
 LABEL_OPTIONS = ["out_of_focus", "motion_blur", "too_dark", "too_bright"]
 
 @app.route('/')
 def index():
-    global src_dir, labels, album_dir
-    total_images = sum(
-        1 for e in os.scandir(src_dir)
-        if e.is_file() and e.name.lower().endswith(('.png', '.jpg', '.jpeg'))
-    )
+    global src_dir, labels, album_dir, image_ids
+    total_images = len(image_ids)
     total_labels = 0
     label_stats = {'left': 0, 'right': 0}
     label_reason_stats = {opt: 0 for opt in LABEL_OPTIONS}
@@ -48,7 +48,7 @@ def index():
 @app.route('/image/<path:img_id>')
 def get_image(img_id):
     global src_dir
-    for ext in ['.png', '.jpg', '.jpeg']:
+    for ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp']:
         filename = f"{img_id}{ext}"
         p = os.path.join(src_dir, filename)
         if os.path.exists(p):
@@ -84,9 +84,18 @@ def label_image():
         if img_2_id not in image_ids:
             return jsonify(success=False, error=f"Image ID '{img_2_id}' not found in available images"), 400
 
-        s = sorted([img_1_id, img_2_id])
+        if choice.lower() == "left":
+            winner_id = img_1_id
+            loser_id = img_2_id
+        else:
+            winner_id = img_2_id
+            loser_id = img_1_id
+
+        s = sorted([winner_id, loser_id])
         pair_id = f"{s[0]}|||{s[1]}"
         labels[pair_id] = {
+            "winner": winner_id,
+            "loser": loser_id,
             "preference": choice.lower(),
             "label": label.lower(),
         }
@@ -94,10 +103,14 @@ def label_image():
         # when saving CSV in /label
         with open(labels_path, 'w', newline='') as f:
             w = csv.writer(f)
-            w.writerow(['img_1', 'img_2', 'preference', 'label'])
+            w.writerow(['winner', 'loser', 'label', 'preference'])
             for pair, info in labels.items():
-                a, b = pair.split('|||')
-                w.writerow([a, b, info.get("preference", ""), info.get("label", "")])
+                w.writerow([
+                    info.get("winner", ""),
+                    info.get("loser", ""),
+                    info.get("label", ""),
+                    info.get("preference", ""),
+                ])
 
 
         return jsonify(success=True)
@@ -106,21 +119,78 @@ def label_image():
 
 @app.route('/random', methods=['GET'])
 def get_random():
-    global image_ids
+    global image_ids, resolution_buckets
     import random
     if len(image_ids) <= 1:
         return jsonify({"error": "Not enough images", "total": len(image_ids)}), 400
-    img_1, img_2 = random.sample(image_ids, 2)
+    candidate_buckets = [b for b in resolution_buckets.values() if len(b) >= 2]
+    if not candidate_buckets:
+        return jsonify({"error": "Not enough images with matching resolution", "total": len(image_ids)}), 400
+    bucket = random.choice(candidate_buckets)
+    img_1, img_2 = random.sample(bucket, 2)
     return jsonify({"img_1": img_1, "img_2": img_2})
+
+@app.route('/following', methods=['POST'])
+def get_following():
+    global image_ids, resolution_buckets, image_sizes
+    import random
+    if len(image_ids) <= 1:
+        return jsonify({"error": "Not enough images", "total": len(image_ids)}), 400
+    candidate_buckets = [b for b in resolution_buckets.values() if len(b) >= 2]
+    if not candidate_buckets:
+        return jsonify({"error": "Not enough images with matching resolution", "total": len(image_ids)}), 400
+    bucket = random.choice(candidate_buckets)
+    idx = random.randint(0, len(bucket) - 1)
+    next_idx = (idx + 1) % len(bucket)
+    return jsonify({"img_1": bucket[idx], "img_2": bucket[next_idx]})
 
 @app.route('/random_single', methods=['GET'])
 def get_random_single():
-    global image_ids
+    global image_ids, resolution_buckets, image_sizes
     import random
     if len(image_ids) <= 0:
         return jsonify({"error": "No images available", "total": len(image_ids)}), 400
+    anchor = request.args.get('anchor', '').strip()
+    if anchor and anchor in image_sizes:
+        res = image_sizes.get(anchor)
+        bucket = resolution_buckets.get(res, [])
+        if len(bucket) > 1:
+            choices = [i for i in bucket if i != anchor]
+            if choices:
+                img = random.choice(choices)
+                return jsonify({"img": img})
+        if len(bucket) == 1:
+            return jsonify({"error": "Not enough images with matching resolution", "total": len(image_ids)}), 400
     img = random.choice(image_ids)
     return jsonify({"img": img})
+
+@app.route('/neighbor', methods=['POST'])
+def get_neighbor():
+    global image_ids, resolution_buckets, image_sizes
+    data = request.json or {}
+    img_id = (data.get('img') or '').strip()
+    direction = (data.get('direction') or '').strip().lower()
+    if not img_id or img_id not in image_sizes:
+        return jsonify({"error": "Invalid image identifier"}), 400
+    if direction not in ("prev", "next"):
+        return jsonify({"error": "Invalid direction"}), 400
+
+    res = image_sizes.get(img_id)
+    bucket = resolution_buckets.get(res, [])
+    if len(bucket) < 2:
+        return jsonify({"error": "Not enough images with matching resolution"}), 400
+
+    try:
+        idx = bucket.index(img_id)
+    except ValueError:
+        return jsonify({"error": "Image not found in resolution bucket"}), 400
+
+    if direction == "prev":
+        next_idx = (idx - 1) % len(bucket)
+    else:
+        next_idx = (idx + 1) % len(bucket)
+
+    return jsonify({"img": bucket[next_idx]})
 
 @app.route('/switch', methods=['POST'])
 def switch_images():
@@ -136,47 +206,104 @@ def load_labels_from_csv(csv_path):
     d = {}
     if not os.path.exists(csv_path):
         with open(csv_path, 'w', newline='') as f:
-            csv.writer(f).writerow(['img_1', 'img_2', 'preference', 'label'])
+            csv.writer(f).writerow(['winner', 'loser', 'label', 'preference'])
         return d
     with open(csv_path, 'r', newline='') as f:
         r = csv.reader(f)
         header = next(r, None)
         if not header:
             return d
-        i1 = header.index('img_1')
-        i2 = header.index('img_2')
-        ip = header.index('preference')
-        il = header.index('label') if 'label' in header else None
-        for row in r:
-            if len(row) > max(i1, i2, ip):
-                a = row[i1].strip()
-                b = row[i2].strip()
-                c = row[ip].strip().lower()
-                if c not in ('left', 'right'):
-                    continue
-                label_val = ""
-                if il is not None and len(row) > il:
-                    label_val = row[il].strip().lower()
-                s = sorted([a, b])
-                pid = f"{s[0]}|||{s[1]}"
-                d[pid] = {
-                    "preference": c,
-                    "label": label_val,
-                }
+        header_lower = [h.strip().lower() for h in header]
+        if 'winner' in header_lower and 'loser' in header_lower:
+            iw = header_lower.index('winner')
+            il = header_lower.index('loser')
+            ir = header_lower.index('label') if 'label' in header_lower else None
+            ip = header_lower.index('preference') if 'preference' in header_lower else None
+            for row in r:
+                if len(row) > max(iw, il):
+                    winner_id = row[iw].strip()
+                    loser_id = row[il].strip()
+                    if not winner_id or not loser_id:
+                        continue
+                    label_val = ""
+                    if ir is not None and len(row) > ir:
+                        label_val = row[ir].strip().lower()
+                    pref_val = ""
+                    if ip is not None and len(row) > ip:
+                        pref_val = row[ip].strip().lower()
+                    s = sorted([winner_id, loser_id])
+                    pid = f"{s[0]}|||{s[1]}"
+                    d[pid] = {
+                        "winner": winner_id,
+                        "loser": loser_id,
+                        "label": label_val,
+                        "preference": pref_val,
+                    }
+        elif 'img_1' in header_lower and 'img_2' in header_lower and 'preference' in header_lower:
+            i1 = header_lower.index('img_1')
+            i2 = header_lower.index('img_2')
+            ip = header_lower.index('preference')
+            il = header_lower.index('label') if 'label' in header_lower else None
+            for row in r:
+                if len(row) > max(i1, i2, ip):
+                    img_1_id = row[i1].strip()
+                    img_2_id = row[i2].strip()
+                    pref = row[ip].strip().lower()
+                    if pref not in ('left', 'right'):
+                        continue
+                    label_val = ""
+                    if il is not None and len(row) > il:
+                        label_val = row[il].strip().lower()
+                    winner_id = img_1_id if pref == 'left' else img_2_id
+                    loser_id = img_2_id if pref == 'left' else img_1_id
+                    s = sorted([winner_id, loser_id])
+                    pid = f"{s[0]}|||{s[1]}"
+                    d[pid] = {
+                        "winner": winner_id,
+                        "loser": loser_id,
+                        "label": label_val,
+                        "preference": pref,
+                    }
     return d
 
 
 def get_image_ids(directory):
     ids = []
-    for f in os.listdir(directory):
-        if os.path.isfile(os.path.join(directory, f)):
+    for root, _, files in os.walk(directory):
+        for f in files:
             n, ext = os.path.splitext(f)
-            if ext.lower() in ['.jpg', '.jpeg', '.png']:
-                ids.append(n)
+            if ext.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.bmp']:
+                rel_path = os.path.relpath(os.path.join(root, f), directory)
+                rel_path = rel_path.replace("\\", "/")
+                rel_no_ext, _ = os.path.splitext(rel_path)
+                ids.append(rel_no_ext)
     return ids
 
+def build_resolution_buckets(directory, ids):
+    sizes = {}
+    buckets = {}
+    for img_id in ids:
+        img_path = None
+        for ext in ['.png', '.jpg', '.jpeg', '.webp', '.bmp']:
+            p = os.path.join(directory, f"{img_id}{ext}")
+            if os.path.exists(p):
+                img_path = p
+                break
+        if not img_path:
+            continue
+        try:
+            with Image.open(img_path) as im:
+                w, h = im.size
+            sizes[img_id] = (w, h)
+            buckets.setdefault((w, h), []).append(img_id)
+        except Exception:
+            continue
+    for res in buckets.keys():
+        buckets[res] = sorted(buckets[res])
+    return sizes, buckets
+
 def start_labeler(project_dir, stage):
-    global album_dir, src_dir, labels_path, labels, image_ids
+    global album_dir, src_dir, labels_path, labels, image_ids, image_sizes, resolution_buckets
     album_dir = project_dir
     if not os.path.isdir(album_dir):
         os.makedirs(album_dir, exist_ok=True)
@@ -187,6 +314,7 @@ def start_labeler(project_dir, stage):
     labels_path = os.path.join(album_dir, f"{stage_dir}_rank_labels.csv")
     labels = load_labels_from_csv(labels_path)
     image_ids = get_image_ids(src_dir)
+    image_sizes, resolution_buckets = build_resolution_buckets(src_dir, image_ids)
     print(f"Found {len(image_ids)} images in {src_dir}")
     print(f"Starting labeler for project: {os.path.basename(album_dir)}, stage: {stage}")
 

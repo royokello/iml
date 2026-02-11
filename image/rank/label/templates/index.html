@@ -18,8 +18,9 @@
 </head>
 <body>
   <div class="header">
-    <h1>IML Rank</h1>
-    <div class="subtitle">royokello</div>
+    <h1>IML</h1>
+    <div class="heading">Rank Labeller</div>
+    <div class="subtitle">{{ album_name }}</div>
     <div class="counters">Total Images: {{ total_images }} | Total Labels: {{ total_labels }}</div>
   </div>
 
@@ -28,12 +29,17 @@
       <h2>Image 1</h2>
       <div class="image-controls">
         <button class="randomize-button" onclick="randomizeImage(1)">Randomize Image 1</button>
+        <div class="image-nav">
+          <button class="randomize-button" onclick="prevImage(1)">Prev</button>
+          <button class="randomize-button" onclick="nextImage(1)">Next</button>
+        </div>
       </div>
       <img id="image-1" class="image-container" src="" alt="Image 1">
     </div>
 
     <div class="central-controls">
       <button id="random-pair-button" class="random-pair-button" onclick="getRandomPair()">Get Random Pair</button>
+      <button id="following-pair-button" class="random-pair-button" onclick="getFollowingPair()">Get Following Pair</button>
       <button id="switch-button" class="switch-button" onclick="switchImages()">Switch Images</button>
 
       <div class="labels-container">
@@ -70,6 +76,10 @@
       <h2>Image 2</h2>
       <div class="image-controls">
         <button class="randomize-button" onclick="randomizeImage(2)">Randomize Image 2</button>
+        <div class="image-nav">
+          <button class="randomize-button" onclick="prevImage(2)">Prev</button>
+          <button class="randomize-button" onclick="nextImage(2)">Next</button>
+        </div>
       </div>
       <img id="image-2" class="image-container" src="" alt="Image 2">
     </div>

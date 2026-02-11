@@ -122,13 +122,18 @@ Notes
 
 #### `image.dedup`
 - Features
-  - Groups by identical resolution, then clusters with dHash and refines with SSIM
-  - Flask UI to browse groups (prev/next) and view images vertically
+  - Groups by identical resolution, then clusters with dHash
+  - Prints summary stats, including estimated unique images after dedup
+  - Optional auto mode searches threshold for unique count closest to a target
+  - Optional output mode copies deduplicated images and matching `.txt` captions
 - Example
-  - `python -m image.dedup.main --input "images" --dhash-threshold 8 --ssim-threshold 0.96` then open `http://localhost:7860`
+  - `python -m image.dedup.main --input "images" --dhash-threshold 8`
+  - `python -m image.dedup.main --input "images" --target 500`
+  - `python -m image.dedup.main --input "images" --target 500 --output "images_dedup"`
 - Useful args
+  - `--input`, `-o/--output`
   - `--dhash-size`, `--dhash-threshold`
-  - `--ssim-threshold`, `--ssim-width`, `--ssim-window`, `--ssim-gaussian/--no-ssim-gaussian`
+  - `--target`
   - `--min-group-size`
 
 #### `image.cull`

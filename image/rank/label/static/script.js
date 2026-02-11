@@ -39,6 +39,27 @@ function getRandomPair() {
     });
 }
 
+function getFollowingPair() {
+  fetch('/following', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+    .then(r => {
+      if (!r.ok) throw new Error('Network response was not ok');
+      return r.json();
+    })
+    .then(d => {
+      img_1 = d.img_1;
+      img_2 = d.img_2;
+      updateImages(img_1, img_2);
+    })
+    .catch(e => {
+      console.error('Error fetching following pair:', e);
+      alert('Error loading following pair. Check resolutions and bucket sizes.');
+    });
+}
+
 function updateImages(img1Id, img2Id) {
   img1Element.src = `/image/${encodeURIComponent(img1Id)}`;
   img2Element.src = `/image/${encodeURIComponent(img2Id)}`;
@@ -118,7 +139,9 @@ function getSelectedReason() {
 
 function randomizeImage(imageNumber) {
   if (imageNumber !== 1 && imageNumber !== 2) return;
-  fetch('/random_single')
+  const anchor = imageNumber === 1 ? img_2 : img_1;
+  const qs = anchor ? `?anchor=${encodeURIComponent(anchor)}` : '';
+  fetch(`/random_single${qs}`)
     .then(r => {
       if (!r.ok) throw new Error('Network response was not ok');
       return r.json();
@@ -135,4 +158,40 @@ function randomizeImage(imageNumber) {
       console.error(`Error randomizing image ${imageNumber}:`, e);
       alert('Error loading random image. Please ensure there are enough images.');
     });
+}
+
+function stepImage(imageNumber, direction) {
+  if (imageNumber !== 1 && imageNumber !== 2) return;
+  if (direction !== 'prev' && direction !== 'next') return;
+  const current = imageNumber === 1 ? img_1 : img_2;
+  if (!current) return;
+  fetch('/neighbor', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ img: current, direction })
+  })
+    .then(r => {
+      if (!r.ok) return r.json().then(e => { throw new Error(e.error || 'Unknown error'); });
+      return r.json();
+    })
+    .then(d => {
+      if (imageNumber === 1) {
+        img_1 = d.img;
+      } else {
+        img_2 = d.img;
+      }
+      updateImages(img_1, img_2);
+    })
+    .catch(e => {
+      console.error(`Error stepping image ${imageNumber}:`, e);
+      alert(`Failed to move image: ${e.message}`);
+    });
+}
+
+function prevImage(imageNumber) {
+  stepImage(imageNumber, 'prev');
+}
+
+function nextImage(imageNumber) {
+  stepImage(imageNumber, 'next');
 }

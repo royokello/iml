@@ -1,1 +1,1 @@
-"""Near-duplicate image grouping + browsing."""
+"""Near-duplicate image grouping."""
