@@ -7,60 +7,78 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 </head>
 <body>
-  <h1>IML Crop</h1>
+  <main class="crop-app">
+    <header class="page-header">
+      <h2 class="subtitle">IML</h2>
+      <h1 class="title">Crop Labeller</h1>
+    </header>
 
-  <div class="layout">
-    <aside id="stats">
-      <div class="card">
-        <div class="stat-line"><strong id="imgPos">0 / 0</strong></div>
-        <div class="stat-line">Labelled images: <strong id="labelledCount">0</strong></div>
-        <div class="stat-line">Total labels: <strong id="totalLabels">0</strong></div>
-        <hr />
-        <div class="stat-line"><strong>Per-class totals</strong></div>
-        <ul id="classStats"></ul>
-      </div>
-    </aside>
+    <div class="layout">
+      <aside id="stats">
+        <div class="card">
+          <div class="panel-header">
+            <h2>Stats</h2>
+          </div>
+          <div class="stat-line"><strong id="imgPos">0 / 0</strong></div>
+          <div class="stat-line">Labelled images: <strong id="labelledCount">0</strong></div>
+          <div class="stat-line">Total labels: <strong id="totalLabels">0</strong></div>
+          <hr />
+          <div class="stat-line section-label"><strong>Per-class totals</strong></div>
+          <ul id="classStats"></ul>
+        </div>
+      </aside>
 
-    <main id="image-panel">
-      <div id="image-container">
-        <img id="img" alt="image" />
-        <div id="selection-layer"></div>
-      </div>
-    </main>
+      <section id="image-panel" class="card image-card">
+        <div class="panel-header">
+          <h2>Image</h2>
+          <div class="panel-summary">Drag to create or adjust crop boxes</div>
+        </div>
+        <div id="image-container">
+          <img id="img" alt="image" />
+          <div id="selection-layer"></div>
+        </div>
+      </section>
 
-    <aside id="right-panel">
-      <div class="card controls">
-        <div class="row">
-          <button id="prevBtn">Prev</button>
-          <button id="nextBtn">Next</button>
-          <button id="randomBtn">Random</button>
+      <aside id="right-panel">
+        <div class="card controls">
+          <div class="panel-header">
+            <h2>Controls</h2>
+          </div>
+          <div class="row">
+            <button id="saveBtn">Save</button>
+            <button id="deleteSelBtn">Delete Selected</button>
+          </div>
+          <div class="row">
+            <button id="prevBtn">Prev</button>
+            <label class="nav-gap">Gap <input id="navGapInput" type="number" min="0" step="1" value="0" /></label>
+            <button id="nextBtn">Next</button>
+            <button id="randomBtn">Random</button>
+          </div>
+          <div class="row">
+            <button id="prevLabelledBtn">Prev Labelled</button>
+            <button id="nextLabelledBtn">Next Labelled</button>
+          </div>
+          <div class="row">
+            <label class="field-label">Class
+              <select id="classSelect">
+                <option value="0">face</option>
+                <option value="1">portrait</option>
+                <option value="2">landscape</option>
+                <option value="3">full_body</option>
+              </select>
+            </label>
+          </div>
         </div>
-        <div class="row">
-          <button id="prevLabelledBtn">Prev Labelled</button>
-          <button id="nextLabelledBtn">Next Labelled</button>
-        </div>
-        <div class="row">
-          <label>Class
-            <select id="classSelect">
-              <option value="0">face</option>
-              <option value="1">portrait</option>
-              <option value="2">landscape</option>
-              <option value="3">full_body</option>
-            </select>
-          </label>
-        </div>
-        <div class="row">
-          <button id="saveBtn">Save</button>
-          <button id="deleteSelBtn">Delete Selected</button>
-        </div>
-      </div>
 
-      <div class="card">
-        <div class="stat-line"><strong>Boxes on this image</strong></div>
-        <ul id="boxesList" class="boxes"></ul>
-      </div>
-    </aside>
-  </div>
+        <div class="card">
+          <div class="panel-header">
+            <h2>Boxes on this image</h2>
+          </div>
+          <ul id="boxesList" class="boxes"></ul>
+        </div>
+      </aside>
+    </div>
+  </main>
 
   <script>
     window.__IML__ = {

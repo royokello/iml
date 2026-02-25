@@ -169,14 +169,20 @@ def navigate():
     global current_image_index
     data = request.json
     action = data.get('action')
+    try:
+        gap = int(data.get('gap', 0) or 0)
+    except (TypeError, ValueError):
+        gap = 0
+    gap = max(0, gap)
+    step = gap + 1
 
     if not image_files:
         return jsonify(error='No images'), 400
 
     if action == 'next':
-        current_image_index = (current_image_index + 1) % len(image_files)
+        current_image_index = (current_image_index + step) % len(image_files)
     elif action == 'prev':
-        current_image_index = (current_image_index - 1) % len(image_files)
+        current_image_index = (current_image_index - step) % len(image_files)
     elif action == 'random':
         current_image_index = random.randint(0, len(image_files) - 1)
     elif action == 'next_labelled':

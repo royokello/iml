@@ -1,117 +1,143 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>IML</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IML Cull</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-    <div class="header">
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-            <div class="flash-messages">
-                {% for category, message in messages %}
-                <div class="flash-{{ category }}">{{ message }}</div>
-                {% endfor %}
-            </div>
-            {% endif %}
-        {% endwith %}
-        <h1 class="title">IML Cull</h1>
-        <p class="subtitle">royokello</p>
-    </div>
-
-    <div class="main-content">
-        <div class="image-section">
-            <div class="image-container">
-                <h2>Image {{ index + 1 }} of {{ total }}</h2>
-                <img src="{{ image_url }}" alt="Image {{ images[index] if images and index < images|length else 'N/A' }}">
-                <p><small>{{ images[index] if images and index < images|length else 'N/A' }}</small></p>
-            </div>
-        </div>
-
-        <div class="controls-section">
-            <div class="stats">
-                <div class="stat-item">
-                    <div class="stat-count">{{ stats.get("keep_total", 0) }}</div>
-                    <div>Keep (Total)</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-count">{{ stats.get("cull_total", 0) }}</div>
-                    <div>Cull (Total)</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-count">{{ stats.get("labeled_total", 0) }}</div>
-                    <div>Labeled (Any)</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-count">{{ stats.get("unlabeled_total", 0) }}</div>
-                    <div>Unlabeled</div>
-                </div>
-                <div class="stat-item">
-                    <div class="stat-count">{{ stats.get("total_images", 0) }}</div>
-                    <div>Total Images</div>
-                </div>
-            </div>
-
-            <p>Current label: <strong>{{ current_display_label if current_display_label else "None" }}</strong></p>
-
-            <form method="post" id="cullForm">
-                <div class="buttons nav-buttons">
-                    <button name="action" value="prev">← Previous</button>
-                    <button name="action" value="next">Next →</button>
-                    <button name="action" value="random">Random</button>
-                </div>
-                <div class="buttons nav-buttons labelled-nav">
-                    <button name="action" value="prev_labelled">Prev Labelled</button>
-                    <button name="action" value="next_labelled">Next Labelled</button>
-                </div>
-                <div class="toggle-row labelled-filter">
-                    <input type="hidden" name="labelled_nav_present" value="1">
-                    <span class="toggle-label">Labelled filter</span>
-                    <label class="toggle option">
-                        <input type="radio" name="labelled_nav_mode" value="all" {% if labelled_nav_mode == "all" %}checked{% endif %}>
-                        <span>All</span>
-                    </label>
-                    <label class="toggle option">
-                        <input type="radio" name="labelled_nav_mode" value="keep" {% if labelled_nav_mode == "keep" %}checked{% endif %}>
-                        <span>Keep</span>
-                    </label>
-                    <label class="toggle option">
-                        <input type="radio" name="labelled_nav_mode" value="cull" {% if labelled_nav_mode == "cull" %}checked{% endif %}>
-                        <span>Cull</span>
-                    </label>
-                </div>
-                <div class="toggle-row">
-                    <input type="hidden" name="toggle_present" value="1">
-                    <label class="toggle">
-                        <input type="checkbox" name="random_on_label" id="randomOnLabel" {% if random_on_label %}checked{% endif %}>
-                        <span>Randomize on label</span>
-                    </label>
-                </div>
-                <div class="manual-nav">
-                    <input type="number" name="goto_index" min="1" max="{{ total if total > 0 else 1 }}" placeholder="Enter image #">
-                    <button name="action" value="goto">Go</button>
-                </div>
-                <div class="manual-nav">
-                    <input type="text" name="search_query" placeholder="Enter image name/part">
-                    <button name="action" value="search_by_name">Search</button>
-                </div>
-                <div class="buttons action-buttons">
-                    <!-- Keep Label Buttons -->
-                    {% for label_opt in keep_labels_opts %}
-                    <button name="action" value="keep_{{ label_opt }}" class="keep-label-button">Keep: {{ label_opt.replace('_', ' ').title() }} ({{ stats.get("keep_" + 
-label_opt, 0) }})</button>
+    <main class="cull-app">
+        <header class="header">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                <div class="flash-messages">
+                    {% for category, message in messages %}
+                    <div class="flash-{{ category }}">{{ message }}</div>
                     {% endfor %}
-
-                    <!-- Cull Label Buttons -->
-                    {% for label_opt in cull_labels_opts %}
-                    <button name="action" value="cull_{{ label_opt }}" class="cull-label-button">Cull: {{ label_opt.replace('_', ' ').title() }} ({{ stats.get("cull_" + 
-label_opt, 0) }})</button>
-                    {% endfor %}
-                    <button name="action" value="remove">Remove Label</button>
                 </div>
-            </form>
+                {% endif %}
+            {% endwith %}
+            <h2 class="subtitle">IML</h2>
+            <h1 class="title">Cull Labeller</h1>
+        </header>
+
+        <div class="main-content">
+            <section class="image-section panel">
+                <div class="section-heading">
+                    <h2>Image {{ index + 1 }} of {{ total }}</h2>
+                    <p class="file-name">{{ images[index] if images and index < images|length else 'N/A' }}</p>
+                </div>
+
+                <div class="image-container">
+                    {% if image_url %}
+                    <img src="{{ image_url }}" alt="Image {{ images[index] if images and index < images|length else 'N/A' }}">
+                    {% else %}
+                    <div class="image-placeholder">No image loaded</div>
+                    {% endif %}
+                </div>
+            </section>
+
+            <aside class="controls-section">
+                <section class="panel">
+                    <h2 class="panel-title">Stats</h2>
+                    <div class="stats">
+                        <div class="stat-item">
+                            <div class="stat-count">{{ stats.get("keep_total", 0) }}</div>
+                            <div class="stat-label">Keep (Total)</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-count">{{ stats.get("cull_total", 0) }}</div>
+                            <div class="stat-label">Cull (Total)</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-count">{{ stats.get("labeled_total", 0) }}</div>
+                            <div class="stat-label">Labeled (Any)</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-count">{{ stats.get("unlabeled_total", 0) }}</div>
+                            <div class="stat-label">Unlabeled</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-count">{{ stats.get("total_images", 0) }}</div>
+                            <div class="stat-label">Total Images</div>
+                        </div>
+                    </div>
+
+                </section>
+
+                <section class="panel">
+                    <h2 class="panel-title">Controls</h2>
+                    <p class="current-label">Current label: <strong>{{ current_display_label if current_display_label else "None" }}</strong></p>
+
+                    <form method="post" id="cullForm">
+                        <div class="buttons action-buttons">
+                            {% for label_opt in keep_labels_opts %}
+                            <button name="action" value="keep_{{ label_opt }}" class="keep-label-button">Keep: {{ label_opt.replace('_', ' ').title() }} ({{ stats.get("keep_" + label_opt, 0) }})</button>
+                            {% endfor %}
+
+                            {% for label_opt in cull_labels_opts %}
+                            <button name="action" value="cull_{{ label_opt }}" class="cull-label-button">Cull: {{ label_opt.replace('_', ' ').title() }} ({{ stats.get("cull_" + label_opt, 0) }})</button>
+                            {% endfor %}
+
+                            <button name="action" value="remove">Remove Label</button>
+                        </div>
+
+                        <div class="buttons nav-buttons">
+                            <button name="action" value="prev">&larr; Previous</button>
+                            <label class="nav-gap">
+                                <span>Gap</span>
+                                <input type="number" name="nav_gap" min="0" step="1" value="{{ nav_gap if nav_gap is defined else 0 }}">
+                            </label>
+                            <button name="action" value="next">Next &rarr;</button>
+                            <button name="action" value="random">Random</button>
+                        </div>
+
+                        <div class="buttons nav-buttons labelled-nav">
+                            <button name="action" value="prev_labelled">Prev Labelled</button>
+                            <button name="action" value="next_labelled">Next Labelled</button>
+                        </div>
+
+                        <div class="toggle-row labelled-filter">
+                            <input type="hidden" name="labelled_nav_present" value="1">
+                            <span class="toggle-label">Labelled filter</span>
+                            <label class="toggle option">
+                                <input type="radio" name="labelled_nav_mode" value="all" {% if labelled_nav_mode == "all" %}checked{% endif %}>
+                                <span>All</span>
+                            </label>
+                            <label class="toggle option">
+                                <input type="radio" name="labelled_nav_mode" value="keep" {% if labelled_nav_mode == "keep" %}checked{% endif %}>
+                                <span>Keep</span>
+                            </label>
+                            <label class="toggle option">
+                                <input type="radio" name="labelled_nav_mode" value="cull" {% if labelled_nav_mode == "cull" %}checked{% endif %}>
+                                <span>Cull</span>
+                            </label>
+                        </div>
+
+                        <div class="toggle-row">
+                            <input type="hidden" name="toggle_present" value="1">
+                            <label class="toggle">
+                                <input type="checkbox" name="random_on_label" id="randomOnLabel" {% if random_on_label %}checked{% endif %}>
+                                <span>Randomize on label</span>
+                            </label>
+                        </div>
+
+                        <div class="manual-nav">
+                            <input type="number" name="goto_index" min="1" max="{{ total if total > 0 else 1 }}" placeholder="Enter image #">
+                            <button name="action" value="goto">Go</button>
+                        </div>
+
+                        <div class="manual-nav">
+                            <input type="text" name="search_query" placeholder="Enter image name/part">
+                            <button name="action" value="search_by_name">Search</button>
+                        </div>
+
+                    </form>
+                </section>
+            </aside>
         </div>
-    </div>
+    </main>
 
     <script src="{{ url_for('static', filename='script.js') }}"></script>
 </body>

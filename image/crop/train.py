@@ -55,7 +55,7 @@ def main():
     ap.add_argument("--project", required=True)
     ap.add_argument("--stage", type=int, default=None)
     ap.add_argument("--model", type=str, default=None, help="absolute path to a trained model (for resume/continue)")
-    ap.add_argument("--variant", help="e.g. yolo11n, yolov8n, ...")
+    ap.add_argument("--variant", help="e.g. yolo11n, yolov8n, ...", default="yolo11m")
     ap.add_argument("--epochs", type=int, default=100)
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--workers", type=int, default=8)

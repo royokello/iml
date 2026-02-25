@@ -6,6 +6,7 @@ const boxesList = document.getElementById('boxesList');
 
 const prevBtn = document.getElementById('prevBtn');
 const nextBtn = document.getElementById('nextBtn');
+const navGapInput = document.getElementById('navGapInput');
 const randomBtn = document.getElementById('randomBtn');
 const prevLabelledBtn = document.getElementById('prevLabelledBtn');
 const nextLabelledBtn = document.getElementById('nextLabelledBtn');
@@ -285,6 +286,13 @@ function updateStatsPanel(payload) {
 
 function fetchStats() { fetch('/stats').then(r=>r.json()).then(updateStatsPanel); }
 
+function getNavGap() {
+    const raw = Number.parseInt(navGapInput?.value ?? '0', 10);
+    const gap = Number.isFinite(raw) && raw >= 0 ? raw : 0;
+    if (navGapInput) navGapInput.value = String(gap);
+    return gap;
+}
+
 function loadImage(index) {
     currentIndex = index;
     img.src = `/image/${index}?t=${Date.now()}`;
@@ -303,7 +311,9 @@ prevLabelledBtn.onclick = () => navigate('prev_labelled');
 nextLabelledBtn.onclick = () => navigate('next_labelled');
 
 function navigate(action) {
-    fetch('/navigate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({action}) })
+    const payload = { action };
+    if (action === 'prev' || action === 'next') payload.gap = getNavGap();
+    fetch('/navigate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
     .then(r=>r.json()).then(resp => {
         if (typeof resp.index === 'number') loadImage(resp.index);
     });

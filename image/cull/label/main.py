@@ -31,10 +31,11 @@ KEEP_LABELS_OPTS = []
 CULL_LABELS_OPTS = []
 RANDOM_ON_LABEL = True
 LABELLED_NAV_MODE = "all"
+NORMAL_NAV_GAP = 0
 
 # --- Helper Functions ---
 def load_data(project_path, current_stage=None):
-    global root_dir, src_dir_name, stage_number, images, labels, current_index, DATASET_DIR, RANDOM_ON_LABEL, LABELLED_NAV_MODE
+    global root_dir, src_dir_name, stage_number, images, labels, current_index, DATASET_DIR, RANDOM_ON_LABEL, LABELLED_NAV_MODE, NORMAL_NAV_GAP
     
 
     root_dir = project_path
@@ -66,6 +67,7 @@ def load_data(project_path, current_stage=None):
     labels = {}
     RANDOM_ON_LABEL = True
     LABELLED_NAV_MODE = "all"
+    NORMAL_NAV_GAP = 0
     
     # Load labels from CSV
     csv_path = os.path.join(root_dir, f"stage_{stage_number}_cull_labels.csv")
@@ -206,7 +208,7 @@ def labelled_indices_by_mode(mode):
 # --- Flask Routes ---
 @app.route('/', methods=['GET', 'POST'])
 def index():
-    global current_index, labels, RANDOM_ON_LABEL, LABELLED_NAV_MODE
+    global current_index, labels, RANDOM_ON_LABEL, LABELLED_NAV_MODE, NORMAL_NAV_GAP
     if not images:
         # Attempt to reload data if images list is empty, might happen on first load if project/stage wasn't ready
         if root_dir:
@@ -226,6 +228,10 @@ def index():
                 LABELLED_NAV_MODE = mode
             else:
                 LABELLED_NAV_MODE = "all"
+        try:
+            NORMAL_NAV_GAP = max(0, int(request.form.get('nav_gap', NORMAL_NAV_GAP)))
+        except (TypeError, ValueError):
+            NORMAL_NAV_GAP = 0
         action = request.form.get('action')
         if not action:
             save_labels()
@@ -259,9 +265,11 @@ def index():
             if RANDOM_ON_LABEL:
                 randomize_image_index()
         elif action == 'prev':
-            current_index = (current_index - 1 + total_num_images) % total_num_images if total_num_images > 0 else 0
+            step = NORMAL_NAV_GAP + 1
+            current_index = (current_index - step + total_num_images) % total_num_images if total_num_images > 0 else 0
         elif action == 'next':
-            current_index = (current_index + 1) % total_num_images if total_num_images > 0 else 0
+            step = NORMAL_NAV_GAP + 1
+            current_index = (current_index + step) % total_num_images if total_num_images > 0 else 0
         elif action == 'random':
             randomize_image_index()
         elif action == 'prev_labelled':
@@ -339,7 +347,8 @@ def index():
         images=images,
         current_label_info=current_label_info,
         random_on_label=RANDOM_ON_LABEL,
-        labelled_nav_mode=LABELLED_NAV_MODE
+        labelled_nav_mode=LABELLED_NAV_MODE,
+        nav_gap=NORMAL_NAV_GAP
     )
 
 

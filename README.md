@@ -36,12 +36,16 @@ Notes
 
 #### `video.extract`
 - Features
-  - Evenly-spaced frames per time unit or random sampling
-  - Short-side resize while preserving aspect ratio
+  - Evenly-spaced frames per time unit, random sampling, or full extraction with `--all`
+  - `--all` overrides `--frames`, `--time`, and `--random`
+  - Zero-padded output names via `--filename-width` (default `000001.png` style)
+  - Optional short-side resize while preserving aspect ratio (omit `--resolution` to keep original frame size)
   - Collated output or per-video subfolders
 - Examples
   - `python -m video.extract --input "videos" --output "frames" --frames 2 --time second --resolution 768`
   - `python -m video.extract --input "videos" --output "frames_all" --frames 50 --random --collate --resolution 512`
+  - `python -m video.extract --input "videos" --output "frames_native" --frames 2 --time second`
+  - `python -m video.extract --input "videos" --output "all_frames" --all --collate`
 
 #### `video.group`
 - Features
@@ -139,15 +143,23 @@ Notes
 #### `image.cull`
 - Features
   - Train a DeiT-based binary classifier on labeled images per stage
-  - Inference copies kept images to next stage; logs and metrics saved
+  - Inference supports `--mode copy|link|inplace` for kept-image output handling; logs and metrics saved
 - Typical flow (stages live under project root)
   1) Label keep/cull (first step)
      - `python -m image.cull.label.main --project "C:\\proj" --stage 1` then open `http://localhost:5050`
      - Writes `stage_<N>_cull_labels.csv` under the project root (resumes if present)
   2) Train
      - `python -m image.cull.train --project "C:\\proj" --stage 1 --batch-size 32`
-  3) Predict
+  3) Random cull preview sample (optional)
+     - `python -m image.cull.sample --project "C:\\proj" --stage 1 --count 1000` (runs the stage cull model on a random sample and hard-links predicted keeps to `stage_<N>_cull_samples`)
+  4) Predict
      - `python -m image.cull.main --project "C:\\proj" --stage 1`
+     - Link instead of copy: `python -m image.cull.main --project "C:\\proj" --stage 1 --mode link`
+     - In-place cull (move keeps, delete culls): `python -m image.cull.main --project "C:\\proj" --stage 1 --mode inplace`
+     - Resume from numeric filename (inclusive): `python -m image.cull.main --project "C:\\proj" --resume 14487`
+     - `--mode` defaults to `copy`
+     - `--resume` compares the numeric filename stem (e.g., `014486.png` -> `14486`) and handles discontinuities
+     - With `--resume` and no `--stage`, source stage is inferred as `latest - 1` (resume into the latest stage)
   - Expects `stage_<N>` with images and `stage_<N>_cull_labels.csv` for training; writes `stage_<N>_cull_model.pth`
 
 #### `image.rank`
@@ -189,3 +201,4 @@ Notes
   - Minimal Flask app to tag exported loops; writes `caption.txt` in each loop folder
 - Example
   - `python -m utils.cap.label --input "C:\\loops" --port 7860` then open `http://localhost:7860`
+
