@@ -49,13 +49,14 @@ def write_yolo_label_file(path: str, labels: List[Label], class_id_map: Dict[int
 def balance_and_split(
     all_labels: List[Label],
     val_split: float,
+    balance: bool = False,
     seed: int = 42,
 ) -> Tuple[Dict[str, List[Label]], Dict[str, List[Label]]]:
     """
     Returns (train_labels_by_img, val_labels_by_img)
 
-    - Balance per class down to the least-labeled class (cap).
-    - Split each class into train/val with an exact val fraction.
+    - Optionally balance per class down to the least-labeled class (cap).
+    - Split each class into train/val.
     - Allows the same image to be present in both splits (labels are split).
     """
     rnd = random.Random(seed)
@@ -67,36 +68,32 @@ def balance_and_split(
     if not by_class:
         return {}, {}
 
-    cap = min(len(v) for v in by_class.values())
+    if balance:
+        cap = min(len(v) for v in by_class.values())
+        labels_by_class: Dict[int, List[Label]] = {}
+        for c, lst in by_class.items():
+            lst_copy = lst[:]
+            rnd.shuffle(lst_copy)
+            labels_by_class[c] = lst_copy[:cap]
+    else:
+        labels_by_class = {}
+        for c, lst in by_class.items():
+            lst_copy = lst[:]
+            rnd.shuffle(lst_copy)
+            labels_by_class[c] = lst_copy
 
-    # cap per class
-    capped_by_class: Dict[int, List[Label]] = {}
-    for c, lst in by_class.items():
-        lst_copy = lst[:]
-        rnd.shuffle(lst_copy)
-        capped_by_class[c] = lst_copy[:cap]
-
-    classes = sorted(capped_by_class.keys())
-    per_class_val_counts: Dict[int, int] = {}
-    raw_targets = [val_split * cap for _ in classes]
-    floors = [int(x) for x in map(lambda x: int(x), [int(val_split * cap) for _ in classes])]
-    fracs = [(i, (raw_targets[i] - int(raw_targets[i]))) for i in range(len(classes))]
-    remaining = int(round(sum(raw_targets))) - sum(floors)
-    
-    for i, c in enumerate(classes):
-        per_class_val_counts[c] = floors[i]
-        
-    fracs.sort(key=lambda t: t[1], reverse=True)
-    for i in range(remaining):
-        per_class_val_counts[classes[fracs[i][0]]] += 1
+    classes = sorted(labels_by_class.keys())
 
     train_by_img: Dict[str, List[Label]] = defaultdict(list)
     val_by_img: Dict[str, List[Label]] = defaultdict(list)
 
     for c in classes:
-        lst = capped_by_class[c][:]
-        rnd.shuffle(lst)
-        n_val = per_class_val_counts[c]
+        lst = labels_by_class[c][:]
+        n_val = int(round(val_split * len(lst)))
+        if 0.0 < val_split < 1.0 and len(lst) > 1:
+            n_val = max(1, min(len(lst) - 1, n_val))
+        else:
+            n_val = max(0, min(len(lst), n_val))
         val_part = lst[:n_val]
         train_part = lst[n_val:]
 
@@ -136,6 +133,11 @@ def main():
     parser.add_argument("--project", required=True, help="Path to project root")
     parser.add_argument("--val_split", type=float, default=0.2, help="Validation fraction (0..1)")
     parser.add_argument("--stage", type=int, default=None, help="Stage number (optional)")
+    parser.add_argument(
+        "--balance",
+        action="store_true",
+        help="Downsample each class to the smallest class count before splitting",
+    )
     parser.add_argument("--seed", type=int, default=19930625, help="Random seed")
     args = parser.parse_args()
 
@@ -160,9 +162,23 @@ def main():
     present_classes = sorted({lab[1] for lab in all_labels})
     class_id_map = {cls_id: idx for idx, cls_id in enumerate(present_classes)}
     class_names = [CLASS_NAMES.get(cls_id, f"class_{cls_id}") for cls_id in present_classes]
+    class_counts = {cls_id: 0 for cls_id in present_classes}
+    for _, cls_id, *_ in all_labels:
+        class_counts[cls_id] += 1
+
+    print(f"Loaded {len(all_labels)} labels across {len(present_classes)} classes from {csv_path}")
+    for cls_id in present_classes:
+        print(f"  class {cls_id} ({CLASS_NAMES.get(cls_id, f'class_{cls_id}')}): {class_counts[cls_id]}")
+    if args.balance:
+        print(f"Balancing enabled: capping each class to {min(class_counts.values())} labels before splitting.")
 
     # Balance & split
-    train_by_img, val_by_img = balance_and_split(all_labels, args.val_split, seed=args.seed)
+    train_by_img, val_by_img = balance_and_split(
+        all_labels,
+        args.val_split,
+        balance=args.balance,
+        seed=args.seed,
+    )
 
     # Prepare output structure under <project>/yolo
     out_root = os.path.join(args.project, f"stage_{stage}_yolo")

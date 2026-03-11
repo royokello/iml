@@ -42,6 +42,9 @@ def register(app, ensure_root_configured):
                         processed_results = []
 
                         for r in results_list:
+                            r["source_size_mb"] = "N/A"
+                            r["output_size_mb"] = "N/A"
+                            r["output_percent"] = "N/A"
                             if r.get("success"):
                                 s_size = r.get("source_size", 0)
                                 o_size = r.get("output_size", 0)
@@ -50,17 +53,24 @@ def register(app, ensure_root_configured):
 
                                 r["source_size_mb"] = f"{(s_size / 1048576):.2f}"
                                 r["output_size_mb"] = f"{(o_size / 1048576):.2f}"
+                                r["output_percent"] = f"{((o_size / s_size) * 100):.1f}%" if s_size else "N/A"
                                 r["filename"] = r.get("source", "").split("\\")[-1]
                             else:
                                 r["filename"] = r.get("source", "Unknown").split("\\")[-1]
                             processed_results.append(r)
 
+                        compressed_percent = (
+                            f"{((total_output_size / total_source_size) * 100):.1f}%"
+                            if total_source_size
+                            else "N/A"
+                        )
                         context["results"] = processed_results
                         context["summary"] = {
                             "total_files": len(processed_results),
                             "total_source_mb": f"{(total_source_size / 1048576):.2f}",
                             "total_output_mb": f"{(total_output_size / 1048576):.2f}",
                             "saved_mb": f"{((total_source_size - total_output_size) / 1048576):.2f}",
+                            "compressed_percent": compressed_percent,
                         }
 
                 except Exception as e:

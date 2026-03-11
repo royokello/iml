@@ -71,6 +71,10 @@
                     <span style="font-size: 1.2em; font-weight: bold;">{{ summary.total_output_mb }} MB</span>
                 </div>
                 <div>
+                    <span style="display:block; font-size: 0.85em; opacity: 0.8;">Compressed Size</span>
+                    <span style="font-size: 1.2em; font-weight: bold;">{{ summary.compressed_percent }} of original</span>
+                </div>
+                <div>
                     <span style="display:block; font-size: 0.85em; opacity: 0.8;">Space Saved</span>
                     <span style="font-size: 1.2em; font-weight: bold;">{{ summary.saved_mb }} MB</span>
                 </div>
@@ -84,6 +88,7 @@
                             <th style="padding: 10px;">Filename</th>
                             <th style="padding: 10px;">Original (MB)</th>
                             <th style="padding: 10px;">Compressed (MB)</th>
+                            <th style="padding: 10px;">Compressed %</th>
                             <th style="padding: 10px;">Status</th>
                         </tr>
                     </thead>
@@ -93,6 +98,7 @@
                             <td style="padding: 10px;">{{ res.filename }}</td>
                             <td style="padding: 10px;">{{ res.source_size_mb }}</td>
                             <td style="padding: 10px;">{{ res.output_size_mb }}</td>
+                            <td style="padding: 10px;">{{ res.output_percent }}</td>
                             <td style="padding: 10px;">
                                 {% if res.success %}
                                 <span style="color: #2aa198;">&#10004; Success</span>

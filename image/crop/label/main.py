@@ -234,7 +234,7 @@ def _stats_payload():
     )
 
 
-def main(project: str, stage: int = None):
+def main(project: str, stage: int = None, port: int = 5051):
     global image_dir, image_files, labels, labels_file
     global ratios, ratios_file, current_image_index, labelled_idxs
 
@@ -286,12 +286,14 @@ def main(project: str, stage: int = None):
     labelled_idxs = list(sorted(labels.keys()))
 
     print(f"Starting app: {len(image_files)} images, {sum(len(b) for b in labels.values())} labels.")
-    app.run(host='0.0.0.0', port=5051, debug=True)
+    print(f"Serving crop labeler on http://localhost:{port}")
+    app.run(host='0.0.0.0', port=port, debug=True)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--project', type=str, required=True)
     parser.add_argument('--stage', type=int, default=None)
+    parser.add_argument('--port', type=int, default=5051)
     args = parser.parse_args()
-    main(args.project, args.stage)
+    main(args.project, args.stage, args.port)

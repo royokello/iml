@@ -130,15 +130,25 @@ Notes
   - Prints summary stats, including estimated unique images after dedup
   - Optional auto mode searches threshold for unique count closest to a target
   - Optional output mode copies deduplicated images and matching `.txt` captions
+  - In output mode, selects one keeper per duplicate group using weighted quality scoring:
+    - sharpness score (higher is better)
+    - exposure penalty (lower is better)
+    - noise penalty (lower is better)
+    - compression artifact penalty (lower is better)
 - Example
   - `python -m image.dedup.main --input "images" --dhash-threshold 8`
   - `python -m image.dedup.main --input "images" --target 500`
   - `python -m image.dedup.main --input "images" --target 500 --output "images_dedup"`
+  - `python -m image.dedup.main --input "images" --output "images_dedup" --sharpness-weight 1.0 --exposure-weight 0.4 --noise-weight 0.3 --artifact-weight 0.55`
 - Useful args
   - `--input`, `-o/--output`
   - `--dhash-size`, `--dhash-threshold`
   - `--target`
   - `--min-group-size`
+  - `--sharpness-weight` (default `1.0`)
+  - `--exposure-weight` (default `0.4`)
+  - `--noise-weight` (default `0.3`)
+  - `--artifact-weight` (default `0.55`)
 
 #### `image.cull`
 - Features
@@ -178,9 +188,11 @@ Notes
 - Typical flow
   1) Label boxes (first step)
      - `python -m image.crop.label.main --project "C:\\proj" --stage 1` then open `http://localhost:5051`
+     - Custom port: `python -m image.crop.label.main --project "C:\\proj" --stage 1 --port 5001`
      - Writes `stage_<N>_crop_labels.csv` under the project root (resumes if present)
   2) Prepare YOLO dataset from labels CSV
-     - `python -m image.crop.prepare --project "C:\\proj" --stage 1 --val_split 0.2`
+      - `python -m image.crop.prepare --project "C:\\proj" --stage 1 --val_split 0.2`
+      - Add `--balance` only if you explicitly want to downsample every class to the smallest class count
   3) Train a detector (Ultralytics)
      - `python -m image.crop.train --project "C:\\proj" --stage 1 --variant yolo11n --epochs 100 --batch 16`
   4) Run cropper using the trained weights
