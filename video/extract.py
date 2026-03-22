@@ -4,6 +4,7 @@ import random
 from typing import List, Optional
 
 import cv2
+import numpy as np
 
 
 VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".mkv", ".flv", ".wmv")
@@ -28,6 +29,91 @@ def _resize_preserve_aspect(frame, target_short_side: Optional[int]) -> "cv2.Mat
     return cv2.resize(frame, (new_w, new_h), interpolation=interpolation)
 
 
+def _read_frame_at(cap: cv2.VideoCapture, frame_index: int) -> Optional["cv2.Mat"]:
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+    success, frame = cap.read()
+    return frame if success else None
+
+
+def _sharpness_score(frame: "cv2.Mat") -> float:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def _exposure_penalty(frame: "cv2.Mat") -> float:
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    mean_norm = float(gray.mean()) / 255.0
+    mean_penalty = abs(mean_norm - 0.5) / 0.5
+    clipped_dark = float(np.mean(gray <= 5))
+    clipped_bright = float(np.mean(gray >= 250))
+    clip_penalty = min((clipped_dark + clipped_bright) / 0.25, 1.0)
+    return min(0.7 * mean_penalty + 0.3 * clip_penalty, 1.0)
+
+
+def _candidate_indices(mark_index: int, buffer: int, total_frames: int) -> List[int]:
+    if buffer <= 0:
+        return [mark_index]
+    start = max(0, mark_index - buffer)
+    end = min(total_frames - 1, mark_index + buffer)
+    return list(range(start, end + 1))
+
+
+def _select_best_frame(
+    cap: cv2.VideoCapture,
+    mark_index: int,
+    total_frames: int,
+    buffer: int,
+) -> tuple[Optional["cv2.Mat"], int]:
+    candidate_rows = []
+    for idx in _candidate_indices(mark_index, buffer, total_frames):
+        frame = _read_frame_at(cap, idx)
+        if frame is None:
+            continue
+        candidate_rows.append(
+            {
+                "index": idx,
+                "frame": frame,
+                "sharpness": _sharpness_score(frame),
+                "exposure_penalty": _exposure_penalty(frame),
+            }
+        )
+
+    if not candidate_rows:
+        return None, mark_index
+
+    sharpness_values = [row["sharpness"] for row in candidate_rows]
+    sharp_min = min(sharpness_values)
+    sharp_max = max(sharpness_values)
+    sharp_range = sharp_max - sharp_min
+
+    def _composite(row) -> float:
+        if sharp_range <= 1e-9:
+            sharp_norm = 0.5
+        else:
+            sharp_norm = max(0.0, min((row["sharpness"] - sharp_min) / sharp_range, 1.0))
+        return sharp_norm - (0.4 * row["exposure_penalty"])
+
+    best = min(
+        candidate_rows,
+        key=lambda row: (-_composite(row), abs(row["index"] - mark_index), row["index"]),
+    )
+    return best["frame"], int(best["index"])
+
+
+def _random_mark_indices(total_frames: int, frames_per_unit: int) -> List[int]:
+    n_random = frames_per_unit if frames_per_unit and frames_per_unit > 0 else total_frames
+    n_random = min(n_random, total_frames)
+    return sorted(random.sample(range(total_frames), n_random))
+
+
+def _time_grid_mark_indices(total_frames: int, fps: float, frames_per_unit: int, time_unit: str) -> List[int]:
+    multiplier = 1 if time_unit == "second" else 60 if time_unit == "minute" else 3600
+    frames_in_unit = fps * multiplier
+    frames_per_unit = frames_per_unit if frames_per_unit and frames_per_unit > 0 else 1
+    interval = max(int(round(frames_in_unit / frames_per_unit)), 1)
+    return list(range(0, total_frames, interval))
+
+
 def extract_frames(
     video_path: str,
     output_dir: str,
@@ -38,6 +124,7 @@ def extract_frames(
     filename_width: int,
     extract_all: bool,
     random_mode: bool,
+    buffer: int,
     video_counter: int,
     video_total: int,
 ) -> int:
@@ -70,60 +157,42 @@ def extract_frames(
         cap.release()
         return image_count
 
-    # Random mode: sample frame indices across the full clip.
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    if total_frames <= 0:
+        print(f" ! Skipping {video_path} (invalid frame count).")
+        cap.release()
+        return image_count
+
     if random_mode:
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames <= 0:
-            print(f" ! Skipping {video_path} (invalid frame count).")
+        mark_indices = _random_mark_indices(total_frames, frames_per_unit)
+        print(
+            f"[{video_counter}/{video_total}] Random mode: {video_path} - extracting {len(mark_indices)} frame(s)"
+            f"{'' if buffer <= 0 else f' with buffer {buffer}'}."
+        )
+    else:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            print(f" ! Skipping {video_path} (cannot read FPS).")
             cap.release()
             return image_count
 
-        n_random = frames_per_unit if frames_per_unit and frames_per_unit > 0 else total_frames
-        n_random = min(n_random, total_frames)
-        indices = sorted(random.sample(range(total_frames), n_random))
+        mark_indices = _time_grid_mark_indices(total_frames, fps, frames_per_unit, time_unit)
+        interval = mark_indices[1] - mark_indices[0] if len(mark_indices) >= 2 else total_frames
+        print(
+            f"[{video_counter}/{video_total}] {video_path} - {frames_per_unit} frame(s) per "
+            f"{time_unit} (fps={fps:.2f}) -> interval {interval}"
+            f"{'' if buffer <= 0 else f', buffer {buffer}'}"
+        )
 
-        print(f"[{video_counter}/{video_total}] Random mode: {video_path} - extracting {n_random} frame(s).")
+    for mark_index in mark_indices:
+        frame, _winner_index = _select_best_frame(cap, mark_index, total_frames, buffer)
+        if frame is None:
+            print(f" ! Failed to read mark {mark_index} in {video_path}")
+            continue
 
-        for idx in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            success, frame = cap.read()
-            if not success:
-                print(f" ! Failed to read frame {idx} in {video_path}")
-                continue
-
-            frame = _resize_preserve_aspect(frame, resolution)
-            cv2.imwrite(os.path.join(output_dir, f"{image_count:0{filename_width}d}.png"), frame)
-            image_count += 1
-
-        cap.release()
-        return image_count
-
-    # Time-grid mode: extract evenly at an interval based on FPS and time unit.
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0:
-        print(f" ! Skipping {video_path} (cannot read FPS).")
-        cap.release()
-        return image_count
-
-    multiplier = 1 if time_unit == "second" else 60 if time_unit == "minute" else 3600
-    frames_in_unit = fps * multiplier
-    frames_per_unit = frames_per_unit if frames_per_unit and frames_per_unit > 0 else 1
-    interval = max(int(round(frames_in_unit / frames_per_unit)), 1)
-
-    print(
-        f"[{video_counter}/{video_total}] {video_path} - {frames_per_unit} frame(s) per "
-        f"{time_unit} (fps={fps:.2f}) -> interval {interval}"
-    )
-
-    frame_count = 0
-    success, frame = cap.read()
-    while success:
-        if frame_count % interval == 0:
-            resized = _resize_preserve_aspect(frame, resolution)
-            cv2.imwrite(os.path.join(output_dir, f"{image_count:0{filename_width}d}.png"), resized)
-            image_count += 1
-        frame_count += 1
-        success, frame = cap.read()
+        resized = _resize_preserve_aspect(frame, resolution)
+        cv2.imwrite(os.path.join(output_dir, f"{image_count:0{filename_width}d}.png"), resized)
+        image_count += 1
 
     cap.release()
     return image_count
@@ -151,6 +220,11 @@ def main(args):
     output_root = args.output
     resolution = args.resolution
 
+    if args.buffer < 0:
+        raise SystemExit("--buffer must be >= 0.")
+    if args.all and args.buffer > 0:
+        print(" ! Ignoring --buffer because --all extracts exact decode-order frames.")
+
     if args.collate:
         os.makedirs(output_root, exist_ok=True)
         global_counter = _initial_global_count(output_root)
@@ -168,6 +242,7 @@ def main(args):
             filename_width=args.filename_width,
             extract_all=args.all,
             random_mode=args.random and not args.all,
+            buffer=0 if args.all else args.buffer,
             video_counter=video_counter,
             video_total=video_total,
         )
@@ -205,7 +280,8 @@ if __name__ == "__main__":
             "of frames per second/minute/hour. If --random is supplied it instead "
             "samples up to --frames random frames from the whole clip. If --all is "
             "supplied it extracts every frame and overrides --frames/--time/--random. "
-            "Use --collate to dump everything into a single directory."
+            "Use --buffer to compare nearby frames around each mark and save the best "
+            "scoring one. Use --collate to dump everything into a single directory."
         )
     )
 
@@ -215,6 +291,12 @@ if __name__ == "__main__":
     parser.add_argument("--time", choices=["second", "minute", "hour"], default="second", help="Time unit basis.")
     parser.add_argument("--random", action="store_true", help="Enable random frame sampling mode.")
     parser.add_argument("--all", action="store_true", help="Extract all frames. Overrides --frames, --time, and --random.")
+    parser.add_argument(
+        "--buffer",
+        type=int,
+        default=0,
+        help="Compare frames in a +/- buffer window around each mark and save the best scorer. Ignored by --all.",
+    )
     parser.add_argument("--collate", action="store_true", help="Save all frames into the output directory itself.")
     parser.add_argument("--filename-width", type=int, default=6, help="Zero-pad width for output frame filenames.")
     parser.add_argument(

@@ -38,11 +38,14 @@ Notes
 - Features
   - Evenly-spaced frames per time unit, random sampling, or full extraction with `--all`
   - `--all` overrides `--frames`, `--time`, and `--random`
+  - Optional `--buffer` compares the marked frame with nearby frames and saves the best-scoring result
+  - `--buffer 0` saves the exact marked frame; `--all` ignores `--buffer`
   - Zero-padded output names via `--filename-width` (default `000001.png` style)
   - Optional short-side resize while preserving aspect ratio (omit `--resolution` to keep original frame size)
   - Collated output or per-video subfolders
 - Examples
   - `python -m video.extract --input "videos" --output "frames" --frames 2 --time second --resolution 768`
+  - `python -m video.extract --input "videos" --output "frames_best" --frames 2 --time second --buffer 3 --resolution 768`
   - `python -m video.extract --input "videos" --output "frames_all" --frames 50 --random --collate --resolution 512`
   - `python -m video.extract --input "videos" --output "frames_native" --frames 2 --time second`
   - `python -m video.extract --input "videos" --output "all_frames" --all --collate`
