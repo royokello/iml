@@ -13,7 +13,7 @@ IMAGE_EXTS: set[str] = {
 
 
 ImageItem: TypeAlias = tuple[Path, str, int, int, int]
-ItemsByResolution: TypeAlias = dict[tuple[int, int], list[ImageItem]]
+ImageItems: TypeAlias = list[ImageItem]
 
 
 @dataclass(frozen=True)
@@ -79,8 +79,8 @@ def hamming(a: int, b: int) -> int:
     return (a ^ b).bit_count()
 
 
-def scan_images(root: Path, hash_size: int) -> ItemsByResolution:
-    items_by_res: ItemsByResolution = {}
+def scan_images(root: Path, hash_size: int) -> ImageItems:
+    items: ImageItems = []
     total = 0
     skipped = 0
     for path in root.rglob("*"):
@@ -91,16 +91,14 @@ def scan_images(root: Path, hash_size: int) -> ItemsByResolution:
                 w, h = im.size
                 dh = dhash_image(im, hash_size)
             rel = path.relative_to(root).as_posix()
-            items_by_res.setdefault((w, h), []).append((path, rel, w, h, dh))
+            items.append((path, rel, w, h, dh))
             total += 1
         except Exception as exc:
             skipped += 1
             print(f"[dedup] skipped {path}: {exc}", file=sys.stderr)
     print(f"[dedup] scanned {total} images ({skipped} skipped)")
-    print(f"[dedup] {len(items_by_res)} resolution buckets")
-    for items in items_by_res.values():
-        items.sort(key=lambda x: x[1])
-    return items_by_res
+    items.sort(key=lambda x: x[1])
+    return items
 
 
 def group_by_hash(items: list[ImageItem], threshold: int) -> list[list[int]]:
@@ -115,37 +113,26 @@ def group_by_hash(items: list[ImageItem], threshold: int) -> list[list[int]]:
 
 
 def evaluate_threshold(
-    items_by_res: ItemsByResolution,
+    items: ImageItems,
     dhash_threshold: int,
     min_group_size: int,
 ) -> ThresholdStats:
     all_groups: list[list[ImageItem]] = []
-    total_images = 0
+    total_images = len(items)
     unique_count = 0
     duplicate_groups = 0
     duplicate_images = 0
 
-    for items in items_by_res.values():
-        if not items:
-            continue
+    components = group_by_hash(items, dhash_threshold)
+    unique_count = len(components)
 
-        total_images += len(items)
-        if len(items) == 1:
-            unique_count += 1
-            if min_group_size <= 1:
-                all_groups.append([items[0]])
-            continue
-
-        components = group_by_hash(items, dhash_threshold)
-        unique_count += len(components)
-
-        for comp in components:
-            group = [items[i] for i in comp]
-            if len(group) >= 2:
-                duplicate_groups += 1
-                duplicate_images += len(group)
-            if len(group) >= min_group_size:
-                all_groups.append(group)
+    for comp in components:
+        group = [items[i] for i in comp]
+        if len(group) >= 2:
+            duplicate_groups += 1
+            duplicate_images += len(group)
+        if len(group) >= min_group_size:
+            all_groups.append(group)
 
     all_groups.sort(key=lambda g: g[0][1])
     return ThresholdStats(
@@ -164,9 +151,9 @@ def build_groups(
     dhash_threshold: int,
     min_group_size: int,
 ) -> list[list[ImageItem]]:
-    items_by_res = scan_images(root, dhash_size)
+    items = scan_images(root, dhash_size)
     return evaluate_threshold(
-        items_by_res=items_by_res,
+        items=items,
         dhash_threshold=dhash_threshold,
         min_group_size=min_group_size,
     ).groups

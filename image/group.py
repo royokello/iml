@@ -34,7 +34,14 @@ def size_bucket(value: int, thresholds: list[int]) -> int:
     return thresholds[-1]
 
 
-def organise(root: Path, thresholds: list[int], orientation: str, *, dry_run: bool) -> None:
+def organise(
+    root: Path,
+    thresholds: list[int],
+    orientation: str,
+    *,
+    orientation_split: bool,
+    dry_run: bool,
+) -> None:
     for src in root.rglob("*"):
         if not src.is_file() or src.suffix.lower() not in IMAGE_EXTS:
             continue
@@ -50,10 +57,20 @@ def organise(root: Path, thresholds: list[int], orientation: str, *, dry_run: bo
         elif orientation == "height":
             measure = h
             dst_dir = root / f"_{size_bucket(measure, thresholds)}"
+        elif orientation == "shortest":
+            measure = min(w, h)
+            if orientation_split:
+                orient_label = "vertical" if h > w else "horizontal"
+                dst_dir = root / f"_{orient_label}" / f"_{size_bucket(measure, thresholds)}"
+            else:
+                dst_dir = root / f"_{size_bucket(measure, thresholds)}"
         else:
             measure = max(w, h)
-            orient_label = "vertical" if h > w else "horizontal"
-            dst_dir = root / f"_{orient_label}" / f"_{size_bucket(measure, thresholds)}"
+            if orientation_split:
+                orient_label = "vertical" if h > w else "horizontal"
+                dst_dir = root / f"_{orient_label}" / f"_{size_bucket(measure, thresholds)}"
+            else:
+                dst_dir = root / f"_{size_bucket(measure, thresholds)}"
 
         dst_dir.mkdir(parents=True, exist_ok=True)
 
@@ -72,7 +89,8 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Group images by chosen dimension and size.")
     p.add_argument("-i", "--input", required=True, type=Path, help="Directory to scan (and where groups are created).")
     p.add_argument("--sizes", nargs="*", type=int, metavar="N", default=[256, 384, 512, 768, 1024])
-    p.add_argument("--orientation", choices=["width", "height", "longest"], default="width")
+    p.add_argument("--orientation", choices=["width", "height", "longest", "shortest"], default="width")
+    p.add_argument("--orientation-split", action="store_true", help="Split longest/shortest groups into horizontal/vertical subfolders.")
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -85,7 +103,13 @@ def main() -> None:
         sys.exit(f"ERROR: {root} is not a directory.")
 
     thresholds = sorted(set(args.sizes))
-    organise(root, thresholds, args.orientation, dry_run=args.dry_run)
+    organise(
+        root,
+        thresholds,
+        args.orientation,
+        orientation_split=args.orientation_split,
+        dry_run=args.dry_run,
+    )
 
 
 if __name__ == "__main__":

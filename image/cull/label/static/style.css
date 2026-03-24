@@ -81,10 +81,10 @@ body {
 
 .image-container {
     min-height: min(62vh, 700px);
-    background: var(--surface-alt);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 0.75rem;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -93,10 +93,10 @@ body {
 .image-container img {
     display: block;
     max-width: 100%;
-    max-height: calc(62vh - 1.5rem);
-    border-radius: 10px;
-    border: 2px solid rgba(42, 161, 152, 0.28);
-    background: #001b22;
+    max-height: 62vh;
+    border-radius: 0;
+    border: none;
+    background: transparent;
 }
 
 .image-placeholder {
@@ -378,7 +378,7 @@ input::placeholder {
     }
 
     .image-container img {
-        max-height: calc(52vh - 1.5rem);
+        max-height: 52vh;
     }
 }
 

@@ -14,6 +14,7 @@ CLASS_NAMES: Dict[int, str] = {
     1: "portrait",
     2: "landscape",
     3: "full_body",
+    4: "widescreen",
 }
 
 

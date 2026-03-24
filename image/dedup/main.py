@@ -10,7 +10,7 @@ from PIL import Image
 
 from .grouping import (
     ImageItem,
-    ItemsByResolution,
+    ImageItems,
     ThresholdStats,
     evaluate_threshold,
     group_by_hash,
@@ -72,7 +72,7 @@ def choose_better(a: ThresholdStats, b: ThresholdStats, target: int) -> Threshol
 
 
 def find_closest_threshold(
-    items_by_res: ItemsByResolution,
+    items: ImageItems,
     target: int,
     min_group_size: int,
     max_threshold: int,
@@ -85,7 +85,7 @@ def find_closest_threshold(
         if cached is not None:
             return cached
         stats = evaluate_threshold(
-            items_by_res=items_by_res,
+            items=items,
             dhash_threshold=threshold,
             min_group_size=min_group_size,
         )
@@ -300,7 +300,7 @@ def image_quality(path: Path) -> ImageQuality:
 
 
 def select_representative_images(
-    items_by_res: ItemsByResolution,
+    items: ImageItems,
     threshold: int,
     weights: QualityWeights,
 ) -> list[ImageItem]:
@@ -316,39 +316,36 @@ def select_representative_images(
         quality_cache[path] = score
         return score
 
-    for items in items_by_res.values():
-        if not items:
+    if not items:
+        return keepers
+
+    components = group_by_hash(items, threshold)
+    for comp in components:
+        if len(comp) == 1:
+            keepers.append(items[comp[0]])
             continue
-        if len(items) == 1:
-            keepers.append(items[0])
-            continue
-        components = group_by_hash(items, threshold)
-        for comp in components:
-            if len(comp) == 1:
-                keepers.append(items[comp[0]])
-                continue
 
-            qualities = {idx: quality_item(items[idx]) for idx in comp}
-            sharp_values = [quality.sharpness for quality in qualities.values()]
-            sharp_min = min(sharp_values)
-            sharp_max = max(sharp_values)
-            sharp_range = sharp_max - sharp_min
+        qualities = {idx: quality_item(items[idx]) for idx in comp}
+        sharp_values = [quality.sharpness for quality in qualities.values()]
+        sharp_min = min(sharp_values)
+        sharp_max = max(sharp_values)
+        sharp_range = sharp_max - sharp_min
 
-            def composite_score(idx: int) -> float:
-                q = qualities[idx]
-                if sharp_range <= 1e-9:
-                    sharp_norm = 0.5
-                else:
-                    sharp_norm = clamp01((q.sharpness - sharp_min) / sharp_range)
-                return (
-                    (weights.sharpness * sharp_norm)
-                    - (weights.exposure * q.exposure_penalty)
-                    - (weights.noise * q.noise_penalty)
-                    - (weights.artifact * q.artifact_penalty)
-                )
+        def composite_score(idx: int) -> float:
+            q = qualities[idx]
+            if sharp_range <= 1e-9:
+                sharp_norm = 0.5
+            else:
+                sharp_norm = clamp01((q.sharpness - sharp_min) / sharp_range)
+            return (
+                (weights.sharpness * sharp_norm)
+                - (weights.exposure * q.exposure_penalty)
+                - (weights.noise * q.noise_penalty)
+                - (weights.artifact * q.artifact_penalty)
+            )
 
-            best_idx = min(comp, key=lambda idx: (-composite_score(idx), items[idx][1]))
-            keepers.append(items[best_idx])
+        best_idx = min(comp, key=lambda idx: (-composite_score(idx), items[idx][1]))
+        keepers.append(items[best_idx])
     keepers.sort(key=lambda item: item[1])
     return keepers
 
@@ -411,10 +408,10 @@ def main() -> None:
     if args.dhash_threshold < 0 or args.dhash_threshold > max_threshold:
         sys.exit(f"ERROR: --dhash-threshold must be in [0, {max_threshold}] for --dhash-size {args.dhash_size}.")
 
-    items_by_res = scan_images(root, args.dhash_size)
+    items = scan_images(root, args.dhash_size)
     if args.target is not None:
         best, trials = find_closest_threshold(
-            items_by_res=items_by_res,
+            items=items,
             target=args.target,
             min_group_size=args.min_group_size,
             max_threshold=max_threshold,
@@ -427,7 +424,7 @@ def main() -> None:
         stats = best
     else:
         stats = evaluate_threshold(
-            items_by_res=items_by_res,
+            items=items,
             dhash_threshold=args.dhash_threshold,
             min_group_size=args.min_group_size,
         )
@@ -444,7 +441,7 @@ def main() -> None:
         f"artifact={weights.artifact:g}"
     )
     keepers = select_representative_images(
-        items_by_res=items_by_res,
+        items=items,
         threshold=stats.threshold,
         weights=weights,
     )

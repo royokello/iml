@@ -5,7 +5,7 @@ from ultralytics import YOLO
 from utils.stages import find_latest_stage
 import numpy as np
 
-CLASS_RATIOS = {0: (1, 1), 1: (3, 4), 2: (4, 3), 3: (1, 2)}  # w:h
+CLASS_RATIOS = {0: (1, 1), 1: (3, 4), 2: (4, 3), 3: (1, 2), 4: (2, 1)}  # w:h
 
 def list_images(d: str):
     exts = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp")

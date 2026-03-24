@@ -76,10 +76,12 @@ Notes
 
 #### `image.group`
 - Features
-  - Group by `width`, `height`, or `longest` side into size thresholds
+  - Group by `width`, `height`, `longest`, or `shortest` side into size thresholds
+  - Uses flat `_<size>` folders by default; add `--orientation-split` to nest `horizontal` / `vertical` folders for `longest` and `shortest`
   - Prefixes filename with path segments outside grouping folders
 - Example
-  - `python -m image.group --input "images" --orientation longest --sizes 256 384 512 768 --dry-run`
+  - `python -m image.group --input "images" --orientation shortest --sizes 256 384 512 768 --dry-run`
+  - `python -m image.group --input "images" --orientation shortest --orientation-split --sizes 256 384 512 768 --dry-run`
 
 #### `image.collect`
 - Features
@@ -129,7 +131,7 @@ Notes
 
 #### `image.dedup`
 - Features
-  - Groups by identical resolution, then clusters with dHash
+  - Compares all images across resolutions, then clusters with dHash
   - Prints summary stats, including estimated unique images after dedup
   - Optional auto mode searches threshold for unique count closest to a target
   - Optional output mode copies deduplicated images and matching `.txt` captions
@@ -199,8 +201,8 @@ Notes
   3) Train a detector (Ultralytics)
      - `python -m image.crop.train --project "C:\\proj" --stage 1 --variant yolo11n --epochs 100 --batch 16`
   4) Run cropper using the trained weights
-     - Native crop size (no resize): `python -m image.crop.main --project "C:\\proj" --stage 1 --classes 0 1 2 3`
-     - Resize long side: `python -m image.crop.main --project "C:\\proj" --stage 1 --resolution 768 --classes 0 1 2 3`
+     - Native crop size (no resize): `python -m image.crop.main --project "C:\\proj" --stage 1 --classes 0 1 2 3 4`
+     - Resize long side: `python -m image.crop.main --project "C:\\proj" --stage 1 --resolution 768 --classes 0 1 2 3 4`
 
 ### SDXL
 
