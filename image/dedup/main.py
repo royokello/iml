@@ -11,9 +11,11 @@ from PIL import Image
 from .grouping import (
     ImageItem,
     ImageItems,
+    SET_CHOICES,
     ThresholdStats,
+    components_in_sets,
     evaluate_threshold,
-    group_by_hash,
+    partition_items,
     scan_images,
 )
 
@@ -32,6 +34,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--dhash-size", type=int, default=8)
     p.add_argument("--dhash-threshold", type=int, default=8)
     p.add_argument("--target", type=int, default=None)
+    p.add_argument(
+        "--first-set",
+        choices=SET_CHOICES,
+        default=None,
+        help="Optional first comparison set: compare only within matching width/height/longest/shortest/ratio values.",
+    )
+    p.add_argument(
+        "--second-set",
+        choices=SET_CHOICES,
+        default=None,
+        help="Optional second comparison set applied inside each first-set bucket.",
+    )
 
     p.add_argument("--min-group-size", type=int, default=2)
     p.add_argument(
@@ -76,6 +90,8 @@ def find_closest_threshold(
     target: int,
     min_group_size: int,
     max_threshold: int,
+    first_set: str | None = None,
+    second_set: str | None = None,
 ) -> tuple[ThresholdStats, list[ThresholdStats]]:
     cache: dict[int, ThresholdStats] = {}
     trials: list[ThresholdStats] = []
@@ -88,6 +104,8 @@ def find_closest_threshold(
             items=items,
             dhash_threshold=threshold,
             min_group_size=min_group_size,
+            first_set=first_set,
+            second_set=second_set,
         )
         cache[threshold] = stats
         trials.append(stats)
@@ -115,18 +133,18 @@ def find_closest_threshold(
 
 
 def print_stats(stats: ThresholdStats, min_group_size: int) -> None:
-    print(f"[dedup] threshold: {stats.threshold}")
-    print(f"[dedup] total images: {stats.total_images}")
-    print(f"[dedup] unique images: {stats.unique_count}")
-    print(f"[dedup] removable duplicates: {stats.total_images - stats.unique_count}")
-    print(f"[dedup] groups (min size {min_group_size}): {len(stats.groups)}")
+    print(f"threshold: {stats.threshold}")
+    print(f"total images: {stats.total_images}")
+    print(f"unique images: {stats.unique_count}")
+    print(f"removable duplicates: {stats.total_images - stats.unique_count}")
+    print(f"groups (min size {min_group_size}): {len(stats.groups)}")
     if not stats.groups:
-        print("[dedup] no groups found")
+        print("no groups found")
         return
     sizes = [len(group) for group in stats.groups]
     grouped = sum(sizes)
-    print(f"[dedup] grouped images: {grouped}")
-    print(f"[dedup] group size min/avg/max: {min(sizes)}/{grouped / len(sizes):.2f}/{max(sizes)}")
+    print(f"grouped images: {grouped}")
+    print(f"group size min/avg/max: {min(sizes)}/{grouped / len(sizes):.2f}/{max(sizes)}")
 
 
 @dataclass(frozen=True)
@@ -303,6 +321,8 @@ def select_representative_images(
     items: ImageItems,
     threshold: int,
     weights: QualityWeights,
+    first_set: str | None = None,
+    second_set: str | None = None,
 ) -> list[ImageItem]:
     keepers: list[ImageItem] = []
     quality_cache: dict[Path, ImageQuality] = {}
@@ -319,20 +339,25 @@ def select_representative_images(
     if not items:
         return keepers
 
-    components = group_by_hash(items, threshold)
-    for comp in components:
-        if len(comp) == 1:
-            keepers.append(items[comp[0]])
+    components = components_in_sets(
+        items,
+        threshold=threshold,
+        first_set=first_set,
+        second_set=second_set,
+    )
+    for group in components:
+        if len(group) == 1:
+            keepers.append(group[0])
             continue
 
-        qualities = {idx: quality_item(items[idx]) for idx in comp}
+        qualities = {item[0]: quality_item(item) for item in group}
         sharp_values = [quality.sharpness for quality in qualities.values()]
         sharp_min = min(sharp_values)
         sharp_max = max(sharp_values)
         sharp_range = sharp_max - sharp_min
 
-        def composite_score(idx: int) -> float:
-            q = qualities[idx]
+        def composite_score(item: ImageItem) -> float:
+            q = qualities[item[0]]
             if sharp_range <= 1e-9:
                 sharp_norm = 0.5
             else:
@@ -344,8 +369,8 @@ def select_representative_images(
                 - (weights.artifact * q.artifact_penalty)
             )
 
-        best_idx = min(comp, key=lambda idx: (-composite_score(idx), items[idx][1]))
-        keepers.append(items[best_idx])
+        best_item = min(group, key=lambda item: (-composite_score(item), item[1]))
+        keepers.append(best_item)
     keepers.sort(key=lambda item: item[1])
     return keepers
 
@@ -368,9 +393,9 @@ def copy_dedup_output(output: Path, keepers: list[ImageItem]) -> None:
             shutil.copy2(src_caption, dst_caption)
             copied_captions += 1
 
-    print(f"[dedup] copied unique images: {copied_images}")
-    print(f"[dedup] copied captions: {copied_captions}")
-    print(f"[dedup] output: {output}")
+    print(f"copied unique images: {copied_images}")
+    print(f"copied captions: {copied_captions}")
+    print(f"output: {output}")
 
 
 def main() -> None:
@@ -386,6 +411,8 @@ def main() -> None:
 
     if args.target is not None and args.target < 1:
         sys.exit("ERROR: --target must be >= 1.")
+    if args.second_set is not None and args.first_set is None:
+        sys.exit("ERROR: --second-set requires --first-set.")
     if args.sharpness_weight < 0:
         sys.exit("ERROR: --sharpness-weight must be >= 0.")
     if args.exposure_weight < 0:
@@ -409,24 +436,35 @@ def main() -> None:
         sys.exit(f"ERROR: --dhash-threshold must be in [0, {max_threshold}] for --dhash-size {args.dhash_size}.")
 
     items = scan_images(root, args.dhash_size)
+    if args.first_set is None:
+        print("comparison sets: global")
+    elif args.second_set is None:
+        print(f"comparison sets: first={args.first_set}")
+    else:
+        print(f"comparison sets: first={args.first_set} second={args.second_set}")
+    partition_items(items, args.first_set, args.second_set, report=True)
     if args.target is not None:
         best, trials = find_closest_threshold(
             items=items,
             target=args.target,
             min_group_size=args.min_group_size,
             max_threshold=max_threshold,
+            first_set=args.first_set,
+            second_set=args.second_set,
         )
-        print(f"[dedup][auto] target unique: {args.target}")
+        print(f"auto target unique: {args.target}")
         for trial in trials:
             delta = abs(trial.unique_count - args.target)
-            print(f"[dedup][auto] tried threshold={trial.threshold} unique={trial.unique_count} delta={delta}")
-        print(f"[dedup][auto] tried {len(trials)} thresholds")
+            print(f"auto tried threshold={trial.threshold} unique={trial.unique_count} delta={delta}")
+        print(f"auto tried {len(trials)} thresholds")
         stats = best
     else:
         stats = evaluate_threshold(
             items=items,
             dhash_threshold=args.dhash_threshold,
             min_group_size=args.min_group_size,
+            first_set=args.first_set,
+            second_set=args.second_set,
         )
     print_stats(stats, args.min_group_size)
 
@@ -434,7 +472,7 @@ def main() -> None:
         return
 
     print(
-        "[dedup] quality weights: "
+        "quality weights: "
         f"sharpness={weights.sharpness:g} "
         f"exposure={weights.exposure:g} "
         f"noise={weights.noise:g} "
@@ -444,10 +482,12 @@ def main() -> None:
         items=items,
         threshold=stats.threshold,
         weights=weights,
+        first_set=args.first_set,
+        second_set=args.second_set,
     )
     if len(keepers) != stats.unique_count:
         print(
-            f"[dedup] warning: selected keepers ({len(keepers)}) != unique images ({stats.unique_count})",
+            f"warning: selected keepers ({len(keepers)}) != unique images ({stats.unique_count})",
             file=sys.stderr,
         )
     copy_dedup_output(output=output, keepers=keepers)

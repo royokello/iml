@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import gcd
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,9 @@ IMAGE_EXTS: set[str] = {
 
 ImageItem: TypeAlias = tuple[Path, str, int, int, int]
 ImageItems: TypeAlias = list[ImageItem]
+SetKey: TypeAlias = int | tuple[int, int]
+
+SET_CHOICES: tuple[str, ...] = ("height", "width", "longest", "shortest", "ratio")
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,88 @@ def hamming(a: int, b: int) -> int:
     return (a ^ b).bit_count()
 
 
+def normalized_ratio(width: int, height: int) -> tuple[int, int]:
+    factor = gcd(width, height)
+    if factor == 0:
+        return width, height
+    return width // factor, height // factor
+
+
+def item_set_key(item: ImageItem, set_name: str) -> SetKey:
+    width = item[2]
+    height = item[3]
+    if set_name == "width":
+        return width
+    if set_name == "height":
+        return height
+    if set_name == "longest":
+        return max(width, height)
+    if set_name == "shortest":
+        return min(width, height)
+    if set_name == "ratio":
+        return normalized_ratio(width, height)
+    raise ValueError(f"unsupported set name: {set_name}")
+
+
+def set_key_sort_value(key: SetKey) -> tuple[int, ...]:
+    if isinstance(key, tuple):
+        return key
+    return (key,)
+
+
+def format_set_key(key: SetKey) -> str:
+    if isinstance(key, tuple):
+        return f"{key[0]}x{key[1]}"
+    return str(key)
+
+
+def split_items_by_set(items: ImageItems, set_name: str) -> list[tuple[SetKey, ImageItems]]:
+    buckets: dict[SetKey, ImageItems] = {}
+    for item in items:
+        key = item_set_key(item, set_name)
+        buckets.setdefault(key, []).append(item)
+    return sorted(buckets.items(), key=lambda pair: set_key_sort_value(pair[0]))
+
+
+def partition_items(
+    items: ImageItems,
+    first_set: str | None = None,
+    second_set: str | None = None,
+    *,
+    report: bool = False,
+) -> list[ImageItems]:
+    if second_set is not None and first_set is None:
+        raise ValueError("--second-set requires --first-set")
+    if first_set is None:
+        return [items] if items else []
+
+    first_level = split_items_by_set(items, first_set)
+    if report:
+        print(f"total first-level sets: {len(first_level)}")
+
+    if second_set is None:
+        if report:
+            for first_key, subset in first_level:
+                print(f"set {first_set}={format_set_key(first_key)}: {len(subset)} images")
+        return [subset for _, subset in first_level]
+
+    partitions: list[ImageItems] = []
+    partition_labels: list[str] = []
+    for first_key, subset in first_level:
+        for second_key, subsubset in split_items_by_set(subset, second_set):
+            partitions.append(subsubset)
+            if report:
+                partition_labels.append(
+                    f"{first_set}={format_set_key(first_key)} {second_set}={format_set_key(second_key)}"
+                )
+
+    if report:
+        print(f"total second-level sets: {len(partitions)}")
+        for label, subset in zip(partition_labels, partitions):
+            print(f"set {label}: {len(subset)} images")
+    return partitions
+
+
 def scan_images(root: Path, hash_size: int) -> ImageItems:
     items: ImageItems = []
     total = 0
@@ -95,8 +181,8 @@ def scan_images(root: Path, hash_size: int) -> ImageItems:
             total += 1
         except Exception as exc:
             skipped += 1
-            print(f"[dedup] skipped {path}: {exc}", file=sys.stderr)
-    print(f"[dedup] scanned {total} images ({skipped} skipped)")
+            print(f"skipped {path}: {exc}", file=sys.stderr)
+    print(f"scanned {total} images ({skipped} skipped)")
     items.sort(key=lambda x: x[1])
     return items
 
@@ -112,10 +198,26 @@ def group_by_hash(items: list[ImageItem], threshold: int) -> list[list[int]]:
     return uf_groups(parent)
 
 
+def components_in_sets(
+    items: ImageItems,
+    threshold: int,
+    first_set: str | None = None,
+    second_set: str | None = None,
+) -> list[list[ImageItem]]:
+    components: list[list[ImageItem]] = []
+    for subset in partition_items(items, first_set=first_set, second_set=second_set):
+        for comp in group_by_hash(subset, threshold):
+            components.append([subset[i] for i in comp])
+    components.sort(key=lambda group: group[0][1])
+    return components
+
+
 def evaluate_threshold(
     items: ImageItems,
     dhash_threshold: int,
     min_group_size: int,
+    first_set: str | None = None,
+    second_set: str | None = None,
 ) -> ThresholdStats:
     all_groups: list[list[ImageItem]] = []
     total_images = len(items)
@@ -123,11 +225,15 @@ def evaluate_threshold(
     duplicate_groups = 0
     duplicate_images = 0
 
-    components = group_by_hash(items, dhash_threshold)
+    components = components_in_sets(
+        items,
+        threshold=dhash_threshold,
+        first_set=first_set,
+        second_set=second_set,
+    )
     unique_count = len(components)
 
-    for comp in components:
-        group = [items[i] for i in comp]
+    for group in components:
         if len(group) >= 2:
             duplicate_groups += 1
             duplicate_images += len(group)
@@ -150,10 +256,14 @@ def build_groups(
     dhash_size: int,
     dhash_threshold: int,
     min_group_size: int,
+    first_set: str | None = None,
+    second_set: str | None = None,
 ) -> list[list[ImageItem]]:
     items = scan_images(root, dhash_size)
     return evaluate_threshold(
         items=items,
         dhash_threshold=dhash_threshold,
         min_group_size=min_group_size,
+        first_set=first_set,
+        second_set=second_set,
     ).groups

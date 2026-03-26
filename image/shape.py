@@ -107,13 +107,17 @@ def reshape_file(
     size: int | None,
     ratios: list[tuple[int, int]] | None,
     length_multiple: int | None,
-) -> None:
+) -> tuple[str, tuple[int, int], tuple[int, int]] | None:
+    out_path = out_dir / path.name
+    if out_path.exists() and out_path.resolve() != path.resolve():
+        return "exists", (0, 0), (0, 0)
     try:
         with Image.open(path) as im:
             im = ImageOps.exif_transpose(im)
             w, h = im.size
             if w <= 0 or h <= 0:
                 return
+            original_size = (w, h)
 
             if mode == "side":
                 if side == "width":
@@ -124,20 +128,22 @@ def reshape_file(
                     target_w = max(1, int(round(size * (w / h))))
             else:
                 target_w, target_h = pick_ratio_size(w, h, ratios or [], length_multiple or 1)
+            target_size = (target_w, target_h)
 
-            out_path = out_dir / path.name
             if (target_w, target_h) == (w, h):
                 if out_path.resolve() == path.resolve():
-                    return
+                    return "ok", original_size, target_size
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(path, out_path)
-                return
+                return "ok", original_size, target_size
 
             new = im.resize((target_w, target_h), Image.LANCZOS)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             save_image(new, out_path)
+            return "ok", original_size, target_size
     except Exception as e:
         print(f"skip {path} ({e})")
+        return None
 
 
 def main() -> None:
@@ -193,8 +199,9 @@ def main() -> None:
         and f.suffix.lower() in IMAGE_EXTS
         and TMP_MARKER not in f.name
     ]
-    for f in files:
-        reshape_file(
+    total = len(files)
+    for i, f in enumerate(files, start=1):
+        result = reshape_file(
             f,
             out,
             args.mode,
@@ -203,6 +210,13 @@ def main() -> None:
             ratios,
             length_multiple,
         )
+        if result is None:
+            continue
+        status, (current_w, current_h), (new_w, new_h) = result
+        if status == "exists":
+            print(f"{i}/{total}: {f}. skip existing output")
+            continue
+        print(f"{i}/{total}: {f}. {current_w}x{current_h} -> {new_w}x{new_h}")
 
 
 if __name__ == "__main__":
