@@ -11,13 +11,19 @@ from PIL import Image
 from .grouping import (
     ImageItem,
     ImageItems,
+    ImagePartition,
     SET_CHOICES,
     ThresholdStats,
+    build_partitions,
+    combine_threshold_stats,
+    components_for_items,
     components_in_sets,
     evaluate_threshold,
     partition_items,
     scan_images,
 )
+
+TARGET_SET_CHOICES: tuple[str, ...] = ("balanced", "weighted")
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,6 +51,12 @@ def parse_args() -> argparse.Namespace:
         choices=SET_CHOICES,
         default=None,
         help="Optional second comparison set applied inside each first-set bucket.",
+    )
+    p.add_argument(
+        "--target-set",
+        choices=TARGET_SET_CHOICES,
+        default="weighted",
+        help='Target allocation mode for set-based auto mode: "balanced" splits evenly, "weighted" follows set image share. Default: weighted',
     )
 
     p.add_argument("--min-group-size", type=int, default=2)
@@ -90,11 +102,8 @@ def find_closest_threshold(
     target: int,
     min_group_size: int,
     max_threshold: int,
-    first_set: str | None = None,
-    second_set: str | None = None,
-) -> tuple[ThresholdStats, list[ThresholdStats]]:
+) -> ThresholdStats:
     cache: dict[int, ThresholdStats] = {}
-    trials: list[ThresholdStats] = []
 
     def evaluate(threshold: int) -> ThresholdStats:
         cached = cache.get(threshold)
@@ -104,11 +113,10 @@ def find_closest_threshold(
             items=items,
             dhash_threshold=threshold,
             min_group_size=min_group_size,
-            first_set=first_set,
-            second_set=second_set,
         )
         cache[threshold] = stats
-        trials.append(stats)
+        delta = abs(stats.unique_count - target)
+        print(f"threshold eval: threshold={threshold} unique={stats.unique_count} delta={delta}")
         return stats
 
     lo = 0
@@ -129,11 +137,179 @@ def find_closest_threshold(
     best = candidates[0]
     for candidate in candidates[1:]:
         best = choose_better(best, candidate, target)
-    return best, trials
+    best_delta = abs(best.unique_count - target)
+    print(f"settled: threshold={best.threshold} unique={best.unique_count} delta={best_delta}")
+    return best
+
+
+def allocate_partition_targets(
+    partitions: list[ImagePartition],
+    target: int,
+    target_mode: str,
+) -> list[int]:
+    if not partitions:
+        raise ValueError("--target requires at least one image.")
+
+    total_images = sum(len(partition.items) for partition in partitions)
+    partition_count = len(partitions)
+    if target < partition_count:
+        raise ValueError(
+            f"--target must be >= the number of active partitions ({partition_count}) for this input."
+        )
+    if target > total_images:
+        raise ValueError(f"--target must be <= total images ({total_images}) for this input.")
+
+    if target_mode == "balanced":
+        raw_targets = [target / partition_count] * partition_count
+    elif target_mode == "weighted":
+        raw_targets = [(target * len(partition.items)) / total_images for partition in partitions]
+    else:
+        raise ValueError(f"unsupported target mode: {target_mode}")
+
+    allocated = [
+        max(1, min(len(partition.items), int(raw_target)))
+        for partition, raw_target in zip(partitions, raw_targets)
+    ]
+    remaining = target - sum(allocated)
+
+    while remaining > 0:
+        candidates = [i for i, partition in enumerate(partitions) if allocated[i] < len(partition.items)]
+        if not candidates:
+            raise ValueError("unable to distribute target across partitions.")
+        best = max(
+            candidates,
+            key=lambda i: (
+                raw_targets[i] - allocated[i],
+                len(partitions[i].items) - allocated[i],
+                -i,
+            ),
+        )
+        allocated[best] += 1
+        remaining -= 1
+
+    while remaining < 0:
+        candidates = [i for i in range(partition_count) if allocated[i] > 1]
+        if not candidates:
+            raise ValueError("unable to reduce target within partition bounds.")
+        best = max(
+            candidates,
+            key=lambda i: (
+                allocated[i] - raw_targets[i],
+                allocated[i] - 1,
+                -i,
+            ),
+        )
+        allocated[best] -= 1
+        remaining += 1
+
+    return allocated
+
+
+def find_partition_targets(
+    partitions: list[ImagePartition],
+    target: int,
+    min_group_size: int,
+    max_threshold: int,
+    target_mode: str,
+) -> tuple[ThresholdStats, list[tuple[ImagePartition, int]]]:
+    allocated_targets = allocate_partition_targets(partitions, target, target_mode)
+    partition_stats: list[ThresholdStats] = []
+    partition_thresholds: list[tuple[ImagePartition, int]] = []
+    total_sets = len(partitions)
+
+    for index, (partition, partition_target) in enumerate(zip(partitions, allocated_targets), start=1):
+        print(f"[{index}/{total_sets}]: {len(partition.items)} images target {partition_target}")
+        best = find_closest_threshold(
+            items=partition.items,
+            target=partition_target,
+            min_group_size=min_group_size,
+            max_threshold=max_threshold,
+        )
+        threshold = best.threshold
+        if threshold is None:
+            raise ValueError(f"missing threshold for partition {partition.label}")
+        partition_stats.append(best)
+        partition_thresholds.append((partition, threshold))
+
+    return combine_threshold_stats(partition_stats), partition_thresholds
+
+
+def select_partition_keepers(
+    partition: ImagePartition,
+    threshold: int,
+    weights: QualityWeights,
+) -> list[ImageItem]:
+    components = components_for_items(partition.items, threshold)
+    return select_representative_components(components, weights)
+
+
+def copy_keeper_batch(output: Path, keepers: list[ImageItem]) -> tuple[int, int]:
+    output.mkdir(parents=True, exist_ok=True)
+    copied_images = 0
+    copied_captions = 0
+
+    for src_path, rel, *_ in keepers:
+        dst_image = output / rel
+        dst_image.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src_path, dst_image)
+        copied_images += 1
+
+        src_caption = src_path.with_suffix(".txt")
+        if src_caption.is_file():
+            dst_caption = output / Path(rel).with_suffix(".txt")
+            dst_caption.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_caption, dst_caption)
+            copied_captions += 1
+
+    return copied_images, copied_captions
+
+
+def process_partition_targets_to_output(
+    partitions: list[ImagePartition],
+    target: int,
+    min_group_size: int,
+    max_threshold: int,
+    target_mode: str,
+    output: Path,
+    weights: QualityWeights,
+) -> tuple[ThresholdStats, int, int, int]:
+    allocated_targets = allocate_partition_targets(partitions, target, target_mode)
+    partition_stats: list[ThresholdStats] = []
+    total_sets = len(partitions)
+    total_keepers = 0
+    copied_images = 0
+    copied_captions = 0
+
+    for index, (partition, partition_target) in enumerate(zip(partitions, allocated_targets), start=1):
+        print(f"[{index}/{total_sets}]: {len(partition.items)} images target {partition_target}")
+        best = find_closest_threshold(
+            items=partition.items,
+            target=partition_target,
+            min_group_size=min_group_size,
+            max_threshold=max_threshold,
+        )
+        threshold = best.threshold
+        if threshold is None:
+            raise ValueError(f"missing threshold for partition {partition.label}")
+        partition_stats.append(best)
+
+        print(f"[{index}/{total_sets}]: selecting keepers")
+        keepers = select_partition_keepers(partition, threshold, weights)
+        total_keepers += len(keepers)
+
+        batch_images, batch_captions = copy_keeper_batch(output, keepers)
+        copied_images += batch_images
+        copied_captions += batch_captions
+        print(f"[{index}/{total_sets}]: copied {batch_images} images {batch_captions} captions")
+
+    return combine_threshold_stats(partition_stats), total_keepers, copied_images, copied_captions
 
 
 def print_stats(stats: ThresholdStats, min_group_size: int) -> None:
-    print(f"threshold: {stats.threshold}")
+    if stats.threshold is None:
+        print("threshold: per-partition")
+    else:
+        print(f"threshold: {stats.threshold}")
     print(f"total images: {stats.total_images}")
     print(f"unique images: {stats.unique_count}")
     print(f"removable duplicates: {stats.total_images - stats.unique_count}")
@@ -317,12 +493,9 @@ def image_quality(path: Path) -> ImageQuality:
     )
 
 
-def select_representative_images(
-    items: ImageItems,
-    threshold: int,
+def select_representative_components(
+    components: list[list[ImageItem]],
     weights: QualityWeights,
-    first_set: str | None = None,
-    second_set: str | None = None,
 ) -> list[ImageItem]:
     keepers: list[ImageItem] = []
     quality_cache: dict[Path, ImageQuality] = {}
@@ -336,15 +509,9 @@ def select_representative_images(
         quality_cache[path] = score
         return score
 
-    if not items:
+    if not components:
         return keepers
 
-    components = components_in_sets(
-        items,
-        threshold=threshold,
-        first_set=first_set,
-        second_set=second_set,
-    )
     for group in components:
         if len(group) == 1:
             keepers.append(group[0])
@@ -375,27 +542,28 @@ def select_representative_images(
     return keepers
 
 
-def copy_dedup_output(output: Path, keepers: list[ImageItem]) -> None:
-    output.mkdir(parents=True, exist_ok=True)
-    copied_images = 0
-    copied_captions = 0
+def select_representative_images(
+    items: ImageItems,
+    threshold: int,
+    weights: QualityWeights,
+    first_set: str | None = None,
+    second_set: str | None = None,
+) -> list[ImageItem]:
+    components = components_in_sets(
+        items,
+        threshold=threshold,
+        first_set=first_set,
+        second_set=second_set,
+    )
+    return select_representative_components(components, weights)
 
-    for src_path, rel, *_ in keepers:
-        dst_image = output / rel
-        dst_image.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_path, dst_image)
-        copied_images += 1
 
-        src_caption = src_path.with_suffix(".txt")
-        if src_caption.is_file():
-            dst_caption = output / Path(rel).with_suffix(".txt")
-            dst_caption.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_caption, dst_caption)
-            copied_captions += 1
-
+def copy_dedup_output(output: Path, keepers: list[ImageItem]) -> tuple[int, int]:
+    copied_images, copied_captions = copy_keeper_batch(output, keepers)
     print(f"copied unique images: {copied_images}")
     print(f"copied captions: {copied_captions}")
     print(f"output: {output}")
+    return copied_images, copied_captions
 
 
 def main() -> None:
@@ -436,6 +604,7 @@ def main() -> None:
         sys.exit(f"ERROR: --dhash-threshold must be in [0, {max_threshold}] for --dhash-size {args.dhash_size}.")
 
     items = scan_images(root, args.dhash_size)
+    partitions = build_partitions(items, args.first_set, args.second_set, report=False)
     if args.first_set is None:
         print("comparison sets: global")
     elif args.second_set is None:
@@ -443,21 +612,43 @@ def main() -> None:
     else:
         print(f"comparison sets: first={args.first_set} second={args.second_set}")
     partition_items(items, args.first_set, args.second_set, report=True)
+    selected_keepers: int | None = None
+    copied_images: int | None = None
+    copied_captions: int | None = None
     if args.target is not None:
-        best, trials = find_closest_threshold(
-            items=items,
-            target=args.target,
-            min_group_size=args.min_group_size,
-            max_threshold=max_threshold,
-            first_set=args.first_set,
-            second_set=args.second_set,
-        )
+        target_mode = args.target_set if args.first_set is not None else "weighted"
         print(f"auto target unique: {args.target}")
-        for trial in trials:
-            delta = abs(trial.unique_count - args.target)
-            print(f"auto tried threshold={trial.threshold} unique={trial.unique_count} delta={delta}")
-        print(f"auto tried {len(trials)} thresholds")
-        stats = best
+        if args.first_set is not None:
+            print(f"auto target sets: {args.target_set}")
+        if output is not None:
+            print(
+                "quality weights: "
+                f"sharpness={weights.sharpness:g} "
+                f"exposure={weights.exposure:g} "
+                f"noise={weights.noise:g} "
+                f"artifact={weights.artifact:g}"
+            )
+        try:
+            if output is not None:
+                stats, selected_keepers, copied_images, copied_captions = process_partition_targets_to_output(
+                    partitions=partitions,
+                    target=args.target,
+                    min_group_size=args.min_group_size,
+                    max_threshold=max_threshold,
+                    target_mode=target_mode,
+                    output=output,
+                    weights=weights,
+                )
+            else:
+                stats, _ = find_partition_targets(
+                    partitions=partitions,
+                    target=args.target,
+                    min_group_size=args.min_group_size,
+                    max_threshold=max_threshold,
+                    target_mode=target_mode,
+                )
+        except ValueError as exc:
+            sys.exit(f"ERROR: {exc}")
     else:
         stats = evaluate_threshold(
             items=items,
@@ -471,6 +662,17 @@ def main() -> None:
     if output is None:
         return
 
+    if args.target is not None:
+        if selected_keepers is not None and selected_keepers != stats.unique_count:
+            print(
+                f"warning: selected keepers ({selected_keepers}) != unique images ({stats.unique_count})",
+                file=sys.stderr,
+            )
+        print(f"copied unique images: {copied_images or 0}")
+        print(f"copied captions: {copied_captions or 0}")
+        print(f"output: {output}")
+        return
+
     print(
         "quality weights: "
         f"sharpness={weights.sharpness:g} "
@@ -478,6 +680,8 @@ def main() -> None:
         f"noise={weights.noise:g} "
         f"artifact={weights.artifact:g}"
     )
+    if stats.threshold is None:
+        sys.exit("ERROR: missing threshold for representative image selection.")
     keepers = select_representative_images(
         items=items,
         threshold=stats.threshold,

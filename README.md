@@ -129,12 +129,22 @@ Notes
 - Useful args
   - `--position` (`start` or `end`)
 
+#### `image.tag.group`
+- Features
+  - Reads comma-separated tags from `.txt` captions beside each image
+  - Groups image + caption pairs by caption tag count
+  - Moves each pair into `<input>/<caption_count>_<image_count_in_bucket>`
+  - Example folder names: `0_12`, `3_57`, `8_4`
+- Example
+  - `python -m image.tag.group --input "images"`
+
 #### `image.dedup`
 - Features
   - By default compares the whole image set across resolutions, then clusters with dHash
   - Optional `--first-set` / `--second-set` limits comparisons to matching `height`, `width`, `longest`, `shortest`, or `ratio`
   - Prints summary stats, including estimated unique images after dedup
   - Optional auto mode searches threshold for unique count closest to a target
+  - When auto mode is used with sets, target analysis runs per set and allocates the target with `--target-set balanced|weighted` (default: `weighted`)
   - Optional output mode copies deduplicated images and matching `.txt` captions
   - In output mode, selects one keeper per duplicate group using weighted quality scoring:
     - sharpness score (higher is better)
@@ -145,12 +155,14 @@ Notes
   - `python -m image.dedup.main --input "images" --dhash-threshold 8`
   - `python -m image.dedup.main --input "images" --first-set ratio --second-set longest --dhash-threshold 8`
   - `python -m image.dedup.main --input "images" --target 500`
+  - `python -m image.dedup.main --input "images" --target 500 --first-set ratio --target-set balanced`
   - `python -m image.dedup.main --input "images" --target 500 --output "images_dedup"`
   - `python -m image.dedup.main --input "images" --output "images_dedup" --sharpness-weight 1.0 --exposure-weight 0.4 --noise-weight 0.3 --artifact-weight 0.55`
 - Useful args
   - `--input`, `-o/--output`
   - `--dhash-size`, `--dhash-threshold`
   - `--target`
+  - `--target-set` (default `weighted`; only relevant with `--target` and sets)
   - `--first-set`, `--second-set` (`--second-set` requires `--first-set`)
   - `--min-group-size`
   - `--sharpness-weight` (default `1.0`)

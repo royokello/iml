@@ -22,12 +22,18 @@ SET_CHOICES: tuple[str, ...] = ("height", "width", "longest", "shortest", "ratio
 
 @dataclass(frozen=True)
 class ThresholdStats:
-    threshold: int
+    threshold: int | None
     total_images: int
     unique_count: int
     duplicate_groups: int
     duplicate_images: int
     groups: list[list[ImageItem]]
+
+
+@dataclass(frozen=True)
+class ImagePartition:
+    label: str
+    items: ImageItems
 
 
 def uf_init(size: int) -> tuple[list[int], list[int]]:
@@ -126,6 +132,62 @@ def split_items_by_set(items: ImageItems, set_name: str) -> list[tuple[SetKey, I
     return sorted(buckets.items(), key=lambda pair: set_key_sort_value(pair[0]))
 
 
+def partition_label(
+    first_set: str | None,
+    first_key: SetKey | None = None,
+    second_set: str | None = None,
+    second_key: SetKey | None = None,
+) -> str:
+    if first_set is None:
+        return "global"
+    if second_set is None or second_key is None:
+        return f"{first_set}={format_set_key(first_key)}"
+    return f"{first_set}={format_set_key(first_key)} {second_set}={format_set_key(second_key)}"
+
+
+def build_partitions(
+    items: ImageItems,
+    first_set: str | None = None,
+    second_set: str | None = None,
+    *,
+    report: bool = False,
+) -> list[ImagePartition]:
+    if second_set is not None and first_set is None:
+        raise ValueError("--second-set requires --first-set")
+    if first_set is None:
+        return [ImagePartition(label="global", items=items)] if items else []
+
+    first_level = split_items_by_set(items, first_set)
+    if report:
+        print(f"total first-level sets: {len(first_level)}")
+
+    if second_set is None:
+        partitions = [
+            ImagePartition(label=partition_label(first_set, first_key), items=subset)
+            for first_key, subset in first_level
+        ]
+        if report:
+            for partition in partitions:
+                print(f"set {partition.label}: {len(partition.items)} images")
+        return partitions
+
+    partitions: list[ImagePartition] = []
+    for first_key, subset in first_level:
+        for second_key, subsubset in split_items_by_set(subset, second_set):
+            partitions.append(
+                ImagePartition(
+                    label=partition_label(first_set, first_key, second_set, second_key),
+                    items=subsubset,
+                )
+            )
+
+    if report:
+        print(f"total second-level sets: {len(partitions)}")
+        for partition in partitions:
+            print(f"set {partition.label}: {len(partition.items)} images")
+    return partitions
+
+
 def partition_items(
     items: ImageItems,
     first_set: str | None = None,
@@ -133,36 +195,7 @@ def partition_items(
     *,
     report: bool = False,
 ) -> list[ImageItems]:
-    if second_set is not None and first_set is None:
-        raise ValueError("--second-set requires --first-set")
-    if first_set is None:
-        return [items] if items else []
-
-    first_level = split_items_by_set(items, first_set)
-    if report:
-        print(f"total first-level sets: {len(first_level)}")
-
-    if second_set is None:
-        if report:
-            for first_key, subset in first_level:
-                print(f"set {first_set}={format_set_key(first_key)}: {len(subset)} images")
-        return [subset for _, subset in first_level]
-
-    partitions: list[ImageItems] = []
-    partition_labels: list[str] = []
-    for first_key, subset in first_level:
-        for second_key, subsubset in split_items_by_set(subset, second_set):
-            partitions.append(subsubset)
-            if report:
-                partition_labels.append(
-                    f"{first_set}={format_set_key(first_key)} {second_set}={format_set_key(second_key)}"
-                )
-
-    if report:
-        print(f"total second-level sets: {len(partitions)}")
-        for label, subset in zip(partition_labels, partitions):
-            print(f"set {label}: {len(subset)} images")
-    return partitions
+    return [partition.items for partition in build_partitions(items, first_set, second_set, report=report)]
 
 
 def scan_images(root: Path, hash_size: int) -> ImageItems:
@@ -198,6 +231,14 @@ def group_by_hash(items: list[ImageItem], threshold: int) -> list[list[int]]:
     return uf_groups(parent)
 
 
+def components_for_items(items: ImageItems, threshold: int) -> list[list[ImageItem]]:
+    components: list[list[ImageItem]] = []
+    for comp in group_by_hash(items, threshold):
+        components.append([items[i] for i in comp])
+    components.sort(key=lambda group: group[0][1])
+    return components
+
+
 def components_in_sets(
     items: ImageItems,
     threshold: int,
@@ -205,9 +246,8 @@ def components_in_sets(
     second_set: str | None = None,
 ) -> list[list[ImageItem]]:
     components: list[list[ImageItem]] = []
-    for subset in partition_items(items, first_set=first_set, second_set=second_set):
-        for comp in group_by_hash(subset, threshold):
-            components.append([subset[i] for i in comp])
+    for partition in build_partitions(items, first_set=first_set, second_set=second_set):
+        components.extend(components_for_items(partition.items, threshold))
     components.sort(key=lambda group: group[0][1])
     return components
 
@@ -248,6 +288,33 @@ def evaluate_threshold(
         duplicate_groups=duplicate_groups,
         duplicate_images=duplicate_images,
         groups=all_groups,
+    )
+
+
+def combine_threshold_stats(stats_list: list[ThresholdStats]) -> ThresholdStats:
+    if not stats_list:
+        return ThresholdStats(
+            threshold=None,
+            total_images=0,
+            unique_count=0,
+            duplicate_groups=0,
+            duplicate_images=0,
+            groups=[],
+        )
+
+    first_threshold = stats_list[0].threshold
+    threshold = first_threshold if all(stats.threshold == first_threshold for stats in stats_list) else None
+    groups: list[list[ImageItem]] = []
+    for stats in stats_list:
+        groups.extend(stats.groups)
+    groups.sort(key=lambda group: group[0][1])
+    return ThresholdStats(
+        threshold=threshold,
+        total_images=sum(stats.total_images for stats in stats_list),
+        unique_count=sum(stats.unique_count for stats in stats_list),
+        duplicate_groups=sum(stats.duplicate_groups for stats in stats_list),
+        duplicate_images=sum(stats.duplicate_images for stats in stats_list),
+        groups=groups,
     )
 
 
