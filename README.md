@@ -28,6 +28,7 @@ Install dependencies
 
 Notes
 - Some modules expect CUDA (e.g., `video.loop`, YOLO inference/training).
+- If you run into PyTorch GPU memory-caching issues, set `PYTORCH_NO_CUDA_MEMORY_CACHING=1`.
 - FFmpeg/FFprobe binaries are required by `video.group`, `video.loop`, and `video.quality`.
 
 ## Groups
