@@ -224,10 +224,108 @@ Notes
 
 ### Flux 2 Klein 4b 
 
+#### `flux_2_klein_4b.train`
+- Current scope
+  - Early scaffold for the Flux 2 Klein 4B training flow
+  - Loads the tokenizer and text encoder from `<root>/flux_2_klein_4b/base`
+  - Encodes captions from a local image-caption dataset into `prompt_embeds` and `text_ids`
+  - Keeps text encodings on CPU while the text encoder is active, then frees the text encoder and moves the encodings to VRAM
+  - Loads the denoiser from `<root>/flux_2_klein_4b/base/transformer`
+  - Uses text encoder quantization args from the CLI
+  - Uses fixed denoiser quantization `int4 / fp16 / block_size 64`
+  - Prints encoded text memory size in MB
+- Current CLI
+  - `--root`
+  - `--dataset`
+  - `--text-quantization-precision` (default: `int8`)
+  - `--text-scale-precision` (default: `fp16`)
+  - `--text-block-size` (default: `128`)
+- Example
+  - `python -m flux_2_klein_4b.train --root "/models/flux" --dataset "/data/flux_dataset"`
+
+#### Flux 2 Klein 4b Fine-Tuning Guidance
+- Black Forest Labs guidance for LoRA
+  - Learning rate: `8e-5` to `1e-4`
+  - Style training steps: `1500-2500`
+  - Character training steps: `1500-3000`
+  - Start at `512px`, then move higher later
+- Official AI-Toolkit example settings
+  - `batch_size: 1`
+  - `optimizer: "adamw8bit"`
+  - `quantize: true`
+  - `content_or_style: "balanced"`
+  - Dataset resolutions should be treated as buckets, not one fixed size
+- Timestep settings in official examples
+  - Default example: `timestep_type: "weighted"`
+  - Graphic Impressions example: `timestep_type: "shift"`
+
+#### Flux 2 Klein 4b Dataset
+- Current expected format
+  - A flat folder containing images and matching caption files
+  - Supported image extensions: `.png`, `.jpg`, `.jpeg`, `.webp`
+  - Each image must have a `.txt` caption with the same basename
+- Example
+  - `000001.png`
+  - `000001.txt`
+  - `000002.jpg`
+  - `000002.txt`
+- Notes
+  - The training module currently reads the captions as raw text and encodes them during the dataset step
+  - Missing caption files raise an error
+  - This README section only covers the features currently implemented in `train.py`
+
+#### Flux 2 Klein 4b Dataset Guidance
+- Style datasets
+  - Recommended sample count: `20-40` images
+  - Use a consistent trigger word in every caption
+  - Describe the visible subject, composition, lighting, clothing, pose, and scene content
+  - Do not explicitly name the style in every caption if the goal is to teach the style from the images themselves
+  - Keep the images varied so the model learns the style instead of memorizing one composition
+- Character datasets
+  - Recommended sample count: `10-15` images
+  - Use a consistent character trigger word or name in every caption
+  - Caption stable identity traits directly: hair, face, outfit, body features, accessories, and other distinguishing details
+  - Vary pose, camera angle, framing, background, and lighting across the dataset
+  - Keep the identity consistent across images so the captions map to one character rather than a mixed concept
+
+#### `flux_2_klein_4b.quantize.denoiser`
+- Features
+  - Quantizes the Flux 2 Klein 4B denoiser transformer weights to `fp16`, `int8`, or `int4`
+  - Writes quantized output under `<root>/flux_2_klein_4b/quant/transformer`
+  - Uses `<root>/flux_2_klein_4b/base/transformer/diffusion_pytorch_model.safetensors` by default
+  - Accepts `--input` to quantize from an external `.safetensors` checkpoint while still using the root transformer config and root output directory
+- Examples
+  - `python -m flux_2_klein_4b.quantize.denoiser --root "/models/flux"`
+  - `python -m flux_2_klein_4b.quantize.denoiser --root "/models/flux" --input "/external/transformer/diffusion_pytorch_model.safetensors"`
+  - `python -m flux_2_klein_4b.quantize.denoiser --root "/models/flux" --input "/external/transformer/custom_name.safetensors" --quantization-precision int4 --scale-precision fp16 --block-size 128`
+- Useful args
+  - `--root`
+  - `--input`
+  - `--quantization-precision`
+  - `--scale-precision`
+  - `--block-size`
+  - `--target-linear-names`
+
 ### Utils
 
 #### `utils.stages`
 - Feature: `find_latest_stage(project)` returns the highest `stage_<N>` folder
+
+#### `utils.eval_dequant`
+- Features
+  - Benchmarks payload-to-`fp16` conversion only for the Flux 2 Klein 4B denoiser linear tensor shapes
+  - Covers fixed `int4` and `int8` cases, `fp16` scales, and block sizes `32`, `64`, and `128`
+  - Compares reference dequantization against the prebuilt CUDA full-dequant kernels:
+    - `int4_reference_dequant`
+    - `int4_cuda_dequant_kernel`
+    - `int8_reference_dequant`
+    - `int8_cuda_dequant_kernel`
+  - Validates each method against the matching reference path and reports `max_abs_diff` plus pass/fail status
+  - Prints per-case timing while running, then prints a final full table, per-case winners, and per-method averages
+  - Loads prebuilt `int4_dequant_cuda` and `int8_dequant_cuda` extensions from `utils/cuda/*_dequant`; build them first before running
+  - Uses fixed constants in the file; there are no CLI args
+- Example
+  - `python -m utils.eval_dequant`
 
 #### `utils.cap.label`
 - Features
@@ -235,3 +333,90 @@ Notes
 - Example
   - `python -m utils.cap.label --input "C:\\loops" --port 7860` then open `http://localhost:7860`
 
+
+#### `utils.cuda.int4_dequant`
+- Features
+  - CUDA full dequant kernel for packed signed `int4 -> fp16`
+  - Uses a `256`-entry byte LUT stored in CUDA constant memory, where each byte decodes to one `half2`
+  - Multiplies decoded values by `fp16` per-block scales inside the kernel
+  - Tuned for GTX 1060 6GB / GP106 / compute capability `6.1`
+  - Supports block sizes `32`, `64`, and `128`
+- Files
+  - Header: [int4_dequant_lut.cuh](utils/cuda/int4_dequant/int4_dequant_lut.cuh)
+  - CUDA source: [int4_dequant_lut.cu](utils/cuda/int4_dequant/int4_dequant_lut.cu)
+  - Python extension shim: [int4_dequant_extension.cpp](utils/cuda/int4_dequant/int4_dequant_extension.cpp)
+  - Build script: [setup.py](utils/cuda/int4_dequant/setup.py)
+- Build
+  - Open a shell with your venv active and CUDA/MSVC available
+  - Build the prebuilt CUDA Python module in place:
+```bash
+cd utils/cuda/int4_dequant
+python setup.py build_ext --inplace
+```
+  - This build path uses `BuildExtension.with_options(use_ninja=False)`, so it does not require `ninja`
+- Python usage after build
+```python
+import torch
+import int4_dequant_cuda
+
+packed = torch.empty((1024,), device="cuda", dtype=torch.uint8)
+scales = torch.empty((64,), device="cuda", dtype=torch.float16)
+out = torch.empty((2048,), device="cuda", dtype=torch.float16)
+int4_dequant_cuda.dequantize_int4_fp16(packed, scales, out, out.numel(), 32)
+```
+- Public API
+  - `iml::cuda::int4_dequant::init_byte_to_half2_lut(cudaStream_t stream = nullptr)`
+    - Initializes the constant-memory LUT once before dequant launches
+  - `iml::cuda::int4_dequant::launch_byte_lut_dequant(const uint8_t* packed, const __half* scales, __half* out, int64_t original_numel, int block_size, cudaStream_t stream = nullptr)`
+    - Launches the full dequant kernel
+- Input / output
+  - `packed` is a packed signed-int4 buffer with two values per byte, using the same two's-complement nibble encoding as `utils.quantize`
+  - `scales` is a contiguous CUDA `fp16` tensor with one scale per quantization block
+  - `out` must point to a device buffer large enough for `original_numel` `fp16` values
+  - `original_numel` is the number of decoded scalar outputs, not the number of packed bytes
+- Notes
+  - This module performs full dequant for the `fp16` scale-precision case only.
+  - The LUT must be initialized before the first dequant launch in the current CUDA context.
+  - The kernel assumes CUDA device pointers for `packed`, `scales`, and `out`.
+
+#### `utils.cuda.int8_dequant`
+- Features
+  - CUDA full dequant kernel for plain `int8 -> fp16`
+  - Reads contiguous `int8` values directly; there is no packed payload decode stage
+  - Multiplies values by `fp16` per-block scales inside the kernel
+  - Tuned for GTX 1060 6GB / GP106 / compute capability `6.1`
+  - Supports block sizes `32`, `64`, and `128`
+- Files
+  - Header: [int8_dequant.cuh](utils/cuda/int8_dequant/int8_dequant.cuh)
+  - CUDA source: [int8_dequant.cu](utils/cuda/int8_dequant/int8_dequant.cu)
+  - Python extension shim: [int8_dequant_extension.cpp](utils/cuda/int8_dequant/int8_dequant_extension.cpp)
+  - Build script: [setup.py](utils/cuda/int8_dequant/setup.py)
+- Build
+  - Open a shell with your venv active and CUDA/MSVC available
+  - Build the prebuilt CUDA Python module in place:
+```bash
+cd utils/cuda/int8_dequant
+python setup.py build_ext --inplace
+```
+  - This build path uses `BuildExtension.with_options(use_ninja=False)`, so it does not require `ninja`
+- Python usage after build
+```python
+import torch
+import int8_dequant_cuda
+
+quantized = torch.empty((2048,), device="cuda", dtype=torch.int8)
+scales = torch.empty((64,), device="cuda", dtype=torch.float16)
+out = torch.empty((2048,), device="cuda", dtype=torch.float16)
+int8_dequant_cuda.dequantize_int8_fp16(quantized, scales, out, out.numel(), 32)
+```
+- Public API
+  - `iml::cuda::int8_dequant::launch_int8_dequant(const int8_t* quantized, const __half* scales, __half* out, int64_t original_numel, int block_size, cudaStream_t stream = nullptr)`
+    - Launches the full int8 dequant kernel
+- Input / output
+  - `quantized` is a contiguous CUDA `int8` tensor
+  - `scales` is a contiguous CUDA `fp16` tensor with one scale per quantization block
+  - `out` must point to a device buffer large enough for `original_numel` `fp16` values
+  - `original_numel` is the number of scalar outputs
+- Notes
+  - This module performs full dequant for the `fp16` scale-precision case only.
+  - The kernel assumes CUDA device pointers for `quantized`, `scales`, and `out`.

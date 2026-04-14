@@ -21,8 +21,9 @@
             </div>
             <div id="errorMsg" class="error-message" style="display: none;"></div>
             <div class="help-text">
-                Navigation: ← → (prev/next image) | Page Up/Down (prev/next folder) | Z (toggle zoom) | ↑ ↓ (pan when
-                zoomed) | Mouse wheel (prev/next) | Middle-click (toggle zoom) | <a href="/">Back to Home</a>
+                Navigation: ← → (prev/next image) | Page Up/Down (prev/next folder) | Z (toggle zoom) | F (toggle
+                fullscreen) | ↑ ↓ (pan when zoomed) | Mouse wheel (prev/next) | Middle-click (toggle zoom) | <a
+                    href="/">Back to Home</a>
             </div>
         </div>
 
@@ -33,6 +34,7 @@
                 <video id="videoDisplay" style="display: none;" controls loop autoplay muted></video>
             </div>
             <div id="placeholder" class="loading">Enter a directory path and click Scan to begin</div>
+            <div id="fullscreenHint" class="fullscreen-hint" style="display: none;">Press F or Esc to exit fullscreen</div>
         </div>
 
         <div class="info-bar">
@@ -58,10 +60,12 @@
             imageIndex: 0,
             totalImages: 0,
             zoomed: false,
-            panY: 0
+            panY: 0,
+            fullscreen: false
         };
 
         const elements = {
+            viewerContainer: document.querySelector('.viewer-container'),
             pathInput: document.getElementById('pathInput'),
             scanBtn: document.getElementById('scanBtn'),
             errorMsg: document.getElementById('errorMsg'),
@@ -69,6 +73,7 @@
             videoDisplay: document.getElementById('videoDisplay'),
             imageContainer: document.getElementById('imageContainer'),
             placeholder: document.getElementById('placeholder'),
+            fullscreenHint: document.getElementById('fullscreenHint'),
             folderPath: document.getElementById('folderPath'),
             imageCount: document.getElementById('imageCount'),
             globalCount: document.getElementById('globalCount')
@@ -81,6 +86,12 @@
 
         function hideError() {
             elements.errorMsg.style.display = 'none';
+        }
+
+        function stopVideoPlayback() {
+            elements.videoDisplay.pause();
+            elements.videoDisplay.removeAttribute('src');
+            elements.videoDisplay.load();
         }
 
         async function scanDirectory() {
@@ -140,6 +151,7 @@
             // Reset zoom when changing images
             state.zoomed = false;
             state.panY = 0;
+            stopVideoPlayback();
 
             // Update media source
             const mediaUrl = `/api/view?f=${state.folderIndex}&i=${state.imageIndex}`;
@@ -212,6 +224,14 @@
             state.zoomed = !state.zoomed;
             state.panY = 0;
             updateImageTransform();
+        }
+
+        function toggleFullscreen(force) {
+            const nextValue = typeof force === 'boolean' ? force : !state.fullscreen;
+            state.fullscreen = nextValue;
+            document.body.classList.toggle('viewer-fullscreen', state.fullscreen);
+            elements.viewerContainer.classList.toggle('is-fullscreen', state.fullscreen);
+            elements.fullscreenHint.style.display = state.fullscreen ? 'block' : 'none';
         }
 
         function pan(direction) {
@@ -303,6 +323,12 @@
         });
 
         document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && state.fullscreen) {
+                e.preventDefault();
+                toggleFullscreen(false);
+                return;
+            }
+
             // Don't navigate if typing in input
             if (document.activeElement === elements.pathInput) return;
 
@@ -339,6 +365,11 @@
                 case 'Z':
                     e.preventDefault();
                     toggleZoom();
+                    break;
+                case 'f':
+                case 'F':
+                    e.preventDefault();
+                    toggleFullscreen();
                     break;
             }
         });

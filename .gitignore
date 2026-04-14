@@ -1,5 +1,10 @@
 __pycache__/
 *.pyc
+utils/cuda/**/__pycache__/
+utils/cuda/**/build/
+utils/cuda/**/*.pyd
+utils/cuda/**/*.so
+utils/cuda/**/*.dll
 
 # Environments
 .env

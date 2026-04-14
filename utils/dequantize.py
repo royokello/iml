@@ -19,8 +19,61 @@ Scale storage modes:
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
+import sys
+from functools import lru_cache
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
+
+
+@lru_cache(maxsize=1)
+def _load_prebuilt_int4_dequant_module():
+    module_name = "int4_dequant_cuda"
+    cuda_dir = Path(__file__).resolve().parent / "cuda" / "int4_dequant"
+
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError:
+        pass
+
+    suffixes = importlib.machinery.EXTENSION_SUFFIXES
+    for suffix in suffixes:
+        matches = sorted(cuda_dir.glob(f"{module_name}*{suffix}"))
+        if not matches:
+            continue
+        module_path = matches[0]
+        spec = importlib.util.spec_from_file_location(module_name, module_path)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        spec.loader.exec_module(module)
+        return module
+
+    raise ModuleNotFoundError(
+        "Prebuilt module 'int4_dequant_cuda' not found. Build it first with "
+        "'python setup.py build_ext --inplace' in utils/cuda/int4_dequant."
+    )
+
+
+def _can_use_cuda_int4_fast_path(
+    tensor: torch.Tensor,
+    scales: torch.Tensor,
+    *,
+    quantization_precision: str,
+    scaling_precision: str,
+) -> bool:
+    return (
+        quantization_precision == "int4"
+        and scaling_precision == "fp16"
+        and tensor.is_cuda
+        and scales.is_cuda
+        and tensor.dtype == torch.uint8
+        and scales.dtype == torch.float16
+    )
 
 
 def dequantize_from_block(
@@ -31,6 +84,7 @@ def dequantize_from_block(
     scaling_precision,
     output_dtype: torch.dtype = torch.float16,
     output_shape: tuple[int, ...] | torch.Size | None = None,
+    use_int4_cuda_kernel: bool = True,
 ) -> torch.Tensor:
     """Reconstruct a floating-point tensor from blockwise quantized values.
 
@@ -48,6 +102,8 @@ def dequantize_from_block(
         output_dtype: Desired dtype of the reconstructed tensor.
         output_shape: Expected dense output shape. Required to recover the
             original layout from packed int4 tensors.
+        use_int4_cuda_kernel: Whether to use the prebuilt CUDA int4 fast path
+            when the inputs match the supported fp16-scale CUDA configuration.
 
     Returns:
         The dequantized tensor reshaped to the original layout.
@@ -79,6 +135,25 @@ def dequantize_from_block(
     original_numel = 1
     for dim in original_shape:
         original_numel *= dim
+
+    if use_int4_cuda_kernel and _can_use_cuda_int4_fast_path(
+        tensor,
+        scales,
+        quantization_precision=quantization_precision,
+        scaling_precision=scaling_precision,
+    ):
+        output_fp16 = torch.empty(original_shape, device=tensor.device, dtype=torch.float16)
+        module = _load_prebuilt_int4_dequant_module()
+        module.dequantize_int4_fp16(
+            tensor.contiguous(),
+            scales.contiguous(),
+            output_fp16,
+            original_numel,
+            block_size,
+        )
+        if output_dtype == torch.float16:
+            return output_fp16
+        return output_fp16.to(dtype=output_dtype)
 
     if quantization_precision == "int4":
         packed = tensor.flatten().to(dtype=torch.uint8)

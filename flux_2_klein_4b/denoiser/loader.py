@@ -191,11 +191,14 @@ def load_qwen3_denoiser(
     scale_precision: str | None = "fp16",
     block_size: int | None = 128,
     target_linear_names: tuple[str, ...] = DEFAULT_TARGET_LINEAR_NAMES,
+    checkpoint_path: str | Path | None = None,
     quantized_state_path: str | Path | None = None,
 ) -> Flux2Transformer2DModel:
     model_dir = _resolve_model_dir(path)
     if not model_dir.is_dir():
         raise FileNotFoundError(f"Denoiser directory not found: {model_dir}")
+    if checkpoint_path is not None and quantized_state_path is not None:
+        raise ValueError("checkpoint_path and quantized_state_path are mutually exclusive.")
 
     if quantization_precision is None:
         if scale_precision is not None or block_size is not None:
@@ -213,7 +216,11 @@ def load_qwen3_denoiser(
 
     model = _build_model_from_config(model_dir)
     if quantized_state_path is None:
-        checkpoint_path = model_dir / "diffusion_pytorch_model.safetensors"
+        checkpoint_path = (
+            Path(checkpoint_path).expanduser().resolve()
+            if checkpoint_path is not None
+            else model_dir / "diffusion_pytorch_model.safetensors"
+        )
         if not checkpoint_path.is_file():
             raise FileNotFoundError(f"Denoiser checkpoint not found: {checkpoint_path}")
         _load_local_single_checkpoint(model, checkpoint_path)

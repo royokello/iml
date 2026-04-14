@@ -11,15 +11,30 @@ from safetensors.torch import save_file
 from flux_2_klein_4b.denoiser.loader import DEFAULT_TARGET_LINEAR_NAMES, load_qwen3_denoiser
 
 
-def _resolve_paths(root: str | Path) -> tuple[Path, Path]:
+def _resolve_model_dir(root: str | Path) -> Path:
     root_path = Path(root).expanduser().resolve()
     model_dir = root_path / "flux_2_klein_4b" / "base" / "transformer"
     if not model_dir.is_dir():
         raise FileNotFoundError(f"Denoiser directory not found: {model_dir}")
+    return model_dir
 
+
+def _resolve_output_dir(root: str | Path) -> Path:
+    root_path = Path(root).expanduser().resolve()
     output_dir = root_path / "flux_2_klein_4b" / "quant" / "transformer"
     output_dir.mkdir(parents=True, exist_ok=True)
-    return model_dir, output_dir
+    return output_dir
+
+
+def _resolve_input_checkpoint(model_dir: Path, input_path: str | Path | None) -> Path:
+    if input_path is None:
+        checkpoint_path = model_dir / "diffusion_pytorch_model.safetensors"
+    else:
+        checkpoint_path = Path(input_path).expanduser().resolve()
+
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Denoiser checkpoint not found: {checkpoint_path}")
+    return checkpoint_path
 
 
 def _parse_target_linear_names(value: str | None) -> tuple[str, ...]:
@@ -83,12 +98,15 @@ def _prepare_state_dict(model) -> dict[str, object]:
 def quantize_denoiser(
     root: str | Path,
     *,
+    input_path: str | Path | None = None,
     quantization_precision: str = "int8",
     scale_precision: str = "fp16",
     block_size: int = 128,
     target_linear_names: tuple[str, ...] = DEFAULT_TARGET_LINEAR_NAMES,
 ) -> Path:
-    model_dir, output_dir = _resolve_paths(root)
+    model_dir = _resolve_model_dir(root)
+    input_checkpoint_path = _resolve_input_checkpoint(model_dir, input_path)
+    output_dir = _resolve_output_dir(root)
     output_path = _build_output_path(
         output_dir,
         quantization_precision=quantization_precision,
@@ -101,6 +119,7 @@ def quantize_denoiser(
     load_start = time.perf_counter()
     model = load_qwen3_denoiser(
         model_dir,
+        checkpoint_path=input_checkpoint_path,
         quantization_precision=quantization_precision,
         scale_precision=scale_precision,
         block_size=block_size,
@@ -121,7 +140,8 @@ def quantize_denoiser(
         state_dict,
         str(output_path),
         metadata={
-            "source": str(model_dir),
+            "source": str(input_checkpoint_path),
+            "model_dir": str(model_dir),
             "component": "transformer",
             "quantization_precision": quantization_precision,
             "scale_precision": scale_precision,
@@ -139,7 +159,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         required=True,
-        help="Root folder that contains flux_2_klein_4b/base/transformer.",
+        help="Root folder that contains flux_2_klein_4b/base/transformer and receives quantized output.",
+    )
+    parser.add_argument(
+        "--input",
+        help=(
+            "Optional path to the source denoiser checkpoint file. "
+            "Defaults to <root>/flux_2_klein_4b/base/transformer/diffusion_pytorch_model.safetensors."
+        ),
     )
     parser.add_argument(
         "--quantization-precision",
@@ -172,6 +199,7 @@ def main() -> None:
     args = parse_args()
     output_path = quantize_denoiser(
         args.root,
+        input_path=args.input,
         quantization_precision=args.quantization_precision,
         scale_precision=args.scale_precision,
         block_size=args.block_size,

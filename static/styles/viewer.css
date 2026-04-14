@@ -2,11 +2,27 @@ body {
     margin: 0;
 }
 
+body.viewer-fullscreen {
+    overflow: hidden;
+}
+
 .viewer-container {
     display: flex;
     flex-direction: column;
     height: 100vh;
     background: #002b36;
+}
+
+.viewer-container.is-fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    height: 100vh;
+}
+
+.viewer-container.is-fullscreen .controls,
+.viewer-container.is-fullscreen .info-bar {
+    display: none;
 }
 
 .controls {
@@ -124,6 +140,19 @@ body {
 .loading {
     color: #93a1a1;
     font-style: italic;
+}
+
+.fullscreen-hint {
+    position: absolute;
+    top: 1rem;
+    right: 1rem;
+    padding: 0.45rem 0.7rem;
+    border-radius: 999px;
+    background: rgba(0, 43, 54, 0.72);
+    color: #fdf6e3;
+    font-size: 0.85rem;
+    border: 1px solid rgba(42, 161, 152, 0.35);
+    backdrop-filter: blur(8px);
 }
 
 .help-text {
