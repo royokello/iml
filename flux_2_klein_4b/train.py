@@ -97,7 +97,7 @@ def main() -> None:
                     break
             if parameter_device is None:
                 parameter_device = torch.device("cpu")
-                parameter_dtype = torch.float16
+            parameter_dtype = torch.float32
 
             self.lora_A = torch.nn.Parameter(
                 torch.empty((rank, self.in_features), device=parameter_device, dtype=parameter_dtype)
@@ -143,6 +143,20 @@ def main() -> None:
             lora_state_dict[f"{module_name}.lora_B.weight"] = child.lora_B.detach().cpu()
             lora_state_dict[f"{module_name}.alpha"] = torch.tensor(float(child.alpha), dtype=torch.float32)
         return lora_state_dict
+
+    def print_cuda_memory(stage: str) -> None:
+        torch.cuda.synchronize(device)
+        allocated_mb = torch.cuda.memory_allocated(device) / (1024 * 1024)
+        reserved_mb = torch.cuda.memory_reserved(device) / (1024 * 1024)
+        max_allocated_mb = torch.cuda.max_memory_allocated(device) / (1024 * 1024)
+        max_reserved_mb = torch.cuda.max_memory_reserved(device) / (1024 * 1024)
+        print(
+            f"    [cuda:{stage}] "
+            f"allocated={allocated_mb:.2f} MB "
+            f"reserved={reserved_mb:.2f} MB "
+            f"max_allocated={max_allocated_mb:.2f} MB "
+            f"max_reserved={max_reserved_mb:.2f} MB"
+        )
 
     device = torch.device("cuda")
 
@@ -273,12 +287,15 @@ def main() -> None:
         alpha=INITIAL_LORA_ALPHA,
     )
     transformer.train()
+    transformer.enable_gradient_checkpointing()
     print(f"  * initial lora targets: {', '.join(INITIAL_LORA_TARGET_LINEAR_NAMES)}")
     print(f"  * injected lora modules: {len(lora_module_names)}")
     print(f"  * lora rank/alpha: r={INITIAL_LORA_RANK}, alpha={INITIAL_LORA_ALPHA}")
+    print(f"  * gradient checkpointing: {transformer.is_gradient_checkpointing}")
     trainable_params = sum(parameter.numel() for parameter in transformer.parameters() if parameter.requires_grad)
     print(f"  * trainable params: {trainable_params:,}")
     lora_parameters = [parameter for parameter in transformer.parameters() if parameter.requires_grad]
+    print(f"  * lora parameter dtype: {lora_parameters[0].dtype}")
     optimizer = torch.optim.AdamW(lora_parameters, lr=INITIAL_LORA_LEARNING_RATE)
     print(f"  * optimizer: AdamW lr={INITIAL_LORA_LEARNING_RATE}")
     optimizer_param_mb = sum(parameter.numel() * parameter.element_size() for parameter in lora_parameters) / (
@@ -314,6 +331,8 @@ def main() -> None:
             for sample_index in range(len(image_latents)):
                 print(f" * * sample {sample_index + 1} / {len(image_latents)} ...")
                 optimizer.zero_grad(set_to_none=True)
+                torch.cuda.reset_peak_memory_stats(device)
+                print_cuda_memory("before_forward")
 
                 prompt_embeds_batch = prompt_embeds[sample_index : sample_index + 1]
                 text_ids_batch = text_ids[sample_index : sample_index + 1]
@@ -337,6 +356,7 @@ def main() -> None:
                     joint_attention_kwargs=None,
                     return_dict=False,
                 )[0]
+                print_cuda_memory("after_forward")
 
                 loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float())
                 accumulated_loss = accumulated_loss + loss
@@ -346,8 +366,10 @@ def main() -> None:
                 logs_handle.flush()
 
                 loss.backward()
+                print_cuda_memory("after_backward")
 
                 optimizer.step()
+                print_cuda_memory("after_optimizer_step")
 
             if epoch_number % args.checkpoint == 0 or epoch_number == args.epochs:
                 save_checkpoint(epoch_number)
