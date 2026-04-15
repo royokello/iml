@@ -56,6 +56,7 @@ def pick_ratio_size(
     height: int,
     ratios: list[tuple[int, int]],
     length_multiple: int,
+    limit: int | None = None,
 ) -> tuple[int, int]:
     best_key = None
     best_size = None
@@ -64,7 +65,10 @@ def pick_ratio_size(
         base_w = rw * length_multiple
         base_h = rh * length_multiple
         ratio_ar = rw / rh
-        k = int(math.floor(min(width / base_w, height / base_h)))
+        max_scale = min(width / base_w, height / base_h)
+        if limit is not None:
+            max_scale = min(max_scale, limit / max(base_w, base_h))
+        k = int(math.floor(max_scale))
         if k < 1:
             k = 1
         tw = base_w * k
@@ -86,7 +90,7 @@ def save_image(im: Image.Image, out_path: Path) -> None:
 
     if ext in {".jpg", ".jpeg"}:
         im = im.convert("RGB")
-        im.save(tmp, format="JPEG", quality=95, subsampling="keep", optimize=True)
+        im.save(tmp, format="JPEG", quality=95, subsampling=0, optimize=True)
     elif ext == ".png":
         im.save(tmp, format="PNG", optimize=True)
     elif ext == ".webp":
@@ -107,6 +111,7 @@ def reshape_file(
     size: int | None,
     ratios: list[tuple[int, int]] | None,
     length_multiple: int | None,
+    limit: int | None,
 ) -> tuple[str, tuple[int, int], tuple[int, int]] | None:
     out_path = out_dir / path.name
     if out_path.exists() and out_path.resolve() != path.resolve():
@@ -120,14 +125,27 @@ def reshape_file(
             original_size = (w, h)
 
             if mode == "side":
-                if side == "width":
+                if side == "longest":
+                    if w >= h:
+                        target_w = size
+                        target_h = max(1, int(round(size * (h / w))))
+                    else:
+                        target_h = size
+                        target_w = max(1, int(round(size * (w / h))))
+                elif side == "width":
                     target_w = size
                     target_h = max(1, int(round(size * (h / w))))
                 else:
                     target_h = size
                     target_w = max(1, int(round(size * (w / h))))
             else:
-                target_w, target_h = pick_ratio_size(w, h, ratios or [], length_multiple or 1)
+                target_w, target_h = pick_ratio_size(
+                    w,
+                    h,
+                    ratios or [],
+                    length_multiple or 1,
+                    limit,
+                )
             target_size = (target_w, target_h)
 
             if (target_w, target_h) == (w, h):
@@ -149,9 +167,25 @@ def reshape_file(
 def main() -> None:
     p = argparse.ArgumentParser(description="Non-crop reshape of images.")
     p.add_argument("-i", "--input", required=True, type=Path, help="Directory with images.")
-    p.add_argument("-o", "--output", required=True, type=Path, help="Output directory.")
+    out_group = p.add_mutually_exclusive_group()
+    out_group.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=None,
+        help="Output directory. Required unless --inplace is set.",
+    )
+    out_group.add_argument(
+        "--inplace",
+        action="store_true",
+        help="Rewrite images in the input directory instead of writing to output.",
+    )
     p.add_argument("--mode", choices=["side", "ratio"], default="side", help="Reshape mode.")
-    p.add_argument("--side", choices=["width", "height"], help="Which side to set in side mode.")
+    p.add_argument(
+        "--side",
+        choices=["width", "height", "longest"],
+        help="Which side to set in side mode. longest uses the larger of width/height per image.",
+    )
     p.add_argument("--size", type=int, help="Target pixels for chosen side in side mode.")
     p.add_argument(
         "--ratios",
@@ -166,15 +200,26 @@ def main() -> None:
         default=64,
         help="Enforce width/height as multiples of this value in ratio mode.",
     )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum pixels for the longest side in ratio mode.",
+    )
     args = p.parse_args()
 
     inp: Path = args.input.expanduser().resolve()
     if not inp.is_dir():
         sys.exit(f"ERROR: {inp} is not a directory.")
-    out: Path = args.output.expanduser().resolve()
-    if out.exists() and not out.is_dir():
-        sys.exit(f"ERROR: {out} is not a directory.")
-    out.mkdir(parents=True, exist_ok=True)
+    if args.inplace:
+        out = inp
+    else:
+        if args.output is None:
+            sys.exit("ERROR: --output is required unless --inplace is set.")
+        out = args.output.expanduser().resolve()
+        if out.exists() and not out.is_dir():
+            sys.exit(f"ERROR: {out} is not a directory.")
+        out.mkdir(parents=True, exist_ok=True)
 
     if args.mode == "side":
         if args.side is None or args.size is None:
@@ -186,6 +231,8 @@ def main() -> None:
     else:
         if args.length_multiple <= 0:
             sys.exit("ERROR: --length-multiple must be a positive integer.")
+        if args.limit is not None and args.limit <= 0:
+            sys.exit("ERROR: --limit must be a positive integer.")
         try:
             ratios = parse_ratios(args.ratios)
         except ValueError as e:
@@ -209,6 +256,7 @@ def main() -> None:
             args.size,
             ratios,
             length_multiple,
+            args.limit,
         )
         if result is None:
             continue

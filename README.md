@@ -94,13 +94,16 @@ Notes
 
 #### `image.shape`
 - Features
-  - Writes reshaped images to a required output directory
-    - `side` mode sets the chosen side (`width` or `height`) and scales the other side to preserve aspect ratio
-    - `ratio` mode picks the closest ratio by aspect, then rounds down to the nearest size that matches it and enforces width/height multiples
+  - Writes reshaped images to an output directory or updates files in place with `--inplace`
+    - `side` mode sets the chosen side (`width`, `height`, or `longest`) and scales the other side to preserve aspect ratio
+    - `ratio` mode picks the closest ratio by aspect, then rounds down to the nearest size that matches it and enforces width/height multiples, with optional `--limit` for the longest side
   - Format-aware saves with sane defaults (JPEG/WebP/PNG/TIFF)
 - Examples
   - `python -m image.shape --input "images" --output "out" --mode side --side width --size 1024`
   - `python -m image.shape --input "images" --output "out" --mode ratio --ratios 1x1 3x4 4x3 1x2 --length-multiple 64`
+  - `python -m image.shape --input "images" --inplace --mode side --side height --size 768`
+  - `python -m image.shape --input "images" --inplace --mode side --side longest --size 768`
+  - `python -m image.shape --input "images" --inplace --mode ratio --ratios 1x1 2x3 3x4 1x2 2x1 4x3 3x2 --length-multiple 64 --limit 768`
 
 #### `image.tag.main`
 - Features

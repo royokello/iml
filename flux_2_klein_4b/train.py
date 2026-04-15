@@ -263,6 +263,7 @@ def main() -> None:
         block_size=64,
         quantized_state_path=quantized_denoiser_path,
     )
+    transformer = transformer.to(device)
     for parameter in transformer.parameters():
         parameter.requires_grad = False
     lora_module_names = inject_trainable_lora_modules(
