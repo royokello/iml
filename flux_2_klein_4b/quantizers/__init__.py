@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-
 def quantize_text_encoder(*args, **kwargs):
     from .text_encoder import quantize_text_encoder as _quantize_text_encoder
 
@@ -12,5 +9,7 @@ def quantize_denoiser(*args, **kwargs):
 
     return _quantize_denoiser(*args, **kwargs)
 
-
-__all__ = ["quantize_text_encoder", "quantize_denoiser"]
+__all__ = [
+    "quantize_denoiser",
+    "quantize_text_encoder",
+]

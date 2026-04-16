@@ -8,13 +8,13 @@ ROOT = Path(__file__).resolve().parent
 
 
 setup(
-    name="int4_dequant_cuda",
+    name="dequantize_from_double_block_cuda",
     ext_modules=[
         CUDAExtension(
-            name="int4_dequant_cuda",
+            name="dequantize_from_double_block_cuda",
             sources=[
-                str(ROOT / "int4_dequant_extension.cpp"),
-                str(ROOT / "int4_dequant_lut.cu"),
+                str(ROOT / "dequantize_from_double_block_extension.cpp"),
+                str(ROOT / "dequantize_from_double_block.cu"),
             ],
             extra_compile_args={
                 "cxx": ["-O3"],

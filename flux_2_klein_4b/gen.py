@@ -22,42 +22,6 @@ def _split_image_paths(image: str | Path) -> list[str]:
     return [part.strip() for part in str(image).split(",") if part.strip()]
 
 
-def _quantized_text_encoder_path(
-    root: str | Path,
-    *,
-    quantization_precision: str | None,
-    scale_precision: str | None,
-    block_size: int | None,
-) -> Path:
-    if quantization_precision is None or scale_precision is None or block_size is None:
-        raise ValueError("--load-quantized requires a quantized text encoder configuration.")
-    return (
-        Path(root)
-        / "flux_2_klein_4b"
-        / "quant"
-        / "text_encoder"
-        / f"{quantization_precision}_{scale_precision}_b{block_size}.safetensor"
-    )
-
-
-def _quantized_denoiser_path(
-    root: str | Path,
-    *,
-    quantization_precision: str | None,
-    scale_precision: str | None,
-    block_size: int | None,
-) -> Path:
-    if quantization_precision is None or scale_precision is None or block_size is None:
-        raise ValueError("A quantized denoiser path requires quantization_precision, scale_precision, and block_size.")
-    return (
-        Path(root)
-        / "flux_2_klein_4b"
-        / "quant"
-        / "transformer"
-        / f"{quantization_precision}_{scale_precision}_b{block_size}.safetensor"
-    )
-
-
 def _load_json(path: str | Path) -> dict:
     with Path(path).open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -133,6 +97,22 @@ def _resolve_inference_settings(
         DEFAULT_DISTILLED_STEPS if num_inference_steps is None else num_inference_steps,
         DEFAULT_DISTILLED_GUIDANCE_SCALE if guidance_scale is None else guidance_scale,
     )
+
+
+def _resolve_transformer_variant(*, base: bool) -> str:
+    return "base" if base else "distill"
+
+
+def _resolve_denoiser_quant_method(
+    *,
+    variant: str,
+    quant_method: str | None,
+) -> str | None:
+    if quant_method is not None:
+        return quant_method
+    if variant == "base":
+        return "double"
+    return "single"
 
 
 def _encode_prompt_embeddings(
@@ -330,16 +310,12 @@ def generate_image(
     guidance_scale: float | None = None,
     base: bool = False,
     ref_size: int = 512,
-    text_quantization_precision: str | None = "int8",
-    text_scale_precision: str | None = "fp16",
-    text_block_size: int | None = 128,
-    denoiser_quantization_precision: str | None = "int8",
-    denoiser_scale_precision: str | None = "fp16",
-    denoiser_block_size: int | None = 128,
+    text_quant_method: str | None = "single",
+    denoiser_quant_method: str | None = None,
     loras: dict[str, float] | None = None,
     max_length: int = 512,
 ) -> None:
-    from flux_2_klein_4b.denoiser import load_qwen3_denoiser
+    from flux_2_klein_4b.denoiser import load_flux2_denoiser
     from flux_2_klein_4b.lora import apply_lora
     from flux_2_klein_4b.text_encoder.loader import load_qwen3_text_encoder
 
@@ -356,38 +332,28 @@ def generate_image(
         num_inference_steps=num_inference_steps,
         guidance_scale=guidance_scale,
     )
+    transformer_variant = _resolve_transformer_variant(base=is_base)
+    denoiser_quant_method = _resolve_denoiser_quant_method(
+        variant=transformer_variant,
+        quant_method=denoiser_quant_method,
+    )
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     latent_generator = torch.Generator(device=device)
     latent_generator.manual_seed(seed)
 
-    tokenizer_path = Path(root) / "flux_2_klein_4b" / "base" / "tokenizer"
-    text_encoder_path = Path(root) / "flux_2_klein_4b" / "base" / "text_encoder"
+    model_root = Path(root).expanduser().resolve() / "flux_2_klein_4b" / "model"
+    tokenizer_path = model_root / "tokenizer"
+    text_encoder_path = model_root / "text_encoder"
 
     print("  * loading tokenizer ...")
     tokenizer = Qwen2TokenizerFast.from_pretrained(str(tokenizer_path))
 
     print("  * loading text encoder ...")
     torch.cuda.empty_cache()
-    quantized_state_path = None
-    if text_quantization_precision is not None:
-        quantized_state_path = _quantized_text_encoder_path(
-            root,
-            quantization_precision=text_quantization_precision,
-            scale_precision=text_scale_precision,
-            block_size=text_block_size,
-        )
-        if quantized_state_path.is_file():
-            print(f"    using saved quantized checkpoint: {quantized_state_path.name}")
-        else:
-            print("    saved quantized checkpoint not found; quantizing on the fly")
-            quantized_state_path = None
     text_encoder = load_qwen3_text_encoder(
         str(text_encoder_path),
-        quantization_precision=text_quantization_precision,
-        scale_precision=text_scale_precision,
-        block_size=text_block_size,
-        quantized_state_path=quantized_state_path,
+        quant_method=text_quant_method,
     )
     text_encoder = text_encoder.to(device)
 
@@ -425,9 +391,9 @@ def generate_image(
     print(f"  * done in {text_encoding_seconds:.3f}s")
 
     batch_size = prompt_embeds.shape[0]
-    vae_path = Path(root) / "flux_2_klein_4b" / "base" / "vae"
-    scheduler_path = Path(root) / "flux_2_klein_4b" / "base" / "scheduler"
-    transformer_path = Path(root) / "flux_2_klein_4b" / "base" / "transformer"
+    vae_path = Path(root) / "flux_2_klein_4b" / "model" / "vae"
+    scheduler_path = model_root / "scheduler"
+    transformer_path = model_root / "transformer"
     vae_scale_factor = _load_vae_scale_factor(vae_path)
     image_latents = None
     image_latent_ids = None
@@ -534,30 +500,15 @@ def generate_image(
     denoise_start = time.perf_counter()
     print("  * loading transformer ...")
     torch.cuda.empty_cache()
-    quantized_denoiser_path = None
-    if denoiser_quantization_precision is not None:
-        quantized_denoiser_path = _quantized_denoiser_path(
-            root,
-            quantization_precision=denoiser_quantization_precision,
-            scale_precision=denoiser_scale_precision,
-            block_size=denoiser_block_size,
-        )
-        if quantized_denoiser_path.is_file():
-            print(f"    using saved quantized checkpoint: {quantized_denoiser_path.name}")
-        else:
-            print("    saved quantized checkpoint not found; quantizing on the fly")
-            quantized_denoiser_path = None
-    transformer = load_qwen3_denoiser(
+    transformer = load_flux2_denoiser(
         str(transformer_path),
-        quantization_precision=denoiser_quantization_precision,
-        scale_precision=denoiser_scale_precision,
-        block_size=denoiser_block_size,
-        quantized_state_path=quantized_denoiser_path,
+        quant_method=denoiser_quant_method,
+        variant=transformer_variant,
     )
+    transformer = transformer.to(device)
     if loras:
         print("  * applying loras ...")
         apply_lora(transformer, loras)
-    transformer = transformer.to(device)
     prompt_embeds = prompt_embeds.to(device=device, dtype=transformer.dtype)
     if negative_prompt_embeds is not None:
         negative_prompt_embeds = negative_prompt_embeds.to(device=device, dtype=transformer.dtype)
@@ -665,7 +616,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         required=True,
-        help="Root folder that contains flux_2_klein_4b/base/tokenizer.",
+        help="Root folder that contains flux_2_klein_4b/model/tokenizer.",
     )
     parser.add_argument(
         "--images",
@@ -716,42 +667,16 @@ def parse_args() -> argparse.Namespace:
         help="Guidance scale override for --base CFG mixing. Ignored in distilled mode.",
     )
     parser.add_argument(
-        "--text-quantization",
-        choices=("none", "fp16", "int8", "int4"),
-        default="int8",
-        help='Text encoder linear-weight mode. "none" keeps checkpoint weights as loaded.',
+        "--text-quant-method",
+        choices=("none", "single", "double"),
+        default="single",
+        help='Text encoder quantization method. "none" keeps checkpoint weights as loaded.',
     )
     parser.add_argument(
-        "--text-scale-precision",
-        choices=("fp32", "fp16", "e8m0"),
-        default="fp16",
-        help="Text encoder scale storage format for quantized linears.",
-    )
-    parser.add_argument(
-        "--text-block-size",
-        type=int,
-        choices=(32, 64, 128),
-        default=128,
-        help="Text encoder block size for quantized linears.",
-    )
-    parser.add_argument(
-        "--denoiser-quantization",
-        choices=("none", "fp16", "int8", "int4"),
-        default="int8",
-        help='Denoiser linear-weight mode. "none" keeps checkpoint weights as loaded.',
-    )
-    parser.add_argument(
-        "--denoiser-scale-precision",
-        choices=("fp32", "fp16", "e8m0"),
-        default="fp16",
-        help="Denoiser scale storage format for quantized linears.",
-    )
-    parser.add_argument(
-        "--denoiser-block-size",
-        type=int,
-        choices=(32, 64, 128),
-        default=128,
-        help="Denoiser block size for quantized linears.",
+        "--denoiser-quant-method",
+        choices=("none", "single", "double"),
+        default=None,
+        help='Denoiser quantization method. Defaults by variant when omitted: distill=single, base=double. Use "none" for fp16.',
     )
     parser.add_argument(
         "--loras",
@@ -773,12 +698,8 @@ def main() -> None:
         base=args.base,
         ref_size=args.ref_size,
         guidance_scale=args.guidance_scale,
-        text_quantization_precision=None if args.text_quantization == "none" else args.text_quantization,
-        text_scale_precision=None if args.text_quantization == "none" else args.text_scale_precision,
-        text_block_size=None if args.text_quantization == "none" else args.text_block_size,
-        denoiser_quantization_precision=None if args.denoiser_quantization == "none" else args.denoiser_quantization,
-        denoiser_scale_precision=None if args.denoiser_quantization == "none" else args.denoiser_scale_precision,
-        denoiser_block_size=None if args.denoiser_quantization == "none" else args.denoiser_block_size,
+        text_quant_method=None if args.text_quant_method == "none" else args.text_quant_method,
+        denoiser_quant_method=None if args.denoiser_quant_method in {None, "none"} else args.denoiser_quant_method,
         loras=_parse_loras_arg(args.loras),
     )
 

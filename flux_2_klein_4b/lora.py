@@ -10,9 +10,9 @@ import torch
 import torch.nn as nn
 from safetensors.torch import load_file as safe_load_file
 
-from flux_2_klein_4b.quantize.linear import QuantizedLinear
-from utils.dequantize import dequantize_from_block
-from utils.quantize import quantize_to_block
+from utils.quant.double import dequantize_from_double_block, quantize_to_double_block
+from utils.quant.linear import QuantizedLinear
+from utils.quant.single import dequantize_from_single_block, quantize_to_single_block
 
 _WEIGHT_SUFFIXES = {
     ".lora_A.weight": "a",
@@ -97,15 +97,10 @@ def _load_lora_state_dict(lora_path: str | Path) -> dict[str, Any]:
     path = Path(lora_path)
     if not path.is_file():
         raise FileNotFoundError(f"LoRA checkpoint not found: {path}")
+    if path.suffix.lower() != ".safetensors":
+        raise ValueError(f"Unsupported LoRA checkpoint extension for {path}: expected .safetensors")
 
-    if path.suffix == ".safetensors":
-        state_dict = safe_load_file(str(path), device="cpu")
-    else:
-        state_dict = torch.load(str(path), map_location="cpu")
-        if isinstance(state_dict, dict):
-            nested = state_dict.get("state_dict")
-            if isinstance(nested, dict):
-                state_dict = nested
+    state_dict = safe_load_file(str(path), device="cpu")
 
     if not isinstance(state_dict, dict):
         raise ValueError(f"Unsupported checkpoint format in {path}: expected a tensor state dict.")
@@ -580,26 +575,25 @@ def _merge_quantized_linear_lora(module: QuantizedLinear, delta: torch.Tensor, m
         )
 
     device = module.weight.device
-    dense_weight = dequantize_from_block(
-        module.weight,
-        module.scales,
-        block_size=module.block_size,
-        quantization_precision=module.quantization_precision,
-        scaling_precision=module.scale_precision,
-        output_dtype=torch.float16,
-        output_shape=target_shape,
-    )
+
+    if module.method == "single":
+        dense_weight = dequantize_from_single_block(module.weight, module.scales).view(target_shape)
+    elif module.method == "double":
+        dense_weight = dequantize_from_double_block(module.weight, module.scales, module.super_scales).view(target_shape)
+    else:
+        raise ValueError(f"Unsupported quantization method for {module_name}: {module.method!r}")
 
     with torch.no_grad():
         dense_weight.add_(delta.to(device=device, dtype=torch.float16))
-        qweight, qscales = quantize_to_block(
-            dense_weight,
-            block_size=module.block_size,
-            quantization_precision=module.quantization_precision,
-            scaling_precision=module.scale_precision,
-        )
-        module.weight.copy_(qweight.to(device=device, dtype=module.weight.dtype))
-        module.scales.copy_(qscales.to(device=module.scales.device, dtype=module.scales.dtype))
+        if module.method == "single":
+            qweight, qscales = quantize_to_single_block(dense_weight)
+            module.weight.copy_(qweight.to(device=device, dtype=module.weight.dtype))
+            module.scales.copy_(qscales.to(device=module.scales.device, dtype=module.scales.dtype))
+        else:
+            qweight, qscales, qsuper_scales = quantize_to_double_block(dense_weight)
+            module.weight.copy_(qweight.to(device=device, dtype=module.weight.dtype))
+            module.scales.copy_(qscales.to(device=module.scales.device, dtype=module.scales.dtype))
+            module.super_scales.copy_(qsuper_scales.to(device=module.super_scales.device, dtype=module.super_scales.dtype))
 
 
 __all__ = ["apply_lora"]

@@ -1,13 +1,13 @@
 #include <cstdint>
 #include <mutex>
-#include <string>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/extension.h>
 
-#include "int4_dequant_lut.cuh"
+#include "dequantize_from_double_block.cuh"
 
 namespace {
 
@@ -39,7 +39,7 @@ void ensure_byte_lut_initialized(int device, cudaStream_t stream) {
 
         DeviceLutInitState& state = states[device];
         if (!state.initialized) {
-            iml::cuda::int4_dequant::init_byte_to_half2_lut(stream);
+            iml::cuda::dequantize_from_double_block::init_byte_to_half2_lut(stream);
             if (state.ready_event == nullptr) {
                 check_cuda(
                     cudaEventCreateWithFlags(&state.ready_event, cudaEventDisableTiming),
@@ -59,43 +59,57 @@ void ensure_byte_lut_initialized(int device, cudaStream_t stream) {
     }
 }
 
-void validate_dequant_inputs(
+void validate_inputs(
     const torch::Tensor& packed,
-    const torch::Tensor& scales,
+    const torch::Tensor& sub_scales,
+    const torch::Tensor& super_scales,
     const torch::Tensor& out,
-    int64_t original_numel,
-    int64_t block_size
+    int64_t original_numel
 ) {
     if (!packed.is_cuda()) {
         throw std::invalid_argument("packed must be a CUDA tensor");
     }
-    if (!scales.is_cuda()) {
-        throw std::invalid_argument("scales must be a CUDA tensor");
+    if (!sub_scales.is_cuda()) {
+        throw std::invalid_argument("sub_scales must be a CUDA tensor");
+    }
+    if (!super_scales.is_cuda()) {
+        throw std::invalid_argument("super_scales must be a CUDA tensor");
     }
     if (!out.is_cuda()) {
         throw std::invalid_argument("out must be a CUDA tensor");
     }
-    if (packed.scalar_type() != torch::kUInt8) {
-        throw std::invalid_argument("packed must have dtype torch.uint8");
+
+    if (packed.scalar_type() != torch::kInt8) {
+        throw std::invalid_argument("packed must have dtype torch.int8");
     }
-    if (scales.scalar_type() != torch::kFloat16) {
-        throw std::invalid_argument("scales must have dtype torch.float16");
+    if (sub_scales.scalar_type() != torch::kInt8) {
+        throw std::invalid_argument("sub_scales must have dtype torch.int8");
+    }
+    if (super_scales.scalar_type() != torch::kFloat16) {
+        throw std::invalid_argument("super_scales must have dtype torch.float16");
     }
     if (out.scalar_type() != torch::kFloat16) {
         throw std::invalid_argument("out must have dtype torch.float16");
     }
+
     if (!packed.is_contiguous()) {
         throw std::invalid_argument("packed must be contiguous");
     }
-    if (!scales.is_contiguous()) {
-        throw std::invalid_argument("scales must be contiguous");
+    if (!sub_scales.is_contiguous()) {
+        throw std::invalid_argument("sub_scales must be contiguous");
+    }
+    if (!super_scales.is_contiguous()) {
+        throw std::invalid_argument("super_scales must be contiguous");
     }
     if (!out.is_contiguous()) {
         throw std::invalid_argument("out must be contiguous");
     }
-    if (block_size != 32 && block_size != 64 && block_size != 128) {
-        throw std::invalid_argument("block_size must be 32, 64, or 128");
+
+    const int device = packed.get_device();
+    if (sub_scales.get_device() != device || super_scales.get_device() != device || out.get_device() != device) {
+        throw std::invalid_argument("all tensors must be on the same CUDA device");
     }
+
     if (original_numel < 0) {
         throw std::invalid_argument("original_numel must be non-negative");
     }
@@ -103,30 +117,41 @@ void validate_dequant_inputs(
         throw std::invalid_argument("out is smaller than original_numel");
     }
 
-    const int64_t num_blocks = (original_numel + block_size - 1) / block_size;
-    if (scales.numel() < num_blocks) {
-        throw std::invalid_argument("scales does not contain enough block scales");
+    const int64_t num_pairs = (original_numel + 1) / 2;
+    if (packed.numel() < num_pairs) {
+        throw std::invalid_argument("packed does not contain enough bytes");
+    }
+
+    const int64_t num_super_blocks =
+        (original_numel + iml::cuda::dequantize_from_double_block::kSuperBlockSize - 1) /
+        iml::cuda::dequantize_from_double_block::kSuperBlockSize;
+    if (super_scales.numel() < num_super_blocks) {
+        throw std::invalid_argument("super_scales does not contain enough values");
+    }
+    if (sub_scales.numel() < num_super_blocks * iml::cuda::dequantize_from_double_block::kSubBlocksPerSuper) {
+        throw std::invalid_argument("sub_scales does not contain enough values");
     }
 }
 
-void dequantize_int4_fp16(
+void dequantize_from_double_block_fp16(
     torch::Tensor packed,
-    torch::Tensor scales,
+    torch::Tensor sub_scales,
+    torch::Tensor super_scales,
     torch::Tensor out,
-    int64_t original_numel,
-    int64_t block_size
+    int64_t original_numel
 ) {
-    validate_dequant_inputs(packed, scales, out, original_numel, block_size);
+    validate_inputs(packed, sub_scales, super_scales, out, original_numel);
 
     const int device = packed.get_device();
     const auto stream = at::cuda::getCurrentCUDAStream(device).stream();
     ensure_byte_lut_initialized(device, stream);
-    iml::cuda::int4_dequant::launch_byte_lut_dequant(
-        packed.data_ptr<uint8_t>(),
-        reinterpret_cast<const __half*>(scales.data_ptr<at::Half>()),
+
+    iml::cuda::dequantize_from_double_block::launch_dequantize_from_double_block(
+        packed.data_ptr<int8_t>(),
+        sub_scales.data_ptr<int8_t>(),
+        reinterpret_cast<const __half*>(super_scales.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(out.data_ptr<at::Half>()),
         original_numel,
-        static_cast<int>(block_size),
         stream
     );
 }
@@ -135,8 +160,8 @@ void dequantize_int4_fp16(
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def(
-        "dequantize_int4_fp16",
-        &dequantize_int4_fp16,
-        "Dequantize packed signed int4 values into fp16 with fp16 block scales"
+        "dequantize_from_double_block_fp16",
+        &dequantize_from_double_block_fp16,
+        "Dequantize packed double-block int4 values into fp16"
     );
 }

@@ -56,25 +56,53 @@ def pick_ratio_size(
     height: int,
     ratios: list[tuple[int, int]],
     length_multiple: int,
-    limit: int | None = None,
+    min_short_side: int | None = None,
+    max_long_side: int | None = None,
+    mid_square_side: int | None = None,
 ) -> tuple[int, int]:
     best_key = None
     best_size = None
     input_ar = width / height
     for rw, rh in ratios:
-        base_w = rw * length_multiple
-        base_h = rh * length_multiple
-        ratio_ar = rw / rh
-        max_scale = min(width / base_w, height / base_h)
-        if limit is not None:
-            max_scale = min(max_scale, limit / max(base_w, base_h))
-        k = int(math.floor(max_scale))
-        if k < 1:
-            k = 1
-        tw = base_w * k
-        th = base_h * k
+        if mid_square_side is not None and rw == rh:
+            tw = mid_square_side
+            th = mid_square_side
+        elif min_short_side is not None:
+            desired_short = min_short_side
+            short_ratio = min(rw, rh)
+            long_ratio = max(rw, rh)
+            exact_long = desired_short * long_ratio / short_ratio
+            snapped_long = max(
+                length_multiple,
+                int(math.floor(exact_long / length_multiple)) * length_multiple,
+            )
+            if rw >= rh:
+                tw, th = snapped_long, desired_short
+            else:
+                tw, th = desired_short, snapped_long
+        elif max_long_side is not None:
+            desired_long = max_long_side
+            short_ratio = min(rw, rh)
+            long_ratio = max(rw, rh)
+            exact_short = desired_long * short_ratio / long_ratio
+            snapped_short = max(
+                length_multiple,
+                int(math.floor(exact_short / length_multiple)) * length_multiple,
+            )
+            if rw >= rh:
+                tw, th = desired_long, snapped_short
+            else:
+                tw, th = snapped_short, desired_long
+        else:
+            base_w = rw * length_multiple
+            base_h = rh * length_multiple
+            fit_scale = min(width / base_w, height / base_h)
+            k = max(1, int(math.floor(fit_scale)))
+            tw = base_w * k
+            th = base_h * k
+
         err_size = abs(tw - width) / width + abs(th - height) / height
-        err_ar = abs(ratio_ar - input_ar)
+        err_ar = abs((tw / th) - input_ar)
         key = (err_ar, err_size)
         if best_key is None or key < best_key:
             best_key = key
@@ -111,7 +139,9 @@ def reshape_file(
     size: int | None,
     ratios: list[tuple[int, int]] | None,
     length_multiple: int | None,
-    limit: int | None,
+    min_short_side: int | None,
+    max_long_side: int | None,
+    mid_square_side: int | None,
 ) -> tuple[str, tuple[int, int], tuple[int, int]] | None:
     out_path = out_dir / path.name
     if out_path.exists() and out_path.resolve() != path.resolve():
@@ -144,7 +174,9 @@ def reshape_file(
                     h,
                     ratios or [],
                     length_multiple or 1,
-                    limit,
+                    min_short_side,
+                    max_long_side,
+                    mid_square_side,
                 )
             target_size = (target_w, target_h)
 
@@ -155,7 +187,10 @@ def reshape_file(
                 shutil.copy2(path, out_path)
                 return "ok", original_size, target_size
 
-            new = im.resize((target_w, target_h), Image.LANCZOS)
+            if mode == "ratio":
+                new = ImageOps.fit(im, (target_w, target_h), method=Image.LANCZOS)
+            else:
+                new = im.resize((target_w, target_h), Image.LANCZOS)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             save_image(new, out_path)
             return "ok", original_size, target_size
@@ -165,7 +200,7 @@ def reshape_file(
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description="Non-crop reshape of images.")
+    p = argparse.ArgumentParser(description="Resize or crop images to target shapes.")
     p.add_argument("-i", "--input", required=True, type=Path, help="Directory with images.")
     out_group = p.add_mutually_exclusive_group()
     out_group.add_argument(
@@ -201,10 +236,22 @@ def main() -> None:
         help="Enforce width/height as multiples of this value in ratio mode.",
     )
     p.add_argument(
-        "--limit",
+        "--min",
         type=int,
         default=None,
-        help="Maximum pixels for the longest side in ratio mode.",
+        help="Set the shortest side to this size in ratio mode.",
+    )
+    p.add_argument(
+        "--max",
+        type=int,
+        default=None,
+        help="Set the longest side to this size in ratio mode.",
+    )
+    p.add_argument(
+        "--mid",
+        type=int,
+        default=None,
+        help="Set square outputs to this side length in ratio mode. Can be paired with either --min or --max.",
     )
     args = p.parse_args()
 
@@ -231,8 +278,20 @@ def main() -> None:
     else:
         if args.length_multiple <= 0:
             sys.exit("ERROR: --length-multiple must be a positive integer.")
-        if args.limit is not None and args.limit <= 0:
-            sys.exit("ERROR: --limit must be a positive integer.")
+        if args.min is not None and args.min <= 0:
+            sys.exit("ERROR: --min must be a positive integer.")
+        if args.max is not None and args.max <= 0:
+            sys.exit("ERROR: --max must be a positive integer.")
+        if args.mid is not None and args.mid <= 0:
+            sys.exit("ERROR: --mid must be a positive integer.")
+        if args.min is not None and args.max is not None:
+            sys.exit("ERROR: --min and --max cannot be used together. Use either one, optionally with --mid.")
+        if args.min is not None and args.min % args.length_multiple != 0:
+            sys.exit("ERROR: --min must be a multiple of --length-multiple.")
+        if args.max is not None and args.max % args.length_multiple != 0:
+            sys.exit("ERROR: --max must be a multiple of --length-multiple.")
+        if args.mid is not None and args.mid % args.length_multiple != 0:
+            sys.exit("ERROR: --mid must be a multiple of --length-multiple.")
         try:
             ratios = parse_ratios(args.ratios)
         except ValueError as e:
@@ -256,7 +315,9 @@ def main() -> None:
             args.size,
             ratios,
             length_multiple,
-            args.limit,
+            args.min,
+            args.max,
+            args.mid,
         )
         if result is None:
             continue
