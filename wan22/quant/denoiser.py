@@ -1,0 +1,120 @@
+#!/usr/bin/env python
+from __future__ import annotations
+
+import argparse
+import time
+from pathlib import Path
+
+from safetensors.torch import save_file
+
+from utils.quant.model import quantize_model_tensors
+
+_MODEL_DIR = "wan22"
+_MODEL_SHARDS = 3
+_NUM_BLOCKS = 30
+_BLOCK_LINEAR_WEIGHT_SUFFIXES = (
+    "self_attn.q.weight",
+    "self_attn.k.weight",
+    "self_attn.v.weight",
+    "self_attn.o.weight",
+    "cross_attn.q.weight",
+    "cross_attn.k.weight",
+    "cross_attn.v.weight",
+    "cross_attn.o.weight",
+    "ffn.0.weight",
+    "ffn.2.weight",
+)
+
+
+def _build_checkpoint_files(model_dir: Path) -> list[Path]:
+    return [
+        model_dir / f"diffusion_pytorch_model-{index:05d}-of-{_MODEL_SHARDS:05d}.safetensors"
+        for index in range(1, _MODEL_SHARDS + 1)
+    ]
+
+
+def _build_target_tensors() -> list[str]:
+    tensors: list[str] = []
+    for block_idx in range(_NUM_BLOCKS):
+        block_prefix = f"blocks.{block_idx}."
+        for suffix in _BLOCK_LINEAR_WEIGHT_SUFFIXES:
+            tensors.append(block_prefix + suffix)
+    return tensors
+
+
+def quantize_denoiser(
+    root: str | Path,
+    input_root: str | Path | None = None,
+    *,
+    method: str,
+) -> Path:
+    model_dir = (
+        Path(input_root).expanduser().resolve()
+        if input_root is not None
+        else Path(root).expanduser().resolve() / _MODEL_DIR / "model" / "denoiser"
+    )
+    if not model_dir.is_dir():
+        raise FileNotFoundError(f"Denoiser directory not found: {model_dir}")
+
+    method = method.strip().lower()
+    checkpoint_files = _build_checkpoint_files(model_dir)
+    target_tensors = _build_target_tensors()
+    output_path = model_dir / f"{method}_quant.safetensors"
+
+    print(f"Applying {method} quantization for WAN22 denoiser ...")
+    quantize_start = time.perf_counter()
+    state_dict = quantize_model_tensors(
+        files=checkpoint_files,
+        tensors=target_tensors,
+        method=method,
+    )
+    quantize_seconds = time.perf_counter() - quantize_start
+    print(f"Quantized in {quantize_seconds:.3f}s")
+
+    print(f"Saving {output_path} ...")
+    save_start = time.perf_counter()
+    save_file(
+        state_dict,
+        str(output_path),
+        metadata={
+            "component": "denoiser",
+            "method": method,
+        },
+    )
+    save_seconds = time.perf_counter() - save_start
+    print(f"Saved in {save_seconds:.3f}s")
+    return output_path
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Quantize and save the WAN22 denoiser.")
+    parser.add_argument(
+        "--root",
+        required=True,
+        help="Root folder that contains wan22/model/denoiser.",
+    )
+    parser.add_argument(
+        "--input",
+        help="Full denoiser model directory. Bypasses the --root default path.",
+    )
+    parser.add_argument(
+        "--method",
+        choices=("single", "double"),
+        required=True,
+        help="Quantization method to apply.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    output_path = quantize_denoiser(
+        args.root,
+        args.input,
+        method=args.method,
+    )
+    print(f"Saved quantized denoiser to {output_path}")
+
+
+if __name__ == "__main__":
+    main()

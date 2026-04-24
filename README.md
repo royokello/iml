@@ -8,6 +8,29 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
 - SDXL
 - Flux 2
 
+## Symlink Setup
+
+Keep large model files outside the repository and symlink them into the expected project layout.
+
+General pattern
+- source: `<model_storage>\<model_name>\model\...`
+- target: `<project_root>\<model_name>\model\...`
+
+PowerShell examples
+- Create a directory symlink:
+  - `New-Item -ItemType SymbolicLink -Path "<project_root>\<model_name>\model\text_encoder" -Target "<model_storage>\<model_name>\model\text_encoder"`
+- Link every file in a folder:
+  - ```powershell
+    $src = "<model_storage>\<model_name>\model\text_encoder"
+    $dst = "<project_root>\<model_name>\model\text_encoder"
+    New-Item -ItemType Directory -Force -Path $dst | Out-Null
+    Get-ChildItem -Path $src -File | ForEach-Object {
+        New-Item -ItemType SymbolicLink -Path (Join-Path $dst $_.Name) -Target $_.FullName
+    }
+    ```
+- If you are linking a whole folder, create one directory symlink.
+- If you only want selected files, use the file-link loop above.
+
 ## Installation
 
 Prerequisites
@@ -44,12 +67,16 @@ Notes
   - Zero-padded output names via `--filename-width` (default `000001.png` style)
   - Optional short-side resize while preserving aspect ratio (omit `--resolution` to keep original frame size)
   - Collated output or per-video subfolders
+  - Standalone selector app via `python -m video.extract.select --root "/tools"` for previewing interval marks, optionally limiting work to time spans like `1:00 - 1:10`, `32:40 - 40:00`, or `00:15:30 - 00:18:00`, and saving best nearby native-res frames
+  - The selector resolves FFmpeg from `<root>/ffmpeg/bin/ffmpeg.exe`
+  - Preview images are generated efficiently with FFmpeg into `<output>/preview`, and that folder is cleared before each new preview build
 - Examples
   - `python -m video.extract --input "videos" --output "frames" --frames 2 --time second --resolution 768`
   - `python -m video.extract --input "videos" --output "frames_best" --frames 2 --time second --buffer 3 --resolution 768`
   - `python -m video.extract --input "videos" --output "frames_all" --frames 50 --random --collate --resolution 512`
   - `python -m video.extract --input "videos" --output "frames_native" --frames 2 --time second`
   - `python -m video.extract --input "videos" --output "all_frames" --all --collate`
+  - `python -m video.extract.select --root "/tools" --port 5052`
 
 #### `video.group`
 - Features
@@ -72,6 +99,13 @@ Notes
   - Produces CSVs and a bitrate vs. quality plot; tries VMAF first, falls back to SSIM/PSNR
 - Example
   - `python -m video.quality --input "videos" --ffmpeg-dir "C:\\tools\\ffmpeg" -v`
+
+#### `video.grid`
+- Features
+  - Web UI at `/grids` for building image grids from a source video
+  - `Frame interval` mode samples frames at a fixed seconds interval and emits as many full grids as possible
+  - `Segment midpoints` mode divides the full video into exactly `rows * cols` segments and picks the middle frame from each segment to build one grid
+  - Center-crops each frame to the requested cell ratio before resizing into the grid
 
 ### Image
 
@@ -96,7 +130,7 @@ Notes
 - Features
   - Writes resized/cropped images to an output directory or updates files in place with `--inplace`
     - `side` mode sets the chosen side (`width`, `height`, or `longest`) and scales the other side to preserve aspect ratio
-    - `ratio` mode picks the closest ratio by aspect, computes the target size, then applies a best-fit center crop; `--min` sets the shortest side exactly, `--max` sets the longest side exactly, and `--mid` sets square outputs exactly, while the other side is snapped to the nearest matching multiple
+    - `ratio` mode picks the closest ratio by aspect, computes the target size, then applies a best-fit center crop; `--min` sets the shortest side exactly, `--max` sets the longest side exactly, and `--mid` caps square outputs at that side while keeping square inputs at or above `--min` aligned to `--length-multiple`
     - `--min`, `--max`, and `--mid` must be multiples of `--length-multiple`
   - Format-aware saves with sane defaults (JPEG/WebP/PNG/TIFF)
 - Examples
@@ -107,6 +141,7 @@ Notes
   - `python -m image.shape --input "images" --inplace --mode ratio --ratios 1x1 2x3 3x4 1x2 2x1 4x3 3x2 --length-multiple 64 --min 512`
   - `python -m image.shape --input "images" --inplace --mode ratio --ratios 1x1 2x3 3x4 1x2 2x1 4x3 3x2 --length-multiple 64 --max 768`
   - `python -m image.shape --input "images" --inplace --mode ratio --ratios 1x1 2x3 3x4 1x2 2x1 4x3 3x2 --length-multiple 64 --min 512 --mid 640`
+    - `--mid` will not upscale square inputs below 640x640; square inputs at or above `--min` are snapped to the nearest `--length-multiple`
   - `python -m image.shape --input "images" --inplace --mode ratio --ratios 1x1 2x3 3x4 1x2 2x1 4x3 3x2 --length-multiple 64 --max 768 --mid 640`
 
 #### `image.tag.main`
@@ -227,32 +262,17 @@ Notes
      - Native crop size (no resize): `python -m image.crop.main --project "C:\\proj" --stage 1 --classes 0 1 2 3 4`
      - Resize long side: `python -m image.crop.main --project "C:\\proj" --stage 1 --resolution 768 --classes 0 1 2 3 4`
 
-### SDXL
 
-### Flux 2 Klein 4b 
+### Flux 2
 
-#### `flux_2_klein_4b.train`
-- Current scope
-  - Early scaffold for the Flux 2 Klein 4B training flow
-  - Loads the tokenizer and text encoder from `<root>/flux_2_klein_4b/model`
-  - Encodes captions from a local image-caption dataset into `prompt_embeds` and `text_ids`
-  - Keeps text encodings on CPU while the text encoder is active, then frees the text encoder and moves the encodings to VRAM
-  - Loads the base denoiser checkpoint from `<root>/flux_2_klein_4b/model/transformer/base`
-  - Uses text encoder quantization method from the CLI
-  - Uses denoiser quantization method from the CLI
-  - Prints encoded text memory size in MB
-- Current CLI
-  - `--root`
-  - `--dataset`
-  - `--text-quant-method` (default: `single`)
-  - `--denoiser-quant-method` (default: `single`)
-- Example
-  - `python -m flux_2_klein_4b.train --root "/models/flux" --dataset "/data/flux_dataset"`
+The unified `flux2` package provides the version-aware entrypoints for generation and quantization.
 
-#### `flux_2_klein_4b.gen`
+#### `flux2.gen`
 - Features
-  - Generates a single image from a prompt and saves it to `<root>/flux_2_klein_4b/output/<timestamp>.png`
-  - Requires local Flux 2 assets under `<root>/flux_2_klein_4b/model`:
+  - Unified Flux 2 generation entrypoint for `4b` and `9b`
+  - Uses `--version` to select `<root>/flux_2_klein_4b` or `<root>/flux2_9b`
+  - Generates a single image from a prompt and saves it to the selected model output folder
+  - Requires local Flux 2 assets under the selected model's `model` directory:
     - `tokenizer`
     - `text_encoder`
     - `scheduler`
@@ -264,41 +284,97 @@ Notes
   - `--base` switches to base-model defaults: `50` steps and CFG guidance scale `4.0`
   - Supports optional image conditioning with `--images "img1.png, img2.png"` by encoding reference images into latent tokens
   - Reference images are resized so their longest side is at most `--ref-size`, then cropped to the nearest valid VAE multiple before encoding
-  - Text encoder quantization defaults to `single`
-  - Denoiser quantization defaults depend on the transformer variant:
-    - `distill`: `single`
-    - `base`: `double`
+  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `none`, `single`, or `double`
   - Passing `--text-quant-method none` or `--denoiser-quant-method none` keeps the original fp16 checkpoint weights
   - Saved quantized checkpoints are loaded automatically when present:
-    - text encoder: `<root>/flux_2_klein_4b/model/text_encoder/single_quant.safetensors` or `double_quant.safetensors`
-    - denoiser: `<root>/flux_2_klein_4b/model/transformer/<variant>/single_quant.safetensors` or `double_quant.safetensors`
+    - text encoder: `<root>/<model>/model/text_encoder/single_quant.safetensors` or `double_quant.safetensors`
+    - denoiser: `<root>/<model>/model/transformer/<variant>/single_quant.safetensors` or `double_quant.safetensors`
   - Supports merging one or more LoRA checkpoints at load time with `--loras "path1:1.0,path2:0.7"`
 - Examples
   - Prompt-only distilled generation:
-    - `python -m flux_2_klein_4b.gen --root "/models/flux" --prompt "cinematic portrait, 85mm photo, rim lighting"`
+    - `python -m flux2.gen --root "/models/flux" --version 4b --prompt "cinematic portrait, 85mm photo, rim lighting"`
   - Prompt-only base generation:
-    - `python -m flux_2_klein_4b.gen --root "/models/flux" --base --prompt "fashion editorial, full body, studio backdrop" --width 768 --height 1024`
+    - `python -m flux2.gen --root "/models/flux" --version 9b --base --prompt "fashion editorial, full body, studio backdrop" --width 768 --height 1024`
   - Image-conditioned generation:
-    - `python -m flux_2_klein_4b.gen --root "/models/flux" --images "/data/ref1.png, /data/ref2.png" --prompt "same outfit, new pose, soft daylight"`
+    - `python -m flux2.gen --root "/models/flux" --version 4b --images "/data/ref1.png, /data/ref2.png" --prompt "same outfit, new pose, soft daylight"`
   - Apply LoRAs during generation:
-    - `python -m flux_2_klein_4b.gen --root "/models/flux" --prompt "stylized character art" --loras "/models/lora/style.safetensors:0.8,/models/lora/character.safetensors:1.0"`
+    - `python -m flux2.gen --root "/models/flux" --version 9b --prompt "stylized character art" --loras "/models/lora/style.safetensors:0.8,/models/lora/character.safetensors:1.0"`
   - Disable denoiser quantization and force full-precision checkpoint weights as loaded:
-    - `python -m flux_2_klein_4b.gen --root "/models/flux" --prompt "product render on white seamless" --denoiser-quant-method none`
+    - `python -m flux2.gen --root "/models/flux" --version 4b --prompt "product render on white seamless" --denoiser-quant-method none`
 - Useful args
   - `--root`
+  - `--version`
   - `--prompt`
   - `--images`
-  - `--width`, `--height` (current defaults: `384x768`)
+  - `--width`, `--height`
   - `--steps`
   - `--seed`
   - `--base`
-  - `--guidance-scale`
   - `--ref-size`
+  - `--guidance-scale`
   - `--text-quant-method`
   - `--denoiser-quant-method`
   - `--loras`
+  - `--max-length`
 
-#### Flux 2 Klein 4b Fine-Tuning Guidance
+#### `flux2.train`
+- Current scope
+  - Unified Flux 2 training entrypoint
+  - Current implementation trains against the Flux 2 Klein 4B model layout under `<root>/flux_2_klein_4b/model`
+  - Loads the tokenizer and text encoder from the selected model directory
+  - Encodes captions from a local image-caption dataset into `prompt_embeds` and `text_ids`
+  - Keeps text encodings on CPU while the text encoder is active, then frees the text encoder and moves the encodings to VRAM
+  - Loads the base denoiser checkpoint from the selected model's `model/transformer/base` directory
+  - Writes LoRA checkpoints to `<output>/models/epoch_<n>.safetensors`
+  - Writes training losses to `<output>/logs.csv`
+  - Uses text encoder quantization method from the CLI
+  - Uses denoiser quantization method from the CLI
+  - Prints encoded text memory size in MB
+- Current CLI
+  - `--root`
+  - `--dataset`
+  - `--output`
+  - `--steps`
+  - `--resume`
+  - `--text-quant-method` (default: `single`)
+  - `--denoiser-quant-method` (default: `double`)
+  - `--trigger`
+- Example
+  - `python -m flux2.train --root "/models/flux" --dataset "/data/flux_dataset" --output "/runs/flux_style_a"`
+
+#### `flux2.quant.text_encoder`
+- Features
+  - Quantizes the Flux 2 text encoder for `4b` or `9b`
+  - Uses `model-00001-of-00002.safetensors` for `4b`
+  - Uses `model-00001-of-00004.safetensors` through `model-00004-of-00004.safetensors` for `9b`
+  - Builds the target tensor list from the shared Qwen linear suffixes and the version layer count
+  - Saves `<root>/<model>/model/text_encoder/<method>_quant.safetensors`
+- Examples
+  - `python -m flux2.quant.text_encoder --root "/models/flux" --version 4b --method single`
+  - `python -m flux2.quant.text_encoder --root "/models/flux" --version 9b --method double`
+- Useful args
+  - `--root`
+  - `--version`
+  - `--method`
+
+#### `flux2.quant.denoiser`
+- Features
+  - Quantizes the Flux 2 denoiser for `4b` or `9b`
+  - Uses `diffusion_pytorch_model.safetensors` for `4b`
+  - Uses `diffusion_pytorch_model-00001-of-00002.safetensors` and `diffusion_pytorch_model-00002-of-00002.safetensors` for `9b`
+  - Quantizes `5` double blocks and `20` single blocks for `4b`
+  - Quantizes `8` double blocks and `24` single blocks for `9b`
+  - Saves `<root>/<model>/model/transformer/<variant>/<method>_quant.safetensors`
+- Examples
+  - `python -m flux2.quant.denoiser --root "/models/flux" --version 4b --variant distill --method single`
+  - `python -m flux2.quant.denoiser --root "/models/flux" --version 9b --variant base --method double`
+- Useful args
+  - `--root`
+  - `--version`
+  - `--variant`
+  - `--method`
+
+#### Flux 2 Fine-Tuning Guidance
 - Black Forest Labs guidance for LoRA
   - Learning rate: `8e-5` to `1e-4`
   - Style training steps: `1500-2500`
@@ -314,22 +390,27 @@ Notes
   - Default example: `timestep_type: "weighted"`
   - Graphic Impressions example: `timestep_type: "shift"`
 
-#### Flux 2 Klein 4b Dataset
+#### Flux 2 Dataset
 - Current expected format
-  - A flat folder containing images and matching caption files
+  - A flat folder containing training images
   - Supported image extensions: `.png`, `.jpg`, `.jpeg`, `.webp`
-  - Each image must have a `.txt` caption with the same basename
+  - Captioned mode: each image has a `.txt` caption with the same basename
+  - Captionless mode: no image has a `.txt` caption and `--trigger "<text>"` is required
 - Example
+  - Captioned dataset
   - `000001.png`
   - `000001.txt`
   - `000002.jpg`
   - `000002.txt`
+  - Captionless dataset
+  - `000001.png`
+  - `000002.jpg`
 - Notes
-  - The training module currently reads the captions as raw text and encodes them during the dataset step
-  - Missing caption files raise an error
-  - This README section only covers the features currently implemented in `train.py`
+  - Captioned datasets are encoded per image and cached on CPU before training
+  - Captionless datasets encode the shared trigger once and keep that conditioning on GPU for every image
+  - Mixed datasets are rejected: either every image has a caption or none do
 
-#### Flux 2 Klein 4b Dataset Guidance
+#### Flux 2 Dataset Guidance
 - Style datasets
   - Recommended sample count: `20-40` images
   - Use a consistent trigger word in every caption
@@ -343,30 +424,51 @@ Notes
   - Vary pose, camera angle, framing, background, and lighting across the dataset
   - Keep the identity consistent across images so the captions map to one character rather than a mixed concept
 
-#### `flux_2_klein_4b.quantizers.text_encoder`
+### Wan 2.2 TI2V 5b
+
+#### `wan22.quant.text_encoder`
 - Features
-  - Quantizes the Flux 2 Klein 4B text encoder linear weights with method `single` or `double`
-  - Writes the quantized checkpoint to `<root>/flux_2_klein_4b/model/text_encoder/<method>_quant.safetensors`
-  - Loads the base text encoder from `<root>/flux_2_klein_4b/model/text_encoder`
+  - Quantizes the Wan 2.2 TI2V 5B T5 text encoder linear weights with method `single` or `double`
+  - Loads the base checkpoint from `<root>/wan22/model/text_encoder/t5_umt5-xxl-enc-bf16.pth` by default
+  - `--input` can point directly at a `text_encoder` model directory and bypass the `<root>/wan22/model/text_encoder` default
+  - Targets all `24` T5 blocks for attention and feed-forward linear weights:
+    - `attn.q.weight`, `attn.k.weight`, `attn.v.weight`, `attn.o.weight`
+    - `ffn.gate.0.weight`, `ffn.fc1.weight`, `ffn.fc2.weight`
+  - Writes `<model_dir>/<method>_quant.pth`
+  - Keeps non-target tensors in the output checkpoint, converting `float32` and `bfloat16` tensors to `float16`
 - Examples
-  - `python -m flux_2_klein_4b.quantizers.text_encoder --root "/models/flux" --method single`
-  - `python -m flux_2_klein_4b.quantizers.text_encoder --root "/models/flux" --method double`
+  - `python -m wan22.quant.text_encoder --root "/models/wan" --method single`
+  - `python -m wan22.quant.text_encoder --root "/models/wan" --method double`
+  - `python -m wan22.quant.text_encoder --root "/models/wan" --input "/models/custom/text_encoder" --method single`
 - Useful args
   - `--root`
+  - `--input`
   - `--method`
 
-#### `flux_2_klein_4b.quantizers.denoiser`
+#### `wan22.quant.denoiser`
 - Features
-  - Quantizes targeted Flux 2 Klein 4B denoiser transformer linear weights with method `single` or `double`
-  - Writes quantized output beside the selected checkpoint under `<root>/flux_2_klein_4b/model/transformer/<variant>/<method>_quant.safetensors`
-  - Uses `<root>/flux_2_klein_4b/model/transformer/<variant>/diffusion_pytorch_model.safetensors` by default
+  - Quantizes the Wan 2.2 TI2V 5B denoiser linear weights with method `single` or `double`
+  - Loads the base sharded denoiser checkpoint from `<root>/wan22/model/denoiser` by default:
+    - `diffusion_pytorch_model-00001-of-00003.safetensors`
+    - `diffusion_pytorch_model-00002-of-00003.safetensors`
+    - `diffusion_pytorch_model-00003-of-00003.safetensors`
+  - `--input` can point directly at a `denoiser` model directory and bypass the `<root>/wan22/model/denoiser` default
+  - Targets all `30` denoiser blocks for self-attention, cross-attention, and feed-forward linear weights:
+    - `self_attn.q.weight`, `self_attn.k.weight`, `self_attn.v.weight`, `self_attn.o.weight`
+    - `cross_attn.q.weight`, `cross_attn.k.weight`, `cross_attn.v.weight`, `cross_attn.o.weight`
+    - `ffn.0.weight`, `ffn.2.weight`
+  - Writes `<model_dir>/<method>_quant.safetensors`
+  - Stores safetensors metadata with `component=denoiser` and `method=<method>`
+  - Keeps non-target tensors in the output checkpoint, converting `float32` and `bfloat16` tensors to `float16`
 - Examples
-  - `python -m flux_2_klein_4b.quantizers.denoiser --root "/models/flux" --variant distill --method single`
-  - `python -m flux_2_klein_4b.quantizers.denoiser --root "/models/flux" --variant base --method double`
+  - `python -m wan22.quant.denoiser --root "/models/wan" --method single`
+  - `python -m wan22.quant.denoiser --root "/models/wan" --method double`
+  - `python -m wan22.quant.denoiser --root "/models/wan" --input "/models/custom/denoiser" --method double`
 - Useful args
   - `--root`
-  - `--variant`
+  - `--input`
   - `--method`
+
 
 ### Utils
 
@@ -414,7 +516,7 @@ Notes
 #### `utils.quant.single`
 - Features
   - Symmetric per-block `int8` quantization with one `fp16` scale per block
-  - Uses a fixed block size of `32`
+  - Uses a fixed block size of `16`
   - Preserves the original tensor shape for the quantized payload; only the internal math path pads to block boundaries
   - Supports round-trip conversion with:
     - `quantize_to_single_block`
@@ -425,7 +527,7 @@ Notes
   - Dequantizer: [fro.py](utils/quant/single/fro.py)
 - Public API
   - `utils.quant.single.BLOCK_SIZE`
-    - Fixed at `32`
+    - Fixed at `16`
   - `utils.quant.single.quantize_to_single_block(tensor)`
     - Returns `(quantized, scales)`
   - `utils.quant.single.dequantize_from_single_block(tensor, scales)`
@@ -433,7 +535,7 @@ Notes
 - Input / output
   - `tensor` for quantization must be floating-point
   - `quantized` is returned as `torch.int8` with the same shape as the source tensor
-  - `scales` is a flat `torch.float16` tensor with one scale per `32` values in flattened order
+  - `scales` is a flat `torch.float16` tensor with one scale per `16` values in flattened order
 - Example
 ```python
 import torch
@@ -448,10 +550,12 @@ restored = dequantize_from_single_block(qweight, scales)
 - Features
   - Hierarchical double-block quantization using packed signed `int4` payloads
   - Uses:
-    - `SUPER_BLOCK_SIZE = 256`
-    - `SUB_BLOCK_SIZE = 32`
+    - `SUPER_BLOCK_SIZE = 128`
+    - `SUB_BLOCK_SIZE = 16`
     - `SUB_BLOCKS_PER_SUPER = 8`
-  - Stores one `fp16` `super_scale` per super-block and eight `int8` `sub_scales` per super-block
+  - Stores one `fp16` `super_scale` per super-block and eight `int8` local scale codes per super-block
+  - Local scale codes are derived from each local block's absmax using `ceil`, with true-zero blocks stored as `0` and nonzero blocks clamped to `1..127`
+  - The packed weight stream stays padded to full `128`-value super-blocks so payload and metadata remain aligned
   - Packs two signed int4 values into each `torch.int8` output byte
   - Dequantization entry point uses the CUDA module in `utils/quant/double/cuda`
 - Files
@@ -461,19 +565,19 @@ restored = dequantize_from_single_block(qweight, scales)
   - CUDA kernel module: [cuda](utils/quant/double/cuda)
 - Public API
   - `utils.quant.double.SUPER_BLOCK_SIZE`
-    - Fixed at `256`
+    - Fixed at `128`
   - `utils.quant.double.SUB_BLOCK_SIZE`
-    - Fixed at `32`
+    - Fixed at `16`
   - `utils.quant.double.SUB_BLOCKS_PER_SUPER`
     - Fixed at `8`
   - `utils.quant.double.quantize_to_double_block(tensor)`
     - Returns `(packed, sub_scales, super_scales)`
-  - `utils.quant.double.dequantize_from_double_block(tensor, sub_scales, super_scales)`
+  - `utils.quant.double.dequantize_from_double_block(tensor, sub_scales, super_scales, original_numel=None)`
     - Returns the reconstructed `fp16` tensor via the CUDA extension
 - Input / output
   - `tensor` for quantization must be floating-point
-  - `packed` is a flat `torch.int8` tensor containing two signed int4 values per byte
-  - `sub_scales` is a `torch.int8` tensor with shape `(<num_super_blocks>, 8)`
+  - `packed` is a flat `torch.int8` tensor containing two signed int4 values per byte, padded to a whole number of super-blocks
+  - `sub_scales` is a `torch.int8` tensor with shape `(<num_super_blocks>, 8)` containing local scale codes in `0..127`
   - `super_scales` is a flat `torch.float16` tensor with one scale per super-block
   - `dequantize_from_double_block` requires CUDA tensors and the built extension in `utils/quant/double/cuda`
 - Example
@@ -483,7 +587,12 @@ from utils.quant.double import dequantize_from_double_block, quantize_to_double_
 
 weight = torch.randn(128, 64, device="cuda", dtype=torch.float16)
 packed, sub_scales, super_scales = quantize_to_double_block(weight)
-restored = dequantize_from_double_block(packed, sub_scales, super_scales)
+restored = dequantize_from_double_block(
+    packed,
+    sub_scales,
+    super_scales,
+    original_numel=weight.numel(),
+).view_as(weight)
 ```
 
 #### `utils.quant.double.cuda`
@@ -491,10 +600,10 @@ restored = dequantize_from_double_block(packed, sub_scales, super_scales)
   - CUDA full dequant kernel for the double-block quantization format produced by `utils.quant.double.to.quantize_to_double_block`
   - Decodes packed signed `int4` weights into `fp16` with a `256`-entry constant-memory byte LUT, where each byte decodes to one `half2`
   - Applies the hierarchical scale path inside the kernel:
-    - one `fp16` `super_scale` per `256` values
-    - eight `int8` `sub_scales` per super-block, one per `32` values
-    - effective scale per sub-block is `super_scale * sub_scale`
-  - Stages CTA-local effective scales for the two super-blocks covered by each `256`-thread launch block
+    - one `fp16` `super_scale` per `128` values
+    - eight `int8` local scale codes per super-block, one per `16` values
+    - effective scale per sub-block is `super_scale * local_scale_code`
+  - Stages CTA-local effective scales for the four super-blocks covered by each `256`-thread launch block
   - Tuned for GTX 1060 6GB / GP106 / compute capability `6.1`
 - Files
   - Header: [dequantize_from_double_block.cuh](utils/quant/double/cuda/dequantize_from_double_block.cuh)
@@ -515,8 +624,8 @@ import torch
 import dequantize_from_double_block_cuda
 
 packed = torch.empty((1024,), device="cuda", dtype=torch.int8)
-sub_scales = torch.empty((8, 8), device="cuda", dtype=torch.int8)
-super_scales = torch.empty((8,), device="cuda", dtype=torch.float16)
+sub_scales = torch.empty((16, 8), device="cuda", dtype=torch.int8)
+super_scales = torch.empty((16,), device="cuda", dtype=torch.float16)
 out = torch.empty((2048,), device="cuda", dtype=torch.float16)
 
 dequantize_from_double_block_cuda.dequantize_from_double_block_fp16(
@@ -534,11 +643,11 @@ dequantize_from_double_block_cuda.dequantize_from_double_block_fp16(
     - Launches the full double-block dequant kernel
 - Input / output
   - `packed` is a contiguous CUDA `int8` tensor containing two signed int4 values per byte using the nibble packing from `utils.quant.double.to`
-  - `sub_scales` is a contiguous CUDA `int8` tensor with shape `(<num_super_blocks>, 8)` or an equivalent contiguous flat layout
+  - `sub_scales` is a contiguous CUDA `int8` tensor with shape `(<num_super_blocks>, 8)` or an equivalent contiguous flat layout, with values in `0..127`
   - `super_scales` is a contiguous CUDA `fp16` tensor with one scale per super-block
   - `out` must point to a device buffer large enough for `original_numel` `fp16` values
   - `original_numel` is the number of decoded scalar outputs, not the number of packed bytes
 - Notes
-  - This module performs full dequant for the current double-block `fp16 super_scale + int8 sub_scale + packed int4 payload` format only.
+  - This module performs full dequant for the current double-block `fp16 super_scale + int8 local-scale code + packed int4 payload` format only.
   - The LUT must be initialized before the first dequant launch in the current CUDA context.
   - The kernel assumes CUDA device pointers for `packed`, `sub_scales`, `super_scales`, and `out`.

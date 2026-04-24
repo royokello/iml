@@ -8,6 +8,8 @@ from pathlib import Path
 
 import torch
 
+from .to import SUB_BLOCKS_PER_SUPER
+
 
 @lru_cache(maxsize=1)
 def _load_prebuilt_double_dequant_module():
@@ -43,6 +45,8 @@ def dequantize_from_double_block(
     tensor: torch.Tensor,
     sub_scales: torch.Tensor,
     super_scales: torch.Tensor,
+    *,
+    original_numel: int | None = None,
 ) -> torch.Tensor:
     if tensor.dtype != torch.int8:
         raise TypeError("tensor must be int8.")
@@ -56,9 +60,21 @@ def dequantize_from_double_block(
         raise TypeError("sub_scales must be a CUDA tensor.")
     if not super_scales.is_cuda:
         raise TypeError("super_scales must be a CUDA tensor.")
+    if sub_scales.numel() != super_scales.numel() * SUB_BLOCKS_PER_SUPER:
+        raise ValueError(
+            f"sub_scales must contain exactly {SUB_BLOCKS_PER_SUPER} int8 values per super block."
+        )
 
-    original_shape = (tensor.numel() * 2,)
-    original_numel = original_shape[0]
+    if original_numel is None:
+        original_numel = tensor.numel() * 2
+    elif original_numel < 0:
+        raise ValueError("original_numel must be non-negative.")
+
+    decoded_capacity = tensor.numel() * 2
+    if original_numel > decoded_capacity:
+        raise ValueError("original_numel exceeds the packed tensor decode capacity.")
+
+    original_shape = (original_numel,)
 
     if tensor.numel() == 0:
         return torch.empty(original_shape, device=tensor.device, dtype=torch.float16)

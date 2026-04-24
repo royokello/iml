@@ -141,6 +141,7 @@ def _run_method(quantized_case: QuantizedCase) -> torch.Tensor:
             quantized_case.tensor,
             quantized_case.sub_scales,
             quantized_case.super_scales,
+            original_numel=_numel(quantized_case.shape),
         ).view(quantized_case.output_shape)
 
     raise ValueError(f"Unsupported method: {quantized_case.method}")

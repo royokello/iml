@@ -20,20 +20,6 @@ INITIAL_LORA_ALPHA = 16
 INITIAL_LORA_LEARNING_RATE = 1e-4
 
 
-def _load_dataset_pairs(dataset_dir: Path) -> list[tuple[Path, str]]:
-    image_paths = sorted(
-        path for path in dataset_dir.iterdir() if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
-    )
-    pairs: list[tuple[Path, str]] = []
-    for image_path in image_paths:
-        caption_path = image_path.with_suffix(".txt")
-        if not caption_path.is_file():
-            raise FileNotFoundError(f"Caption not found for image: {image_path}")
-        caption = caption_path.read_text(encoding="utf-8").strip()
-        pairs.append((image_path, caption))
-    return pairs
-
-
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed <= 0:
@@ -46,27 +32,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", type=Path)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--steps", type=_positive_int, default=3000)
+    parser.add_argument("--steps", type=_positive_int, default=1500)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--checkpoint-limit", type=_positive_int, default=10)
     parser.add_argument("--text-quant-method", choices=("single", "double"), default="single")
-    parser.add_argument("--denoiser-quant-method", choices=("single", "double"), default="single")
+    parser.add_argument("--denoiser-quant-method", choices=("single", "double"), default="double")
+    parser.add_argument(
+        "--trigger",
+        type=str,
+        help="Required for captionless datasets. Encoded once and kept on GPU for all training images.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    from flux_2_klein_4b.denoiser import load_flux2_denoiser
-    from flux_2_klein_4b.gen import (
+    from flux2.loaders import load_flux2_dataset, load_flux2_denoiser, load_flux2_text_encoder
+    from flux2.lora import TrainableLoraLinear, build_lora_state_dict, inject_trainable_lora_modules
+    from flux2.gen import (
         _encode_prompt_embeddings,
         _load_vae_scale_factor,
         _pack_latents,
+        _prepare_image_ids,
         _patchify_latents,
         _prepare_latent_ids,
         _retrieve_latents,
     )
-    from utils.quant.linear import QuantizedLinear
-    from flux_2_klein_4b.text_encoder.loader import load_qwen3_text_encoder
     from PIL import Image
     from safetensors.torch import load_file as safe_load_file, save_file
     import torch
@@ -74,82 +64,40 @@ def main() -> None:
     from diffusers.pipelines.flux2.image_processor import Flux2ImageProcessor
     from transformers import Qwen2TokenizerFast
 
-    class TrainableLoraLinear(torch.nn.Module):
-        def __init__(self, base_module: torch.nn.Module, *, rank: int, alpha: int) -> None:
-            super().__init__()
-            self.base_module = base_module
-            self.rank = rank
-            self.alpha = alpha
-            self.scaling = alpha / rank
-            self.in_features = base_module.in_features
-            self.out_features = base_module.out_features
-
-            for parameter in self.base_module.parameters():
-                parameter.requires_grad = False
-
-            parameter_device = None
-            parameter_dtype = None
-            for tensor in list(self.base_module.parameters()) + list(self.base_module.buffers()):
-                if tensor.is_floating_point():
-                    parameter_device = tensor.device
-                    parameter_dtype = tensor.dtype
-                    break
-            if parameter_device is None:
-                parameter_device = torch.device("cpu")
-            parameter_dtype = torch.float32
-
-            self.lora_A = torch.nn.Parameter(
-                torch.empty((rank, self.in_features), device=parameter_device, dtype=parameter_dtype)
-            )
-            self.lora_B = torch.nn.Parameter(
-                torch.zeros((self.out_features, rank), device=parameter_device, dtype=parameter_dtype)
-            )
-            torch.nn.init.kaiming_uniform_(self.lora_A, a=5**0.5)
-
-        def forward(self, input: torch.Tensor) -> torch.Tensor:
-            base_output = self.base_module(input)
-            lora_hidden = torch.nn.functional.linear(input, self.lora_A.to(dtype=input.dtype))
-            lora_output = torch.nn.functional.linear(lora_hidden, self.lora_B.to(dtype=input.dtype))
-            return base_output + lora_output * self.scaling
-
-    def inject_trainable_lora_modules(
-        module: torch.nn.Module,
-        *,
-        target_linear_names: tuple[str, ...],
-        rank: int,
-        alpha: int,
-    ) -> list[str]:
-        injected_module_names: list[str] = []
-
-        def _inject(parent: torch.nn.Module, prefix: str = "") -> None:
-            for child_name, child in list(parent.named_children()):
-                full_name = f"{prefix}.{child_name}" if prefix else child_name
-                if child_name in target_linear_names and isinstance(child, (torch.nn.Linear, QuantizedLinear)):
-                    setattr(parent, child_name, TrainableLoraLinear(child, rank=rank, alpha=alpha))
-                    injected_module_names.append(full_name)
-                    continue
-                _inject(child, full_name)
-
-        _inject(module)
-        return injected_module_names
-
-    def build_lora_state_dict(module: torch.nn.Module) -> dict[str, torch.Tensor]:
-        lora_state_dict: dict[str, torch.Tensor] = {}
-        for module_name, child in module.named_modules():
-            if not isinstance(child, TrainableLoraLinear):
-                continue
-            lora_state_dict[f"{module_name}.lora_A.weight"] = child.lora_A.detach().cpu()
-            lora_state_dict[f"{module_name}.lora_B.weight"] = child.lora_B.detach().cpu()
-            lora_state_dict[f"{module_name}.alpha"] = torch.tensor(float(child.alpha), dtype=torch.float32)
-        return lora_state_dict
-
     device = torch.device("cuda")
 
     print("1. Load dataset into cpu ram ...")
     dataset_load_start = time.perf_counter()
-    dataset_pairs = _load_dataset_pairs(args.dataset)
-    images = [Image.open(image_path).convert("RGB") for image_path, _ in dataset_pairs]
-    captions = [caption for _, caption in dataset_pairs]
+    dataset = load_flux2_dataset(args.dataset)
+    target_images = dataset["target_images"]
+    text_prompts = dataset["text_prompts"]
+    reference_images = dataset["reference_images"]
+    if not (len(target_images) == len(text_prompts) == len(reference_images)):
+        raise ValueError("Dataset loader returned misaligned target, prompt, and reference lists.")
+
+    normalized_trigger = None if args.trigger is None else args.trigger.strip()
+    if normalized_trigger == "":
+        raise ValueError("--trigger must not be empty.")
+
+    missing_prompt_count = sum(prompt is None for prompt in text_prompts)
+    if missing_prompt_count and normalized_trigger is None:
+        raise ValueError(f"{missing_prompt_count} samples without .txt prompts require --trigger.")
+    if not missing_prompt_count and normalized_trigger is not None:
+        raise ValueError("--trigger is only used for samples without .txt prompts.")
+
+    dataset_mode = "captionless" if missing_prompt_count == len(text_prompts) else "captioned"
+    trigger_text = normalized_trigger if dataset_mode == "captionless" else None
+    captions = [prompt if prompt is not None else normalized_trigger for prompt in text_prompts]
+    if any(caption is None for caption in captions):
+        raise ValueError("Internal dataset prompt resolution failed.")
+
+    images = [Image.open(image_path).convert("RGB") for image_path in target_images]
+    reference_image_count = sum(len(sample_references) for sample_references in reference_images)
+    print(f"  * dataset mode: {dataset_mode}")
+    print(f"  * images: {len(images)}")
+    print(f"  * reference images: {reference_image_count}")
+    if trigger_text is not None:
+        print(f"  * trigger: {trigger_text!r}")
     print(f"  * done in {time.perf_counter() - dataset_load_start:.3f}s")
 
     print("2. Load text encoder into gpu ...")
@@ -159,7 +107,7 @@ def main() -> None:
     tokenizer_path = model_root / "tokenizer"
     text_encoder_path = model_root / "text_encoder"
     tokenizer = Qwen2TokenizerFast.from_pretrained(str(tokenizer_path))
-    text_encoder = load_qwen3_text_encoder(
+    text_encoder = load_flux2_text_encoder(
         str(text_encoder_path),
         quant_method=args.text_quant_method,
     )
@@ -169,26 +117,48 @@ def main() -> None:
 
     print("3. Prepare text encodings ...")
     text_encoding_start = time.perf_counter()
-    prompt_embeds_list = []
-    text_ids_list = []
-    for caption_index, caption in enumerate(captions, start=1):
-        print(f"  * {caption_index} / {len(captions)} ...")
+    prompt_embeds = None
+    text_ids = None
+    shared_prompt_embeds = None
+    shared_text_ids = None
+    if dataset_mode == "captioned":
+        prompt_embeds_list = []
+        text_ids_list = []
+        for caption_index, caption in enumerate(captions, start=1):
+            print(f"  * {caption_index} / {len(captions)} ...")
+            encode_start = time.perf_counter()
+            sample_prompt_embeds, sample_text_ids = _encode_prompt_embeddings(
+                torch,
+                tokenizer,
+                text_encoder,
+                prompt=caption,
+                device=device,
+                max_length=512,
+            )
+            torch.cuda.synchronize(device)
+            prompt_embeds_list.append(sample_prompt_embeds.squeeze(0).cpu())
+            text_ids_list.append(sample_text_ids.squeeze(0).cpu())
+            print(f"    encode time: {time.perf_counter() - encode_start:.3f}s")
+
+        prompt_embeds = torch.stack(prompt_embeds_list, dim=0)
+        text_ids = torch.stack(text_ids_list, dim=0)
+        print(f"  * cached caption encodings on cpu: {tuple(prompt_embeds.shape)}")
+    else:
         encode_start = time.perf_counter()
-        prompt_embeds, text_ids = _encode_prompt_embeddings(
+        shared_prompt_embeds, shared_text_ids = _encode_prompt_embeddings(
             torch,
             tokenizer,
             text_encoder,
-            prompt=caption,
+            prompt=trigger_text,
             device=device,
             max_length=512,
         )
         torch.cuda.synchronize(device)
-        prompt_embeds_list.append(prompt_embeds.squeeze(0).cpu())
-        text_ids_list.append(text_ids.squeeze(0).cpu())
-        print(f"    encode time: {time.perf_counter() - encode_start:.3f}s")
+        print(f"  * trigger encode time: {time.perf_counter() - encode_start:.3f}s")
+        print(f"  * shared trigger embeddings on gpu: {tuple(shared_prompt_embeds.shape)}")
+        print(f"  * shared trigger text ids on gpu: {tuple(shared_text_ids.shape)}")
 
-    prompt_embeds = torch.stack(prompt_embeds_list, dim=0)
-    text_ids = torch.stack(text_ids_list, dim=0)
+    del tokenizer
     del text_encoder
     torch.cuda.empty_cache()
     print(f"  * done in {time.perf_counter() - text_encoding_start:.3f}s")
@@ -205,11 +175,8 @@ def main() -> None:
     print("5. Prepare image latents ...")
     image_latent_prep_start = time.perf_counter()
     image_processor = Flux2ImageProcessor(vae_scale_factor=vae_scale_factor * 2)
-    image_latents = []
-    image_latent_ids = []
-    for image_index, image in enumerate(images, start=1):
-        print(f"  * {image_index} / {len(images)} ...")
-        image_encode_start = time.perf_counter()
+
+    def encode_image_latent(image) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         image_processor.check_image_input(image)
 
         image_width, image_height = image.size
@@ -229,10 +196,45 @@ def main() -> None:
         ).to(latent.device, latent.dtype)
         latent = (latent - latents_bn_mean) / latents_bn_std
 
-        image_latents.append(_pack_latents(latent).squeeze(0).cpu())
-        image_latent_ids.append(_prepare_latent_ids(torch, latent).squeeze(0).cpu())
+        return _pack_latents(latent).squeeze(0).cpu(), _prepare_latent_ids(torch, latent).squeeze(0).cpu(), latent
+
+    image_latents = []
+    image_latent_ids = []
+    for image_index, image in enumerate(images, start=1):
+        print(f"  * {image_index} / {len(images)} ...")
+        image_encode_start = time.perf_counter()
+        image_latent, image_latent_id, _ = encode_image_latent(image)
+        image_latents.append(image_latent)
+        image_latent_ids.append(image_latent_id)
         torch.cuda.synchronize(device)
         print(f"    encode time: {time.perf_counter() - image_encode_start:.3f}s")
+
+    reference_latents = []
+    reference_latent_ids = []
+    for sample_index, sample_references in enumerate(reference_images, start=1):
+        if not sample_references:
+            reference_latents.append(None)
+            reference_latent_ids.append(None)
+            continue
+
+        print(f"  * sample {sample_index} references: {len(sample_references)} ...")
+        reference_encode_start = time.perf_counter()
+        encoded_reference_latents = []
+        raw_reference_latents = []
+        for reference_index, reference_path in enumerate(sample_references, start=1):
+            print(f"    * reference {reference_index} / {len(sample_references)} ...")
+            reference_image = Image.open(reference_path).convert("RGB")
+            reference_latent, _, raw_reference_latent = encode_image_latent(reference_image)
+            encoded_reference_latents.append(reference_latent)
+            raw_reference_latents.append(raw_reference_latent)
+
+        reference_latents.append(torch.cat(encoded_reference_latents, dim=0))
+        reference_latent_ids.append(_prepare_image_ids(torch, raw_reference_latents).squeeze(0).cpu())
+        torch.cuda.synchronize(device)
+        print(f"    encode time: {time.perf_counter() - reference_encode_start:.3f}s")
+
+    reference_latent_token_count = sum(latent.shape[0] for latent in reference_latents if latent is not None)
+    print(f"  * cached reference latent tokens on cpu: {reference_latent_token_count}")
 
     del vae
     torch.cuda.empty_cache()
@@ -267,6 +269,9 @@ def main() -> None:
     print(f"  * lora parameter dtype: {lora_parameters[0].dtype}")
     optimizer = torch.optim.AdamW(lora_parameters, lr=INITIAL_LORA_LEARNING_RATE)
     print(f"  * optimizer: AdamW lr={INITIAL_LORA_LEARNING_RATE}")
+    if shared_prompt_embeds is not None:
+        shared_prompt_embeds = shared_prompt_embeds.to(dtype=transformer.dtype)
+        print("  * using one shared trigger conditioning tensor on gpu")
     torch.cuda.synchronize(device)
     print(f"  * done in {time.perf_counter() - denoiser_load_start:.3f}s")
 
@@ -305,6 +310,27 @@ def main() -> None:
                 checkpoint_state[lora_b_key].to(device=child.lora_B.device, dtype=child.lora_B.dtype)
             )
 
+    def optimizer_checkpoint_path(epoch_number: int) -> Path:
+        return models_dir / f"epoch_{epoch_number}.optimizer.pt"
+
+    def load_optimizer_checkpoint(epoch_number: int) -> None:
+        optimizer_path = optimizer_checkpoint_path(epoch_number)
+        if not optimizer_path.is_file():
+            raise FileNotFoundError(f"No optimizer checkpoint found for epoch {epoch_number}: {optimizer_path}")
+
+        optimizer_checkpoint = torch.load(str(optimizer_path), map_location=device)
+        if not isinstance(optimizer_checkpoint, dict) or "optimizer" not in optimizer_checkpoint:
+            raise ValueError(f"Invalid optimizer checkpoint format: {optimizer_path}")
+
+        saved_epoch = optimizer_checkpoint.get("epoch")
+        if saved_epoch != epoch_number:
+            raise ValueError(
+                f"Optimizer checkpoint {optimizer_path} is for epoch {saved_epoch}, expected epoch {epoch_number}"
+            )
+
+        optimizer.load_state_dict(optimizer_checkpoint["optimizer"])
+        print(f"  * loaded optimizer from {optimizer_path}")
+
     def trim_logs(max_epoch: int) -> None:
         if not logs_path.is_file():
             return
@@ -337,15 +363,13 @@ def main() -> None:
         if removed_rows:
             print(f"  * removed {removed_rows} log rows above epoch {max_epoch}")
 
-    def prune_checkpoints() -> None:
-        checkpoints = sorted(
-            models_dir.glob("epoch_*.safetensors"),
-            key=lambda path: int(path.stem.removeprefix("epoch_")),
-        )
-        checkpoints_to_remove = checkpoints[:-args.checkpoint_limit]
-        for checkpoint_path in checkpoints_to_remove:
-            checkpoint_path.unlink()
-            print(f"  * removed old checkpoint {checkpoint_path}")
+    def prune_optimizer_checkpoints(latest_optimizer_path: Path) -> None:
+        for optimizer_path in models_dir.glob("epoch_*.optimizer.pt"):
+            if optimizer_path == latest_optimizer_path:
+                continue
+
+            optimizer_path.unlink()
+            print(f"  * removed old optimizer checkpoint {optimizer_path}")
 
     def save_checkpoint(epoch_number: int) -> None:
         checkpoint_save_start = time.perf_counter()
@@ -353,14 +377,25 @@ def main() -> None:
         lora_state_dict = build_lora_state_dict(transformer)
         save_file(lora_state_dict, str(output_path))
         print(f"  * saved lora to {output_path}")
+
+        optimizer_path = optimizer_checkpoint_path(epoch_number)
+        temporary_optimizer_path = optimizer_path.with_name(f"{optimizer_path.name}.tmp")
+        torch.save(
+            {
+                "epoch": epoch_number,
+                "optimizer": optimizer.state_dict(),
+            },
+            str(temporary_optimizer_path),
+        )
+        temporary_optimizer_path.replace(optimizer_path)
+        print(f"  * saved optimizer to {optimizer_path}")
+        prune_optimizer_checkpoints(optimizer_path)
         print(f"  * checkpoint save time: {time.perf_counter() - checkpoint_save_start:.3f}s")
-        prune_checkpoints()
 
     print("7. Run training epochs ...")
     training_start = time.perf_counter()
     print(f"  * logs: {logs_path}")
     print(f"  * max steps: {args.steps}")
-    print(f"  * checkpoint limit: keep latest {args.checkpoint_limit} epochs")
     steps_done = 0
     start_epoch = 1
     logs_mode = "w"
@@ -372,6 +407,7 @@ def main() -> None:
         latest_epoch, checkpoint_path = latest_checkpoint
         print(f"  * resuming from {checkpoint_path}")
         load_checkpoint(checkpoint_path)
+        load_optimizer_checkpoint(latest_epoch)
         trim_logs(latest_epoch)
         steps_done = latest_epoch * dataset_size
         start_epoch = latest_epoch + 1
@@ -396,13 +432,25 @@ def main() -> None:
                 print(f"    * sample {sample_index + 1} / {dataset_size} ...")
                 optimizer.zero_grad(set_to_none=True)
 
-                prompt_embeds_batch = prompt_embeds[sample_index : sample_index + 1].to(
-                    device=device,
-                    dtype=transformer.dtype,
-                )
-                text_ids_batch = text_ids[sample_index : sample_index + 1].to(device=device)
+                if prompt_embeds is not None and text_ids is not None:
+                    prompt_embeds_batch = prompt_embeds[sample_index : sample_index + 1].to(
+                        device=device,
+                        dtype=transformer.dtype,
+                    )
+                    text_ids_batch = text_ids[sample_index : sample_index + 1].to(device=device)
+                else:
+                    prompt_embeds_batch = shared_prompt_embeds
+                    text_ids_batch = shared_text_ids
                 image_latents_batch = image_latents[sample_index].unsqueeze(0).to(device=device)
                 image_latent_ids_batch = image_latent_ids[sample_index].unsqueeze(0).to(device=device)
+                reference_latents_batch = None
+                reference_latent_ids_batch = None
+                if reference_latents[sample_index] is not None and reference_latent_ids[sample_index] is not None:
+                    reference_latents_batch = reference_latents[sample_index].unsqueeze(0).to(
+                        device=device,
+                        dtype=image_latents_batch.dtype,
+                    )
+                    reference_latent_ids_batch = reference_latent_ids[sample_index].unsqueeze(0).to(device=device)
 
                 noise = torch.randn_like(image_latents_batch)
                 timestep = torch.rand((1,), device=device, dtype=image_latents_batch.dtype) * 1000.0
@@ -410,18 +458,24 @@ def main() -> None:
 
                 noisy_latents = (1.0 - sigma) * image_latents_batch + sigma * noise
                 target = noise - image_latents_batch
+                model_hidden_states = noisy_latents
+                model_img_ids = image_latent_ids_batch
+                if reference_latents_batch is not None and reference_latent_ids_batch is not None:
+                    model_hidden_states = torch.cat([noisy_latents, reference_latents_batch], dim=1)
+                    model_img_ids = torch.cat([image_latent_ids_batch, reference_latent_ids_batch], dim=1)
 
                 torch.cuda.synchronize(device)
                 noise_pred = transformer(
-                    hidden_states=noisy_latents.to(dtype=transformer.dtype),
+                    hidden_states=model_hidden_states.to(dtype=transformer.dtype),
                     timestep=timestep / 1000,
                     guidance=None,
                     encoder_hidden_states=prompt_embeds_batch,
                     txt_ids=text_ids_batch,
-                    img_ids=image_latent_ids_batch,
+                    img_ids=model_img_ids,
                     joint_attention_kwargs=None,
                     return_dict=False,
                 )[0]
+                noise_pred = noise_pred[:, : image_latents_batch.size(1)]
                 torch.cuda.synchronize(device)
 
                 loss = torch.nn.functional.mse_loss(noise_pred.float(), target.float())
@@ -443,10 +497,14 @@ def main() -> None:
                     text_ids_batch,
                     image_latents_batch,
                     image_latent_ids_batch,
+                    reference_latents_batch,
+                    reference_latent_ids_batch,
                     noise,
                     timestep,
                     sigma,
                     noisy_latents,
+                    model_hidden_states,
+                    model_img_ids,
                     target,
                     noise_pred,
                     loss,

@@ -65,8 +65,16 @@ def pick_ratio_size(
     input_ar = width / height
     for rw, rh in ratios:
         if mid_square_side is not None and rw == rh:
-            tw = mid_square_side
-            th = mid_square_side
+            square_side = min(mid_square_side, min(width, height))
+            if min_short_side is not None and square_side >= min_short_side:
+                square_side = max(
+                    length_multiple,
+                    int((square_side + length_multiple / 2) // length_multiple)
+                    * length_multiple,
+                )
+                square_side = min(square_side, mid_square_side)
+            tw = square_side
+            th = square_side
         elif min_short_side is not None:
             desired_short = min_short_side
             short_ratio = min(rw, rh)
@@ -251,7 +259,11 @@ def main() -> None:
         "--mid",
         type=int,
         default=None,
-        help="Set square outputs to this side length in ratio mode. Can be paired with either --min or --max.",
+        help=(
+            "Set square outputs to this side length in ratio mode. "
+            "Square inputs at or above --min are snapped to the length multiple and capped at --mid. "
+            "Can be paired with either --min or --max."
+        ),
     )
     args = p.parse_args()
 

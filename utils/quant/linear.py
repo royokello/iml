@@ -54,8 +54,9 @@ class QuantizedLinear(nn.Module):
             module.super_scales = None
         else:
             numel = linear.weight.numel()
-            qweight = torch.empty(((numel + 1) // 2,), device=linear.weight.device, dtype=torch.int8)
             num_super_blocks = (numel + SUPER_BLOCK_SIZE - 1) // SUPER_BLOCK_SIZE
+            packed_numel = (num_super_blocks * SUPER_BLOCK_SIZE) // 2
+            qweight = torch.empty((packed_numel,), device=linear.weight.device, dtype=torch.int8)
             scales = torch.empty(
                 (num_super_blocks, SUB_BLOCKS_PER_SUPER),
                 device=linear.weight.device,
@@ -78,7 +79,12 @@ class QuantizedLinear(nn.Module):
         if self.method == "single":
             weight = dequantize_from_single_block(self.weight, self.scales)
         else:
-            weight = dequantize_from_double_block(self.weight, self.scales, self.super_scales)
+            weight = dequantize_from_double_block(
+                self.weight,
+                self.scales,
+                self.super_scales,
+                original_numel=self.out_features * self.in_features,
+            )
         weight = weight.view(self.out_features, self.in_features).to(dtype=input.dtype)
         bias = None if self.bias is None else self.bias.to(dtype=input.dtype)
         return F.linear(input, weight, bias)

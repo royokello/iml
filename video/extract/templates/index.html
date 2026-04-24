@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Extract Select</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+
+<body>
+  <main class="page">
+    <section class="hero">
+      <p class="eyebrow">video.extract.select</p>
+      <h1>Preview marks. Pick frames. Save the best native-res neighbors.</h1>
+      <p class="lede">
+        Load one video, generate interval-based previews at a chosen short-side resolution,
+        then save the best nearby frames around the previews you select.
+      </p>
+    </section>
+
+    <section class="panel">
+      <form id="load-form" class="controls">
+        <label>
+          <span>Video path</span>
+          <input id="video-path" name="video_path" type="text" placeholder="/abs/path/to/video.mp4" required />
+        </label>
+
+        <label>
+          <span>Output folder</span>
+          <input id="output-dir" name="output_dir" type="text" placeholder="/abs/path/to/output" required />
+        </label>
+
+        <label class="full">
+          <span>Time ranges</span>
+          <input
+            id="time-ranges"
+            name="time_ranges"
+            type="text"
+            placeholder="Optional. Example: 1:00 - 1:10, 00:15:30 - 00:18:00"
+          />
+        </label>
+
+        <label>
+          <span>Preview resolution</span>
+          <input id="preview-resolution" name="preview_resolution" type="number" min="1" value="384" required />
+        </label>
+
+        <label>
+          <span>Interval seconds</span>
+          <input id="interval-seconds" name="interval_seconds" type="number" min="0.001" step="0.001" value="1.0" required />
+        </label>
+
+        <label>
+          <span>Best-frame buffer</span>
+          <input id="buffer" name="buffer" type="number" min="0" value="3" required />
+        </label>
+
+        <label>
+          <span>Filename width</span>
+          <input id="filename-width" name="filename_width" type="number" min="1" value="6" required />
+        </label>
+
+        <div class="actions">
+          <button type="submit" class="primary">Load previews</button>
+          <button type="button" id="save-button">Save selected</button>
+          <button type="button" id="select-all-button">Select all</button>
+          <button type="button" id="clear-selection-button">Clear</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel status-panel">
+      <div id="status" class="status">Enter a video path and load previews.</div>
+      <div id="meta" class="meta"></div>
+      <div class="meta">Preview images are written to <code>&lt;output&gt;/preview</code>.</div>
+      <div id="save-results" class="save-results"></div>
+    </section>
+
+    <section class="gallery-shell">
+      <div class="gallery-header">
+        <h2>Preview gallery</h2>
+        <p id="selection-summary">0 selected</p>
+      </div>
+      <div id="gallery" class="gallery"></div>
+    </section>
+  </main>
+
+  <script src="/static/script.js"></script>
+</body>
+
+</html>

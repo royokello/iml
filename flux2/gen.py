@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Simple Flux 2 generation flow logger.
+Unified Flux 2 Klein generation entrypoint.
 """
 
 from __future__ import annotations
@@ -16,6 +16,11 @@ DEFAULT_BASE_STEPS = 50
 DEFAULT_SEED = 19930625
 DEFAULT_DISTILLED_GUIDANCE_SCALE = 1.0
 DEFAULT_BASE_GUIDANCE_SCALE = 4.0
+DEFAULT_TEXT_ENCODER_OUT_LAYERS = (9, 18, 27)
+_MODEL_DIRS = {
+    "4b": "flux_2_klein_4b",
+    "9b": "flux2_9b",
+}
 
 
 def _split_image_paths(image: str | Path) -> list[str]:
@@ -37,8 +42,24 @@ def _load_transformer_in_channels(transformer_path: str | Path) -> int:
     return int(config["in_channels"])
 
 
-def _resolve_output_dir(root: str | Path) -> Path:
-    return Path(root).expanduser().resolve() / "flux_2_klein_4b" / "output"
+def _load_transformer_joint_attention_dim(transformer_path: str | Path) -> int:
+    config = _load_json(Path(transformer_path) / "config.json")
+    return int(config["joint_attention_dim"])
+
+
+def _resolve_version_dir(version: str) -> str:
+    resolved_version = version.strip().lower()
+    if resolved_version not in _MODEL_DIRS:
+        raise ValueError(f"Unsupported version {version!r}. Expected one of: {', '.join(sorted(_MODEL_DIRS))}")
+    return _MODEL_DIRS[resolved_version]
+
+
+def _resolve_model_root(root: str | Path, version: str) -> Path:
+    return Path(root).expanduser().resolve() / _resolve_version_dir(version) / "model"
+
+
+def _resolve_output_dir(root: str | Path, version: str) -> Path:
+    return Path(root).expanduser().resolve() / _resolve_version_dir(version) / "output"
 
 
 def _parse_loras_arg(value: str | None) -> dict[str, float] | None:
@@ -103,18 +124,6 @@ def _resolve_transformer_variant(*, base: bool) -> str:
     return "base" if base else "distill"
 
 
-def _resolve_denoiser_quant_method(
-    *,
-    variant: str,
-    quant_method: str | None,
-) -> str | None:
-    if quant_method is not None:
-        return quant_method
-    if variant == "base":
-        return "double"
-    return "single"
-
-
 def _encode_prompt_embeddings(
     torch_module,
     tokenizer,
@@ -141,18 +150,58 @@ def _encode_prompt_embeddings(
     inputs = {key: value.to(device) for key, value in inputs.items()}
 
     with torch_module.inference_mode():
-        output = text_encoder(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs["attention_mask"],
-            output_hidden_states=True,
-            use_cache=False,
-            compute_logits=False,
-        )
+        encoder_kwargs = {
+            "input_ids": inputs["input_ids"],
+            "attention_mask": inputs["attention_mask"],
+            "output_hidden_states": True,
+            "use_cache": False,
+        }
+        if hasattr(text_encoder, "lm_head"):
+            encoder_kwargs["compute_logits"] = False
+        output = text_encoder(**encoder_kwargs)
 
-    hidden_states = torch_module.stack([output.hidden_states[index] for index in (9, 18, 27)], dim=1)
+    hidden_states = torch_module.stack(
+        [output.hidden_states[index] for index in DEFAULT_TEXT_ENCODER_OUT_LAYERS],
+        dim=1,
+    )
     prompt_embeds = hidden_states.permute(0, 2, 1, 3).reshape(hidden_states.shape[0], hidden_states.shape[2], -1)
     text_ids = _prepare_text_ids(torch_module, prompt_embeds).to(device)
     return prompt_embeds, text_ids
+
+
+def _validate_text_encoder_layers(text_encoder) -> None:
+    hidden_layer_count = int(getattr(text_encoder.config, "num_hidden_layers", 0))
+    if hidden_layer_count <= 0:
+        raise ValueError("Text encoder config is missing num_hidden_layers.")
+
+    hidden_state_count = hidden_layer_count + 1
+    invalid_layers = [
+        index for index in DEFAULT_TEXT_ENCODER_OUT_LAYERS if index < 0 or index >= hidden_state_count
+    ]
+    if invalid_layers:
+        raise ValueError(
+            "text_encoder_out_layers contains out-of-range indices "
+            f"for a model with {hidden_state_count} hidden-state outputs: {invalid_layers}"
+        )
+
+
+def _validate_joint_attention_dim(
+    *,
+    text_encoder,
+    transformer_path: str | Path,
+) -> None:
+    hidden_size = int(getattr(text_encoder.config, "hidden_size", 0))
+    if hidden_size <= 0:
+        raise ValueError("Text encoder config is missing hidden_size.")
+
+    expected_joint_attention_dim = hidden_size * len(DEFAULT_TEXT_ENCODER_OUT_LAYERS)
+    actual_joint_attention_dim = _load_transformer_joint_attention_dim(transformer_path)
+    if expected_joint_attention_dim != actual_joint_attention_dim:
+        raise ValueError(
+            "Text encoder output width does not match denoiser joint_attention_dim: "
+            f"{expected_joint_attention_dim} != {actual_joint_attention_dim}. "
+            f"hidden_size={hidden_size}, layers={DEFAULT_TEXT_ENCODER_OUT_LAYERS}, transformer={transformer_path}"
+        )
 
 
 def _resize_to_max_side(pil_image, max_side: int):
@@ -301,6 +350,8 @@ def _retrieve_timesteps(
 
 def generate_image(
     root: str | Path,
+    *,
+    version: str,
     image: str | Path | None = None,
     prompt: str = "A cat holding a sign that says hello world",
     width: int = 512,
@@ -310,14 +361,13 @@ def generate_image(
     guidance_scale: float | None = None,
     base: bool = False,
     ref_size: int = 512,
-    text_quant_method: str | None = "single",
+    text_quant_method: str | None = None,
     denoiser_quant_method: str | None = None,
     loras: dict[str, float] | None = None,
     max_length: int = 512,
 ) -> None:
-    from flux_2_klein_4b.denoiser import load_flux2_denoiser
+    from flux2.loaders import load_flux2_denoiser, load_flux2_text_encoder
     from flux_2_klein_4b.lora import apply_lora
-    from flux_2_klein_4b.text_encoder.loader import load_qwen3_text_encoder
 
     print("1. Text Encoding")
     text_encoding_start = time.perf_counter()
@@ -327,33 +377,40 @@ def generate_image(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if device.type != "cuda":
         raise RuntimeError("CUDA is not available in this environment.")
+
+    resolved_version = version.strip().lower()
+    model_root = _resolve_model_root(root, resolved_version)
+    tokenizer_path = model_root / "tokenizer"
+    text_encoder_path = model_root / "text_encoder"
+    vae_path = model_root / "vae"
+    scheduler_path = model_root / "scheduler"
+    transformer_path = model_root / "transformer"
+
     is_base, num_inference_steps, guidance_scale = _resolve_inference_settings(
         base=base,
         num_inference_steps=num_inference_steps,
         guidance_scale=guidance_scale,
     )
     transformer_variant = _resolve_transformer_variant(base=is_base)
-    denoiser_quant_method = _resolve_denoiser_quant_method(
-        variant=transformer_variant,
-        quant_method=denoiser_quant_method,
-    )
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     latent_generator = torch.Generator(device=device)
     latent_generator.manual_seed(seed)
 
-    model_root = Path(root).expanduser().resolve() / "flux_2_klein_4b" / "model"
-    tokenizer_path = model_root / "tokenizer"
-    text_encoder_path = model_root / "text_encoder"
-
     print("  * loading tokenizer ...")
     tokenizer = Qwen2TokenizerFast.from_pretrained(str(tokenizer_path))
 
     print("  * loading text encoder ...")
+    print(f"    quantization: {text_quant_method or 'none'}")
     torch.cuda.empty_cache()
-    text_encoder = load_qwen3_text_encoder(
+    text_encoder = load_flux2_text_encoder(
         str(text_encoder_path),
         quant_method=text_quant_method,
+    )
+    _validate_text_encoder_layers(text_encoder)
+    _validate_joint_attention_dim(
+        text_encoder=text_encoder,
+        transformer_path=transformer_path,
     )
     text_encoder = text_encoder.to(device)
 
@@ -391,9 +448,6 @@ def generate_image(
     print(f"  * done in {text_encoding_seconds:.3f}s")
 
     batch_size = prompt_embeds.shape[0]
-    vae_path = Path(root) / "flux_2_klein_4b" / "model" / "vae"
-    scheduler_path = model_root / "scheduler"
-    transformer_path = model_root / "transformer"
     vae_scale_factor = _load_vae_scale_factor(vae_path)
     image_latents = None
     image_latent_ids = None
@@ -459,7 +513,6 @@ def generate_image(
     latent_prep_start = time.perf_counter()
     num_channels_latents = _load_transformer_in_channels(transformer_path) // 4
 
-    # Match the pipeline's latent-size flooring for VAE compression and 2x2 patch packing.
     height = 2 * (int(height) // (vae_scale_factor * 2))
     width = 2 * (int(width) // (vae_scale_factor * 2))
     latent_shape = (batch_size, num_channels_latents * 4, height // 2, width // 2)
@@ -491,7 +544,6 @@ def generate_image(
         sigmas=sigmas,
         mu=mu,
     )
-    num_warmup_steps = max(len(timesteps) - num_inference_steps * scheduler.order, 0)
 
     timestep_prep_seconds = time.perf_counter() - timestep_prep_start
     print(f"  * done in {timestep_prep_seconds:.3f}s")
@@ -499,11 +551,14 @@ def generate_image(
     print("5. Denoise")
     denoise_start = time.perf_counter()
     print("  * loading transformer ...")
+    print(f"    variant: {transformer_variant}")
+    print(f"    quantization: {denoiser_quant_method or 'none'}")
     torch.cuda.empty_cache()
     transformer = load_flux2_denoiser(
         str(transformer_path),
         quant_method=denoiser_quant_method,
         variant=transformer_variant,
+        version=resolved_version,
     )
     transformer = transformer.to(device)
     if loras:
@@ -570,7 +625,7 @@ def generate_image(
     torch.cuda.empty_cache()
     denoise_seconds = time.perf_counter() - denoise_start
     print(f"  * done in {denoise_seconds:.3f}s")
-    
+
     print("6. VAE")
     vae_start = time.perf_counter()
     from diffusers import AutoencoderKLFlux2
@@ -602,7 +657,7 @@ def generate_image(
 
     print("7. Saving")
     saving_start = time.perf_counter()
-    output_dir = _resolve_output_dir(root)
+    output_dir = _resolve_output_dir(root, resolved_version)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}.png"
     image.save(output_path)
@@ -612,11 +667,17 @@ def generate_image(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Print the Flux 2 Klein 4B generation flow.")
+    parser = argparse.ArgumentParser(description="Unified Flux 2 Klein generation flow.")
     parser.add_argument(
         "--root",
         required=True,
-        help="Root folder that contains flux_2_klein_4b/model/tokenizer.",
+        help="Root folder that contains flux_2_klein_4b/model or flux2_9b/model.",
+    )
+    parser.add_argument(
+        "--version",
+        choices=("4b", "9b"),
+        required=True,
+        help="Model family to load.",
     )
     parser.add_argument(
         "--images",
@@ -630,14 +691,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--width",
         type=int,
-        default=384,
-        help="Output image width. Defaults to 512.",
+        default=512,
+        help="Output image width. Defaults to 384.",
     )
     parser.add_argument(
         "--height",
         type=int,
-        default=768,
-        help="Output image height. Defaults to 512.",
+        default=512,
+        help="Output image height. Defaults to 768.",
     )
     parser.add_argument(
         "--steps",
@@ -669,18 +730,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--text-quant-method",
         choices=("none", "single", "double"),
-        default="single",
+        default="none",
         help='Text encoder quantization method. "none" keeps checkpoint weights as loaded.',
     )
     parser.add_argument(
         "--denoiser-quant-method",
         choices=("none", "single", "double"),
-        default=None,
-        help='Denoiser quantization method. Defaults by variant when omitted: distill=single, base=double. Use "none" for fp16.',
+        default="none",
+        help='Denoiser quantization method. Use "none" to load the fp16 checkpoint directly.',
     )
     parser.add_argument(
         "--loras",
         help='Optional comma-separated LoRA list in the form "path:strength, path2:strength2".',
+    )
+    parser.add_argument(
+        "--max-length",
+        type=int,
+        default=512,
+        help="Maximum tokenizer sequence length.",
     )
     return parser.parse_args()
 
@@ -689,18 +756,20 @@ def main() -> None:
     args = parse_args()
     generate_image(
         args.root,
-        args.images,
+        version=args.version,
+        image=args.images,
         prompt=args.prompt,
         width=args.width,
         height=args.height,
         num_inference_steps=args.steps,
         seed=args.seed,
+        guidance_scale=args.guidance_scale,
         base=args.base,
         ref_size=args.ref_size,
-        guidance_scale=args.guidance_scale,
         text_quant_method=None if args.text_quant_method == "none" else args.text_quant_method,
-        denoiser_quant_method=None if args.denoiser_quant_method in {None, "none"} else args.denoiser_quant_method,
+        denoiser_quant_method=None if args.denoiser_quant_method == "none" else args.denoiser_quant_method,
         loras=_parse_loras_arg(args.loras),
+        max_length=args.max_length,
     )
 
 

@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 
-BLOCK_SIZE = 32
+BLOCK_SIZE = 16
 
 
 def dequantize_from_single_block(

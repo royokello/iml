@@ -11,8 +11,8 @@ constexpr int kThreadsPerBlock = 256;
 constexpr int kTargetMinBlocksPerSm = 8;
 constexpr int kGt1060_6gbSmCount = 10;
 
-constexpr int kSuperBlockSize = 256;
-constexpr int kSubBlockSize = 32;
+constexpr int kSuperBlockSize = 128;
+constexpr int kSubBlockSize = 16;
 constexpr int kSubBlocksPerSuper = kSuperBlockSize / kSubBlockSize;
 
 constexpr int kOutputsPerThread = 2;
@@ -20,6 +20,10 @@ constexpr int kThreadsPerSubBlock = kSubBlockSize / kOutputsPerThread;
 constexpr int kOutputsPerBlock = kThreadsPerBlock * kOutputsPerThread;
 constexpr int kSuperBlocksPerCta = kOutputsPerBlock / kSuperBlockSize;
 constexpr int kScaleSlotsPerCta = kOutputsPerBlock / kSubBlockSize;
+
+static_assert(kSuperBlockSize % kSubBlockSize == 0, "super block size must divide evenly into sub blocks");
+static_assert(kSubBlockSize % kOutputsPerThread == 0, "sub block size must align with the vectorized decode width");
+static_assert(kOutputsPerBlock % kSubBlockSize == 0, "CTA output span must cover whole sub blocks");
 
 void init_byte_to_half2_lut(cudaStream_t stream = nullptr);
 

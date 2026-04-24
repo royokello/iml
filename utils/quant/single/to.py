@@ -5,7 +5,7 @@ INT8_MIN = -128
 INT8_MAX = 127
 SCALE_MIN = torch.finfo(torch.float32).tiny
 
-BLOCK_SIZE = 32
+BLOCK_SIZE = 16
 
 
 def quantize_to_single_block(

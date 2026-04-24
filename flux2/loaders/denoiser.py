@@ -7,57 +7,13 @@ from pathlib import Path
 import torch
 from safetensors import safe_open
 
+from utils.loaders.sharded import load_local_sharded_checkpoint
 from utils.loaders.single import load_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
 
-from .transformer import Flux2Transformer2DModel
+from flux2.models.denoiser.transformer import Flux2Transformer2DModel
+from flux2.quant.denoiser import _build_target_tensors
 
-DEFAULT_TARGET_LINEAR_NAMES = (
-    "to_q",
-    "to_k",
-    "to_v",
-    "to_out",
-    "add_q_proj",
-    "add_k_proj",
-    "add_v_proj",
-    "to_add_out",
-    "to_qkv_mlp_proj",
-    "linear_in",
-    "linear_out",
-    "x_embedder",
-    "context_embedder",
-)
-
-
-def _resolve_model_dir(path: str | Path) -> Path:
-    model_path = Path(path)
-    if model_path.is_file():
-        return model_path.parent
-    return model_path
-
-
-def _resolve_transformer_dirs(path: str | Path, variant: str) -> tuple[Path, Path, str]:
-    resolved_variant = variant.strip().lower()
-    model_path = _resolve_model_dir(path).expanduser().resolve()
-
-    if model_path.name in {"base", "distill"} and model_path.parent.name == "transformer":
-        checkpoint_dir = model_path
-        model_dir = model_path.parent
-        path_variant = model_path.name
-        if path_variant != resolved_variant:
-            raise ValueError(
-                f"Transformer variant mismatch: path points to {path_variant!r}, variant={resolved_variant!r}."
-            )
-        return model_dir, checkpoint_dir, resolved_variant
-
-    return model_path, model_path / resolved_variant, resolved_variant
-
-
-def _parse_target_linear_names(value: str | None) -> tuple[str, ...]:
-    if value is None:
-        return DEFAULT_TARGET_LINEAR_NAMES
-    items = tuple(part.strip() for part in value.split(",") if part.strip())
-    return items or DEFAULT_TARGET_LINEAR_NAMES
 
 def _materialize_meta_tensors(model: torch.nn.Module) -> None:
     unresolved_parameters = [name for name, parameter in model.named_parameters() if getattr(parameter, "is_meta", False)]
@@ -142,12 +98,7 @@ def _is_targeted_linear(
         return False
 
     full_name = ".".join(module_path)
-    is_target = (
-        full_name in target_linear_names
-        or module_path[-1] in target_linear_names
-        or (module_path[-1].isdigit() and len(module_path) > 1 and module_path[-2] in target_linear_names)
-    )
-    if not is_target:
+    if full_name not in target_linear_names:
         return False
 
     if checkpoint_keys is None:
@@ -167,13 +118,29 @@ def _build_quantized_linear(
     return QuantizedLinear.from_prequantized(linear, method=method)
 
 
-def load_flux2_denoiser(
+def _load_flux2_denoiser(
     path: str | Path,
     quant_method: str | None = None,
-    target_linear_names: tuple[str, ...] = DEFAULT_TARGET_LINEAR_NAMES,
     variant: str = "distill",
+    version: str = "4b",
 ) -> Flux2Transformer2DModel:
-    model_dir, checkpoint_dir, variant = _resolve_transformer_dirs(path, variant)
+    variant = variant.strip().lower()
+    version = version.strip().lower()
+    target_linear_names = tuple(tensor.removesuffix(".weight") for tensor in _build_target_tensors(version))
+    model_dir = Path(path).expanduser().resolve()
+    if model_dir.is_file():
+        model_dir = model_dir.parent
+
+    if model_dir.name in {"base", "distill"} and model_dir.parent.name == "transformer":
+        if model_dir.name != variant:
+            raise ValueError(
+                f"Transformer variant mismatch: path points to {model_dir.name!r}, variant={variant!r}."
+            )
+        checkpoint_dir = model_dir
+        model_dir = model_dir.parent
+    else:
+        checkpoint_dir = model_dir / variant
+
     if not model_dir.is_dir():
         raise FileNotFoundError(f"Denoiser directory not found: {model_dir}")
     if not checkpoint_dir.is_dir():
@@ -197,11 +164,23 @@ def load_flux2_denoiser(
 
     if quantized_checkpoint_path is None:
         checkpoint_path = checkpoint_dir / "diffusion_pytorch_model.safetensors"
-        if not checkpoint_path.is_file():
+        checkpoint_shards = sorted(path.name for path in checkpoint_dir.glob("diffusion_pytorch_model-*.safetensors"))
+        if checkpoint_path.is_file():
+            incompatible = load_local_single_checkpoint(model, checkpoint_path)
+            if incompatible.unexpected_keys:
+                raise RuntimeError(
+                    "Unexpected keys in denoiser checkpoint: " + ", ".join(sorted(incompatible.unexpected_keys))
+                )
+        elif checkpoint_shards:
+            print(f"    loading sharded checkpoint from {checkpoint_dir}")
+            load_local_sharded_checkpoint(
+                model,
+                checkpoint_dir,
+                index_filename=None,
+                shard_pattern="diffusion_pytorch_model-*.safetensors",
+            )
+        else:
             raise FileNotFoundError(f"Denoiser checkpoint not found: {checkpoint_path}")
-        incompatible = load_local_single_checkpoint(model, checkpoint_path)
-        if incompatible.unexpected_keys:
-            raise RuntimeError("Unexpected keys in denoiser checkpoint: " + ", ".join(sorted(incompatible.unexpected_keys)))
         _materialize_meta_tensors(model)
     else:
         checkpoint_keys = _list_checkpoint_keys(quantized_checkpoint_path)

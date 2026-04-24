@@ -6,9 +6,9 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 from transformers.utils.deprecation import deprecate_kwarg
 
-from flux_2_klein_4b.text_encoder.attention import Qwen3Attention
-from flux_2_klein_4b.text_encoder.mlp import Qwen3MLP
-from flux_2_klein_4b.text_encoder.rms_norm import Qwen3RMSNorm
+from flux2.models.text_encoder.attention import Qwen3Attention
+from flux2.models.text_encoder.mlp import Qwen3MLP
+from flux2.models.text_encoder.rms_norm import Qwen3RMSNorm
 
 
 class Qwen3DecoderLayer(GradientCheckpointingLayer):

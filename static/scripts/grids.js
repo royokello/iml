@@ -1,4 +1,28 @@
 (() => {
+  const selectionModeEl = document.getElementById("selection_mode");
+  const frameIntervalEl = document.getElementById("frame_interval");
+  const frameIntervalHintEl = document.getElementById("frame-interval-hint");
+
+  const syncSelectionMode = () => {
+    if (!selectionModeEl || !frameIntervalEl) {
+      return;
+    }
+
+    const usesInterval = selectionModeEl.value === "interval";
+    frameIntervalEl.disabled = !usesInterval;
+    frameIntervalEl.required = usesInterval;
+    if (frameIntervalHintEl) {
+      frameIntervalHintEl.textContent = usesInterval
+        ? "Used only for Frame interval mode."
+        : "Segment midpoint mode ignores interval and uses one segment per grid cell.";
+    }
+  };
+
+  selectionModeEl?.addEventListener("change", syncSelectionMode);
+  syncSelectionMode();
+})();
+
+(() => {
   const gallery = document.querySelector("[data-grid-gallery]");
   if (!gallery) {
     return;

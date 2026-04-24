@@ -1,4 +1,3 @@
- 
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,8 +11,8 @@ from utils.loaders.sharded import load_local_sharded_checkpoint
 from utils.loaders.single import load_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
 
-from .embedding import Qwen3RotaryEmbedding
-from .model import Qwen3TextEncoder
+from flux2.models.text_encoder.embedding import Qwen3RotaryEmbedding
+from flux2.models.text_encoder.model import Qwen3Model
 
 
 def _resolve_model_dir(path: str | Path) -> Path:
@@ -21,6 +20,14 @@ def _resolve_model_dir(path: str | Path) -> Path:
     if model_path.is_file():
         return model_path.parent
     return model_path
+
+
+def _strip_model_prefix(name: str) -> str:
+    if name.startswith("model."):
+        return name[len("model.") :]
+    return name
+
+
 def _replace_linear_modules(
     module: nn.Module,
     *,
@@ -67,21 +74,10 @@ def _materialize_meta_tensors(model: nn.Module, *, validate: bool = True) -> Non
         )
 
 
-def load_qwen3_text_encoder(
+def _load_flux2_text_encoder(
     path: str | Path,
     quant_method: str | None = None,
-) -> Qwen3TextEncoder:
-    """Load the local Qwen3 text encoder from a checkpoint directory.
-
-    Args:
-        path: Directory containing the local Qwen3 text encoder checkpoint.
-        quant_method: Optional quantization method. Use `"single"` or
-            `"double"` to load or build quantized linear modules. Use `None`
-            to keep the original fp16 checkpoint weights.
-
-    Returns:
-        A ready-to-use `Qwen3TextEncoder` instance.
-    """
+) -> Qwen3Model:
     model_dir = _resolve_model_dir(path)
     if quant_method is not None:
         quant_method = quant_method.lower()
@@ -94,15 +90,33 @@ def load_qwen3_text_encoder(
         torch.set_default_dtype(torch.float16)
         config.dtype = torch.float16
         with torch.device("meta"):
-            model = Qwen3TextEncoder(config)
+            model = Qwen3Model(config)
     finally:
         torch.set_default_dtype(default_dtype)
 
     quantized_state_path = None if quant_method is None else model_dir / f"{quant_method}_quant.safetensors"
 
     if quantized_state_path is None or not quantized_state_path.is_file():
-        _load_local_sharded_checkpoint(model, model_dir)
-        model.tie_weights()
+        full_checkpoint_path = model_dir / "model.safetensors"
+        shard_index_path = model_dir / "model.safetensors.index.json"
+        shard_paths = sorted(model_dir.glob("model-*.safetensors"))
+        if full_checkpoint_path.is_file():
+            load_local_single_checkpoint(model, full_checkpoint_path, key_transform=_strip_model_prefix)
+        elif shard_index_path.is_file():
+            load_local_sharded_checkpoint(model, model_dir, key_transform=_strip_model_prefix)
+        elif shard_paths:
+            load_local_sharded_checkpoint(
+                model,
+                model_dir,
+                index_filename=None,
+                shard_pattern="model-*.safetensors",
+                key_transform=_strip_model_prefix,
+            )
+        else:
+            raise FileNotFoundError(
+                f"Text encoder checkpoint not found in {model_dir}: expected model.safetensors, "
+                "model.safetensors.index.json, or model-*.safetensors"
+            )
         _materialize_meta_tensors(model)
         if quant_method is not None:
             _replace_linear_modules(model, method=quant_method)
@@ -112,7 +126,8 @@ def load_qwen3_text_encoder(
             method=quant_method,
             quantize_weights=False,
         )
-        load_local_single_checkpoint(model, quantized_state_path)
+        load_local_single_checkpoint(model, quantized_state_path, key_transform=_strip_model_prefix)
         _materialize_meta_tensors(model)
+
     model.eval()
     return model

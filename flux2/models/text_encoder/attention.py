@@ -10,7 +10,7 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs
 from transformers.utils.deprecation import deprecate_kwarg
 
-from flux_2_klein_4b.text_encoder.rms_norm import Qwen3RMSNorm
+from flux2.models.text_encoder.rms_norm import Qwen3RMSNorm
 
 
 def rotate_half(x):

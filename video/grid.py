@@ -7,6 +7,14 @@ import cv2
 import numpy as np
 
 
+def _selection_mode_label(selection_mode: str) -> str:
+    labels = {
+        "interval": "Frame interval",
+        "segment_middle": "Segment midpoints",
+    }
+    return labels.get(selection_mode, selection_mode.replace("_", " ").title())
+
+
 def _center_crop_to_aspect(frame: np.ndarray, target_aspect: float) -> np.ndarray:
     if target_aspect <= 0:
         return frame
@@ -66,6 +74,49 @@ def _build_grid_image(
     return grid
 
 
+def _segment_middle_indices(total_frames: int, segment_count: int) -> list[int]:
+    if total_frames <= 0:
+        raise ValueError("Video does not contain any frames.")
+
+    if segment_count <= 0:
+        raise ValueError("Segment count must be positive.")
+
+    if total_frames < segment_count:
+        raise ValueError(
+            f"Video has only {total_frames} frames, but {segment_count} are required to fill the grid."
+        )
+
+    indices: list[int] = []
+    for segment_idx in range(segment_count):
+        start = (segment_idx * total_frames) // segment_count
+        end = ((segment_idx + 1) * total_frames) // segment_count
+        middle = start + ((end - start - 1) // 2)
+        indices.append(middle)
+    return indices
+
+
+def _read_frame_at(cap: cv2.VideoCapture, frame_index: int) -> np.ndarray:
+    if not cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index):
+        raise RuntimeError(f"Failed to seek to frame {frame_index}.")
+
+    success, frame = cap.read()
+    if not success or frame is None:
+        raise RuntimeError(f"Failed to read frame {frame_index}.")
+
+    return frame.copy()
+
+
+def _count_frames(cap: cv2.VideoCapture) -> int:
+    frame_count = 0
+    while cap.grab():
+        frame_count += 1
+
+    if not cap.set(cv2.CAP_PROP_POS_FRAMES, 0):
+        raise RuntimeError("Failed to reset video reader after counting frames.")
+
+    return frame_count
+
+
 def create_video_grids(
     video_path: str,
     output_dir: Path,
@@ -73,8 +124,9 @@ def create_video_grids(
     grid_cols: int,
     cell_ratio: tuple[int, int],
     cell_height: int,
-    frame_interval_sec: float,
+    frame_interval_sec: float | None = None,
     alignment: str = "center",
+    selection_mode: str = "interval",
 ) -> dict[str, object]:
     path = Path(video_path)
     if not path.is_file():
@@ -93,7 +145,10 @@ def create_video_grids(
     if cell_height <= 0:
         raise ValueError("Cell height must be greater than 0.")
 
-    if frame_interval_sec <= 0:
+    if selection_mode not in {"interval", "segment_middle"}:
+        raise ValueError(f"Unsupported selection mode: {selection_mode}")
+
+    if selection_mode == "interval" and (frame_interval_sec is None or frame_interval_sec <= 0):
         raise ValueError("Frame interval must be greater than 0.")
 
     run_dir = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -109,53 +164,98 @@ def create_video_grids(
         if fps <= 0:
             raise ValueError("Could not read FPS from the video.")
 
-        interval_frames = max(int(round(fps * frame_interval_sec)), 1)
         frames_per_grid = grid_rows * grid_cols
         cell_width = max(int(round(cell_height * (ratio_w / ratio_h))), 1)
         target_aspect = ratio_w / ratio_h
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames > 0:
-            sampled_frames = ((total_frames - 1) // interval_frames) + 1
-            grids_estimate = max(sampled_frames // frames_per_grid, 1)
-        else:
-            grids_estimate = 1
-        pad_width = len(str(grids_estimate))
+        if selection_mode == "segment_middle" and total_frames <= 0:
+            total_frames = _count_frames(cap)
 
         outputs: list[dict[str, object]] = []
         buffer: list[np.ndarray] = []
-        frame_index = 0
-        success, frame = cap.read()
-        while success:
-            if frame_index % interval_frames == 0:
-                buffer.append(frame.copy())
-                if len(buffer) == frames_per_grid:
-                    grid_image = _build_grid_image(
-                        buffer,
-                        grid_rows,
-                        grid_cols,
-                        target_aspect,
-                        cell_width,
-                        cell_height,
-                    )
-                    filename = f"{len(outputs) + 1:0{pad_width}d}.png"
-                    output_path = output_dir / filename
-                    if not cv2.imwrite(str(output_path), grid_image):
-                        raise RuntimeError("Failed to write grid image.")
-                    outputs.append(
-                        {
-                            "output_path": str(output_path),
-                            "filename": filename,
-                            "grid_index": len(outputs) + 1,
-                        }
-                    )
-                    buffer = []
-            frame_index += 1
-            success, frame = cap.read()
+        selected_frame_indices: list[int] = []
+        selected_frame_count = 0
+        interval_frames: int | None = None
+        remainder_frames = 0
 
-        if not outputs:
-            raise ValueError(
-                f"Video too short for a {grid_rows}x{grid_cols} grid at {frame_interval_sec}s intervals."
+        if selection_mode == "interval":
+            interval_frames = max(int(round(fps * frame_interval_sec)), 1)
+            if total_frames > 0:
+                sampled_frames = ((total_frames - 1) // interval_frames) + 1
+                grids_estimate = max(sampled_frames // frames_per_grid, 1)
+            else:
+                grids_estimate = 1
+            pad_width = len(str(grids_estimate))
+
+            frame_index = 0
+            success, frame = cap.read()
+            while success:
+                if frame_index % interval_frames == 0:
+                    selected_frame_count += 1
+                    buffer.append(frame.copy())
+                    if len(buffer) == frames_per_grid:
+                        grid_image = _build_grid_image(
+                            buffer,
+                            grid_rows,
+                            grid_cols,
+                            target_aspect,
+                            cell_width,
+                            cell_height,
+                        )
+                        filename = f"{len(outputs) + 1:0{pad_width}d}.png"
+                        output_path = output_dir / filename
+                        if not cv2.imwrite(str(output_path), grid_image):
+                            raise RuntimeError("Failed to write grid image.")
+                        outputs.append(
+                            {
+                                "output_path": str(output_path),
+                                "filename": filename,
+                                "grid_index": len(outputs) + 1,
+                            }
+                        )
+                        buffer = []
+                frame_index += 1
+                success, frame = cap.read()
+
+            remainder_frames = len(buffer)
+            if not outputs:
+                raise ValueError(
+                    f"Video too short for a {grid_rows}x{grid_cols} grid at {frame_interval_sec}s intervals."
+                )
+        else:
+            selected_frame_indices = _segment_middle_indices(total_frames, frames_per_grid)
+            buffer = [_read_frame_at(cap, frame_index) for frame_index in selected_frame_indices]
+            grid_image = _build_grid_image(
+                buffer,
+                grid_rows,
+                grid_cols,
+                target_aspect,
+                cell_width,
+                cell_height,
             )
+            filename = "1.png"
+            output_path = output_dir / filename
+            if not cv2.imwrite(str(output_path), grid_image):
+                raise RuntimeError("Failed to write grid image.")
+            outputs.append(
+                {
+                    "output_path": str(output_path),
+                    "filename": filename,
+                    "grid_index": 1,
+                }
+            )
+
+        sampling_config: dict[str, object] = {
+            "selection_mode": selection_mode,
+            "selection_mode_label": _selection_mode_label(selection_mode),
+            "selected_frame_count": selected_frame_count if selection_mode == "interval" else len(selected_frame_indices),
+        }
+        if selection_mode == "interval":
+            sampling_config["frame_interval_seconds"] = frame_interval_sec
+            sampling_config["interval_frames"] = interval_frames
+        else:
+            sampling_config["segment_count"] = frames_per_grid
+            sampling_config["selected_frame_indices"] = selected_frame_indices
 
         config = {
             "video_path": str(path),
@@ -164,6 +264,8 @@ def create_video_grids(
             "cell_ratio": {"width": ratio_w, "height": ratio_h},
             "cell_height": cell_height,
             "cell_width": cell_width,
+            "selection_mode": selection_mode,
+            "selection_mode_label": _selection_mode_label(selection_mode),
             "frame_interval_seconds": frame_interval_sec,
             "alignment": alignment,
             "frames_per_grid": frames_per_grid,
@@ -171,7 +273,8 @@ def create_video_grids(
             "fps": fps,
             "total_frames": total_frames,
             "grids_made": len(outputs),
-            "remainder_frames": len(buffer),
+            "remainder_frames": remainder_frames,
+            "sampling": sampling_config,
             "run_dir": run_dir,
             "created_at": datetime.now().isoformat(timespec="seconds"),
             "outputs": outputs,
@@ -188,9 +291,11 @@ def create_video_grids(
             "cell_width": cell_width,
             "cell_height": cell_height,
             "frames_per_grid": frames_per_grid,
+            "selection_mode": selection_mode,
+            "selection_mode_label": _selection_mode_label(selection_mode),
             "interval_seconds": frame_interval_sec,
             "grids_made": len(outputs),
-            "remainder_frames": len(buffer),
+            "remainder_frames": remainder_frames,
             "run_dir": run_dir,
         }
     finally:

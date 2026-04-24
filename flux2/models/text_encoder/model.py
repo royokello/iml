@@ -10,10 +10,10 @@ from transformers.processing_utils import Unpack
 from transformers.utils import TransformersKwargs, can_return_tuple
 from transformers.utils.generic import check_model_inputs
 
-from flux_2_klein_4b.text_encoder.attention import Qwen3Attention
-from flux_2_klein_4b.text_encoder.decoder_layer import Qwen3DecoderLayer
-from flux_2_klein_4b.text_encoder.embedding import Qwen3RotaryEmbedding
-from flux_2_klein_4b.text_encoder.rms_norm import Qwen3RMSNorm
+from flux2.models.text_encoder.attention import Qwen3Attention
+from flux2.models.text_encoder.decoder_layer import Qwen3DecoderLayer
+from flux2.models.text_encoder.embedding import Qwen3RotaryEmbedding
+from flux2.models.text_encoder.rms_norm import Qwen3RMSNorm
 
 
 class Qwen3PreTrainedModel(PreTrainedModel):

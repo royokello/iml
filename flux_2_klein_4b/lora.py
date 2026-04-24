@@ -579,7 +579,12 @@ def _merge_quantized_linear_lora(module: QuantizedLinear, delta: torch.Tensor, m
     if module.method == "single":
         dense_weight = dequantize_from_single_block(module.weight, module.scales).view(target_shape)
     elif module.method == "double":
-        dense_weight = dequantize_from_double_block(module.weight, module.scales, module.super_scales).view(target_shape)
+        dense_weight = dequantize_from_double_block(
+            module.weight,
+            module.scales,
+            module.super_scales,
+            original_numel=module.out_features * module.in_features,
+        ).view(target_shape)
     else:
         raise ValueError(f"Unsupported quantization method for {module_name}: {module.method!r}")
 

@@ -1,13 +1,13 @@
-def quantize_text_encoder(*args, **kwargs):
-    from .text_encoder import quantize_text_encoder as _quantize_text_encoder
-
-    return _quantize_text_encoder(*args, **kwargs)
-
-
 def quantize_denoiser(*args, **kwargs):
     from .denoiser import quantize_denoiser as _quantize_denoiser
 
     return _quantize_denoiser(*args, **kwargs)
+
+
+def quantize_text_encoder(*args, **kwargs):
+    from .text_encoder import quantize_text_encoder as _quantize_text_encoder
+
+    return _quantize_text_encoder(*args, **kwargs)
 
 __all__ = [
     "quantize_denoiser",
