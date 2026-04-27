@@ -8,6 +8,7 @@ from pathlib import Path
 from safetensors.torch import save_file
 
 from utils.quant.model import quantize_model_tensors
+from utils.quant.validators import CLI_QUANT_METHODS, normalize_quant_method
 
 _MODEL_DIRS = {
     "4b": "flux_2_klein_4b",
@@ -80,10 +81,8 @@ def _quantize_denoiser(
     method: str,
     variant: str,
 ) -> Path:
+    method = normalize_quant_method(method)
     output_model_dir = _resolve_model_dir(root, version)
-    if not output_model_dir.is_dir():
-        raise FileNotFoundError(f"Transformer directory not found: {output_model_dir}")
-
     checkpoint_dir = Path(input_root).expanduser().resolve() if input_root is not None else output_model_dir / variant
     if not checkpoint_dir.is_dir():
         raise FileNotFoundError(f"Transformer checkpoint directory not found: {checkpoint_dir}")
@@ -96,14 +95,14 @@ def _quantize_denoiser(
     quantize_start = time.perf_counter()
     state_dict = quantize_model_tensors(
         files=checkpoint_files,
-        tensors=target_tensors,
-        method=method,
+        targets={method: target_tensors},
     )
     quantize_seconds = time.perf_counter() - quantize_start
     print(f"Quantized in {quantize_seconds:.3f}s")
 
     print(f"Saving {output_path} ...")
     save_start = time.perf_counter()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     save_file(
         state_dict,
         str(output_path),
@@ -124,7 +123,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         required=True,
-        help="Root folder that contains flux_2_klein_4b or flux2_9b.",
+        help="Root folder where flux_2_klein_4b or flux2_9b is stored or should receive the quantized output.",
     )
     parser.add_argument(
         "--input",
@@ -138,7 +137,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--method",
-        choices=("single", "double"),
+        choices=CLI_QUANT_METHODS,
         required=True,
         help="Quantization method to apply.",
     )

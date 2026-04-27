@@ -8,6 +8,7 @@ from pathlib import Path
 from safetensors.torch import save_file
 
 from utils.quant.model import quantize_model_tensors
+from utils.quant.validators import CLI_QUANT_METHODS, normalize_quant_method
 
 _MODEL_DIR = "wan22"
 _MODEL_SHARDS = 3
@@ -48,31 +49,32 @@ def quantize_denoiser(
     *,
     method: str,
 ) -> Path:
-    model_dir = (
-        Path(input_root).expanduser().resolve()
-        if input_root is not None
-        else Path(root).expanduser().resolve() / _MODEL_DIR / "model" / "denoiser"
-    )
+    output_dir = Path(root).expanduser().resolve() / _MODEL_DIR / "model" / "denoiser"
+    if input_root is not None:
+        model_dir = Path(input_root).expanduser().resolve()
+    else:
+        model_dir = output_dir
+
     if not model_dir.is_dir():
         raise FileNotFoundError(f"Denoiser directory not found: {model_dir}")
 
-    method = method.strip().lower()
+    method = normalize_quant_method(method)
     checkpoint_files = _build_checkpoint_files(model_dir)
     target_tensors = _build_target_tensors()
-    output_path = model_dir / f"{method}_quant.safetensors"
+    output_path = output_dir / f"{method}_quant.safetensors"
 
     print(f"Applying {method} quantization for WAN22 denoiser ...")
     quantize_start = time.perf_counter()
     state_dict = quantize_model_tensors(
         files=checkpoint_files,
-        tensors=target_tensors,
-        method=method,
+        targets={method: target_tensors},
     )
     quantize_seconds = time.perf_counter() - quantize_start
     print(f"Quantized in {quantize_seconds:.3f}s")
 
     print(f"Saving {output_path} ...")
     save_start = time.perf_counter()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     save_file(
         state_dict,
         str(output_path),
@@ -91,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         required=True,
-        help="Root folder that contains wan22/model/denoiser.",
+        help="Root folder where wan22/model/denoiser is stored or should receive the quantized output.",
     )
     parser.add_argument(
         "--input",
@@ -99,7 +101,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--method",
-        choices=("single", "double"),
+        choices=CLI_QUANT_METHODS,
         required=True,
         help="Quantization method to apply.",
     )

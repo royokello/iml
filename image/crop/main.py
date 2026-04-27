@@ -1,4 +1,4 @@
-import argparse, os
+import argparse, csv, os
 from pathlib import Path
 from PIL import Image
 from ultralytics import YOLO
@@ -6,6 +6,49 @@ from utils.stages import find_latest_stage
 import numpy as np
 
 CLASS_RATIOS = {0: (1, 1), 1: (3, 4), 2: (4, 3), 3: (1, 2), 4: (2, 1)}  # w:h
+
+
+def read_yolo_class_mapping(project: str, stage: int) -> tuple[dict[int, int], dict[int, int]]:
+    labels_path = os.path.join(project, f"stage_{stage}_crop_labels.csv")
+    if not os.path.isfile(labels_path):
+        raise FileNotFoundError(labels_path)
+
+    original_classes = set()
+    with open(labels_path, "r", newline="") as f:
+        reader = csv.reader(f)
+        next(reader, None)
+        for row in reader:
+            try:
+                original_classes.add(int(row[1]))
+            except (IndexError, TypeError, ValueError):
+                continue
+
+    if not original_classes:
+        raise RuntimeError(f"No classes found in {labels_path}")
+
+    present_classes = sorted(original_classes)
+    yolo_to_original = {idx: cls_id for idx, cls_id in enumerate(present_classes)}
+    original_to_yolo = {cls_id: idx for idx, cls_id in yolo_to_original.items()}
+    return yolo_to_original, original_to_yolo
+
+
+def yolo_ratio_map(yolo_to_original: dict[int, int]) -> dict[int, tuple[int, int]]:
+    return {
+        yolo_id: CLASS_RATIOS.get(original_cls_id, (1, 1))
+        for yolo_id, original_cls_id in yolo_to_original.items()
+    }
+
+
+def map_requested_classes(classes, original_to_yolo: dict[int, int]) -> list[int] | None:
+    if classes is None:
+        return None
+
+    mapped = []
+    for cls_id in classes:
+        if cls_id in original_to_yolo:
+            mapped.append(original_to_yolo[cls_id])
+
+    return sorted(set(mapped))
 
 def list_images(d: str):
     exts = (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".tif", ".tiff", ".webp")
@@ -122,6 +165,19 @@ def perform_cropping(
     os.makedirs(out_dir, exist_ok=True)
 
     model = YOLO(weights)
+    yolo_to_original, original_to_yolo = read_yolo_class_mapping(project, stage)
+    ratio_by_yolo_id = yolo_ratio_map(yolo_to_original)
+    mapped_classes = map_requested_classes(classes, original_to_yolo)
+
+    if classes is not None:
+        print(f"Mapped requested classes {classes} to YOLO classes {mapped_classes}")
+    print(
+        "YOLO crop ratios: "
+        + ", ".join(
+            f"{yolo_id}->class_{yolo_to_original[yolo_id]}={rw}:{rh}"
+            for yolo_id, (rw, rh) in sorted(ratio_by_yolo_id.items())
+        )
+    )
     
     if not list_images(src_dir):
         raise RuntimeError("No images found.")
@@ -131,7 +187,7 @@ def perform_cropping(
         conf=conf,
         iou=iou,
         max_det=max_det,
-        classes=classes,
+        classes=mapped_classes,
         device="cuda",
         stream=True,
         save=False,
@@ -156,7 +212,7 @@ def perform_cropping(
         for j in range(len(boxes)):
             cls_id = int(boxes.cls[j].item())
             conf = float(boxes.conf[j].item())
-            if classes is not None and cls_id not in classes:
+            if mapped_classes is not None and cls_id not in mapped_classes:
                 continue
             # keep only highest confidence per class
             if cls_id not in best_by_class or conf > best_by_class[cls_id][0]:
@@ -164,7 +220,7 @@ def perform_cropping(
 
         # now crop once per class
         for cls_id, (_, (x1, y1, x2, y2)) in best_by_class.items():
-            rw, rh = CLASS_RATIOS.get(cls_id, (1,1))
+            rw, rh = ratio_by_yolo_id.get(cls_id, (1,1))
             ex1, ey1, ex2, ey2 = expand_to_ratio((x1,y1,x2,y2), rw, rh, imW, imH)
             if ex2 <= ex1 or ey2 <= ey1:
                 continue

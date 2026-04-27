@@ -263,6 +263,35 @@ Notes
      - Resize long side: `python -m image.crop.main --project "C:\\proj" --stage 1 --resolution 768 --classes 0 1 2 3 4`
 
 
+### Gemma 4
+
+#### `gemma4.quant`
+- Features
+  - Quantizes the Gemma 4 language component by default
+  - Loads `<root>/gemma4/model.safetensors` by default
+  - `--input` can point directly at a source `model.safetensors` file and bypass the default input path
+  - Applies hardcoded mixed quantization to the language component
+  - Writes `<root>/gemma4/language_mixed_quant.safetensors`, creating the output directory if needed
+  - Add `--media` to also extract media tensors:
+    - Saves audio tensors as fp16 to `<root>/gemma4/audio.safetensors`
+    - Saves vision tensors as fp16 to `<root>/gemma4/vision.safetensors`
+  - Uses `sym-high` quantization for:
+    - `model.language_model.embed_tokens_per_layer.weight`
+  - Uses `sym-low` quantization for:
+    - `model.language_model.embed_tokens.weight`
+    - `self_attn.q_proj.weight`, `self_attn.k_proj.weight`, `self_attn.v_proj.weight`, `self_attn.o_proj.weight`
+    - `mlp.gate_proj.weight`, `mlp.up_proj.weight`, `mlp.down_proj.weight`
+  - Keeps non-target language tensors in the language output, converting `float32` and `bfloat16` tensors to `float16`
+  - Drops audio and vision tensors before processing the shared model quantization result for the language output
+- Examples
+  - `python -m gemma4.quant --root "/models"`
+  - `python -m gemma4.quant --root "/models" --input "/models/custom/gemma4/model.safetensors"`
+  - `python -m gemma4.quant --root "/models" --media`
+- Useful args
+  - `--root`
+  - `--input`
+  - `--media`
+
 ### Flux 2
 
 The unified `flux2` package provides the version-aware entrypoints for generation and quantization.
@@ -284,11 +313,11 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - `--base` switches to base-model defaults: `50` steps and CFG guidance scale `4.0`
   - Supports optional image conditioning with `--images "img1.png, img2.png"` by encoding reference images into latent tokens
   - Reference images are resized so their longest side is at most `--ref-size`, then cropped to the nearest valid VAE multiple before encoding
-  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `none`, `single`, or `double`
+  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `none`, `sym-high`, `sym-low`, `aff-high`, or `aff-low`
   - Passing `--text-quant-method none` or `--denoiser-quant-method none` keeps the original fp16 checkpoint weights
   - Saved quantized checkpoints are loaded automatically when present:
-    - text encoder: `<root>/<model>/model/text_encoder/single_quant.safetensors` or `double_quant.safetensors`
-    - denoiser: `<root>/<model>/model/transformer/<variant>/single_quant.safetensors` or `double_quant.safetensors`
+    - text encoder: `<root>/<model>/model/text_encoder/symmetric_high_quant.safetensors`, `symmetric_low_quant.safetensors`, `affine_high_quant.safetensors`, or `affine_low_quant.safetensors`
+    - denoiser: `<root>/<model>/model/transformer/<variant>/symmetric_high_quant.safetensors`, `symmetric_low_quant.safetensors`, `affine_high_quant.safetensors`, or `affine_low_quant.safetensors`
   - Supports merging one or more LoRA checkpoints at load time with `--loras "path1:1.0,path2:0.7"`
 - Examples
   - Prompt-only distilled generation:
@@ -320,7 +349,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 #### `flux2.train`
 - Current scope
   - Unified Flux 2 training entrypoint
-  - Current implementation trains against the Flux 2 Klein 4B model layout under `<root>/flux_2_klein_4b/model`
+  - Uses `--version` to select `<root>/flux_2_klein_4b/model` or `<root>/flux2_9b/model`
   - Loads the tokenizer and text encoder from the selected model directory
   - Encodes captions from a local image-caption dataset into `prompt_embeds` and `text_ids`
   - Keeps text encodings on CPU while the text encoder is active, then frees the text encoder and moves the encodings to VRAM
@@ -332,28 +361,32 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Prints encoded text memory size in MB
 - Current CLI
   - `--root`
+  - `--version`
   - `--dataset`
   - `--output`
   - `--steps`
   - `--resume`
-  - `--text-quant-method` (default: `single`)
-  - `--denoiser-quant-method` (default: `double`)
+  - `--text-quant-method` (default: `sym-high`)
+  - `--denoiser-quant-method` (default: `aff-low`)
   - `--trigger`
 - Example
-  - `python -m flux2.train --root "/models/flux" --dataset "/data/flux_dataset" --output "/runs/flux_style_a"`
+  - `python -m flux2.train --root "/models/flux" --version 4b --dataset "/data/flux_dataset" --output "/runs/flux_style_a"`
 
 #### `flux2.quant.text_encoder`
 - Features
   - Quantizes the Flux 2 text encoder for `4b` or `9b`
   - Uses `model-00001-of-00002.safetensors` for `4b`
   - Uses `model-00001-of-00004.safetensors` through `model-00004-of-00004.safetensors` for `9b`
+  - `--input` can point directly at a source `text_encoder` model directory and bypass the `<root>/<model>/model/text_encoder` input default
   - Builds the target tensor list from the shared Qwen linear suffixes and the version layer count
-  - Saves `<root>/<model>/model/text_encoder/<method>_quant.safetensors`
+  - Saves `<root>/<model>/model/text_encoder/<method>_quant.safetensors`, creating that output directory if needed
 - Examples
-  - `python -m flux2.quant.text_encoder --root "/models/flux" --version 4b --method single`
-  - `python -m flux2.quant.text_encoder --root "/models/flux" --version 9b --method double`
+  - `python -m flux2.quant.text_encoder --root "/models/flux" --version 4b --method sym-high`
+  - `python -m flux2.quant.text_encoder --root "/models/flux" --version 9b --method aff-low`
+  - `python -m flux2.quant.text_encoder --root "/models/flux" --version 9b --input "/models/custom/text_encoder" --method aff-high`
 - Useful args
   - `--root`
+  - `--input`
   - `--version`
   - `--method`
 
@@ -362,12 +395,14 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Quantizes the Flux 2 denoiser for `4b` or `9b`
   - Uses `diffusion_pytorch_model.safetensors` for `4b`
   - Uses `diffusion_pytorch_model-00001-of-00002.safetensors` and `diffusion_pytorch_model-00002-of-00002.safetensors` for `9b`
+  - `--input` can point directly at a source transformer checkpoint directory and bypass the `<root>/<model>/model/transformer/<variant>` input default
   - Quantizes `5` double blocks and `20` single blocks for `4b`
   - Quantizes `8` double blocks and `24` single blocks for `9b`
-  - Saves `<root>/<model>/model/transformer/<variant>/<method>_quant.safetensors`
+  - Saves `<root>/<model>/model/transformer/<variant>/<method>_quant.safetensors`, creating that output directory if needed
 - Examples
-  - `python -m flux2.quant.denoiser --root "/models/flux" --version 4b --variant distill --method single`
-  - `python -m flux2.quant.denoiser --root "/models/flux" --version 9b --variant base --method double`
+  - `python -m flux2.quant.denoiser --root "/models/flux" --version 4b --variant distill --method sym-high`
+  - `python -m flux2.quant.denoiser --root "/models/flux" --version 9b --variant base --method aff-low`
+  - `python -m flux2.quant.denoiser --root "/models/flux" --version 9b --variant base --input "/models/custom/transformer/base" --method aff-high`
 - Useful args
   - `--root`
   - `--version`
@@ -428,18 +463,19 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 
 #### `wan22.quant.text_encoder`
 - Features
-  - Quantizes the Wan 2.2 TI2V 5B T5 text encoder linear weights with method `single` or `double`
+  - Quantizes the Wan 2.2 TI2V 5B T5 text encoder linear weights with one of the shared quantization methods: `sym-high`, `sym-low`, `aff-high`, or `aff-low`
   - Loads the base checkpoint from `<root>/wan22/model/text_encoder/t5_umt5-xxl-enc-bf16.pth` by default
-  - `--input` can point directly at a `text_encoder` model directory and bypass the `<root>/wan22/model/text_encoder` default
+  - `--input` can point directly at a source `text_encoder` model directory and bypass the `<root>/wan22/model/text_encoder` input default
   - Targets all `24` T5 blocks for attention and feed-forward linear weights:
     - `attn.q.weight`, `attn.k.weight`, `attn.v.weight`, `attn.o.weight`
     - `ffn.gate.0.weight`, `ffn.fc1.weight`, `ffn.fc2.weight`
-  - Writes `<model_dir>/<method>_quant.pth`
+  - Writes `<root>/wan22/model/text_encoder/<method>_quant.safetensors`, creating that output directory if needed
+  - Stores safetensors metadata with `component=text_encoder` and `method=<method>`
   - Keeps non-target tensors in the output checkpoint, converting `float32` and `bfloat16` tensors to `float16`
 - Examples
-  - `python -m wan22.quant.text_encoder --root "/models/wan" --method single`
-  - `python -m wan22.quant.text_encoder --root "/models/wan" --method double`
-  - `python -m wan22.quant.text_encoder --root "/models/wan" --input "/models/custom/text_encoder" --method single`
+  - `python -m wan22.quant.text_encoder --root "/models/wan" --method sym-high`
+  - `python -m wan22.quant.text_encoder --root "/models/wan" --method aff-low`
+  - `python -m wan22.quant.text_encoder --root "/models/wan" --input "/models/custom/text_encoder" --method aff-high`
 - Useful args
   - `--root`
   - `--input`
@@ -447,23 +483,23 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 
 #### `wan22.quant.denoiser`
 - Features
-  - Quantizes the Wan 2.2 TI2V 5B denoiser linear weights with method `single` or `double`
+  - Quantizes the Wan 2.2 TI2V 5B denoiser linear weights with one of the shared quantization methods: `sym-high`, `sym-low`, `aff-high`, or `aff-low`
   - Loads the base sharded denoiser checkpoint from `<root>/wan22/model/denoiser` by default:
     - `diffusion_pytorch_model-00001-of-00003.safetensors`
     - `diffusion_pytorch_model-00002-of-00003.safetensors`
     - `diffusion_pytorch_model-00003-of-00003.safetensors`
-  - `--input` can point directly at a `denoiser` model directory and bypass the `<root>/wan22/model/denoiser` default
+  - `--input` can point directly at a source `denoiser` model directory and bypass the `<root>/wan22/model/denoiser` input default
   - Targets all `30` denoiser blocks for self-attention, cross-attention, and feed-forward linear weights:
     - `self_attn.q.weight`, `self_attn.k.weight`, `self_attn.v.weight`, `self_attn.o.weight`
     - `cross_attn.q.weight`, `cross_attn.k.weight`, `cross_attn.v.weight`, `cross_attn.o.weight`
     - `ffn.0.weight`, `ffn.2.weight`
-  - Writes `<model_dir>/<method>_quant.safetensors`
+  - Writes `<root>/wan22/model/denoiser/<method>_quant.safetensors`, creating that output directory if needed
   - Stores safetensors metadata with `component=denoiser` and `method=<method>`
   - Keeps non-target tensors in the output checkpoint, converting `float32` and `bfloat16` tensors to `float16`
 - Examples
-  - `python -m wan22.quant.denoiser --root "/models/wan" --method single`
-  - `python -m wan22.quant.denoiser --root "/models/wan" --method double`
-  - `python -m wan22.quant.denoiser --root "/models/wan" --input "/models/custom/denoiser" --method double`
+  - `python -m wan22.quant.denoiser --root "/models/wan" --method sym-high`
+  - `python -m wan22.quant.denoiser --root "/models/wan" --method aff-low`
+  - `python -m wan22.quant.denoiser --root "/models/wan" --input "/models/custom/denoiser" --method aff-high`
 - Useful args
   - `--root`
   - `--input`
@@ -472,18 +508,17 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 
 ### Utils
 
-#### `utils.stages`
-- Feature: `find_latest_stage(project)` returns the highest `stage_<N>` folder
-
 #### `utils.quant.eval`
 - Features
   - Benchmarks dequant-to-`fp16` only for the Flux 2 Klein 4B denoiser linear tensor shapes
   - Compares the current `utils.quant` dequantizers:
-    - `single_block_dequant`
-    - `double_block_dequant`
+    - `symmetric_high_dequant`
+    - `symmetric_low_dequant`
+    - `affine_high_dequant`
+    - `affine_low_dequant`
   - Prepares benchmark inputs with:
-    - `quantize_to_single_block`
-    - `quantize_to_double_block`
+    - `quantize_to_symmetric`
+    - `quantize_to_affine`
   - Measures reconstruction error against the original `fp16` weight tensor for each case
   - Reports:
     - `max_abs_diff`
@@ -491,163 +526,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Prints per-case timing while running, then prints a full result table, best method per shape, and per-method averages
   - Reports input and output byte counts for each benchmark case
   - Computes accuracy metrics outside the timed loop, so they do not affect the speed measurements
-  - Requires CUDA, because the double-block dequant path uses the CUDA extension in `utils/quant/double/cuda`
+  - Uses CUDA when benchmarking the CUDA dequantizer variants in `utils/quant/cuda`
   - Uses fixed constants in the file; there are no CLI args
 - Example
   - `python -m utils.quant.eval`
-
-#### `utils.cap.label`
-- Features
-  - Minimal Flask app to tag exported loops; writes `caption.txt` in each loop folder
-- Example
-  - `python -m utils.cap.label --input "C:\\loops" --port 7860` then open `http://localhost:7860`
-
-#### `utils.quant`
-- Features
-  - Package entry point for the block quantizers under `utils/quant`
-  - Re-exports:
-    - `quantize_to_single_block`
-    - `quantize_to_double_block`
-- Files
-  - Package exports: [__init__.py](utils/quant/__init__.py)
-  - Single-block quantizer: [utils/quant/single](utils/quant/single)
-  - Double-block quantizer: [utils/quant/double](utils/quant/double)
-
-#### `utils.quant.single`
-- Features
-  - Symmetric per-block `int8` quantization with one `fp16` scale per block
-  - Uses a fixed block size of `16`
-  - Preserves the original tensor shape for the quantized payload; only the internal math path pads to block boundaries
-  - Supports round-trip conversion with:
-    - `quantize_to_single_block`
-    - `dequantize_from_single_block`
-- Files
-  - Package exports: [__init__.py](utils/quant/single/__init__.py)
-  - Quantizer: [to.py](utils/quant/single/to.py)
-  - Dequantizer: [fro.py](utils/quant/single/fro.py)
-- Public API
-  - `utils.quant.single.BLOCK_SIZE`
-    - Fixed at `16`
-  - `utils.quant.single.quantize_to_single_block(tensor)`
-    - Returns `(quantized, scales)`
-  - `utils.quant.single.dequantize_from_single_block(tensor, scales)`
-    - Returns the reconstructed `fp16` tensor
-- Input / output
-  - `tensor` for quantization must be floating-point
-  - `quantized` is returned as `torch.int8` with the same shape as the source tensor
-  - `scales` is a flat `torch.float16` tensor with one scale per `16` values in flattened order
-- Example
-```python
-import torch
-from utils.quant.single import dequantize_from_single_block, quantize_to_single_block
-
-weight = torch.randn(128, 64, device="cuda", dtype=torch.float16)
-qweight, scales = quantize_to_single_block(weight)
-restored = dequantize_from_single_block(qweight, scales)
-```
-
-#### `utils.quant.double`
-- Features
-  - Hierarchical double-block quantization using packed signed `int4` payloads
-  - Uses:
-    - `SUPER_BLOCK_SIZE = 128`
-    - `SUB_BLOCK_SIZE = 16`
-    - `SUB_BLOCKS_PER_SUPER = 8`
-  - Stores one `fp16` `super_scale` per super-block and eight `int8` local scale codes per super-block
-  - Local scale codes are derived from each local block's absmax using `ceil`, with true-zero blocks stored as `0` and nonzero blocks clamped to `1..127`
-  - The packed weight stream stays padded to full `128`-value super-blocks so payload and metadata remain aligned
-  - Packs two signed int4 values into each `torch.int8` output byte
-  - Dequantization entry point uses the CUDA module in `utils/quant/double/cuda`
-- Files
-  - Package exports: [__init__.py](utils/quant/double/__init__.py)
-  - Quantizer: [to.py](utils/quant/double/to.py)
-  - Dequantizer wrapper: [fro.py](utils/quant/double/fro.py)
-  - CUDA kernel module: [cuda](utils/quant/double/cuda)
-- Public API
-  - `utils.quant.double.SUPER_BLOCK_SIZE`
-    - Fixed at `128`
-  - `utils.quant.double.SUB_BLOCK_SIZE`
-    - Fixed at `16`
-  - `utils.quant.double.SUB_BLOCKS_PER_SUPER`
-    - Fixed at `8`
-  - `utils.quant.double.quantize_to_double_block(tensor)`
-    - Returns `(packed, sub_scales, super_scales)`
-  - `utils.quant.double.dequantize_from_double_block(tensor, sub_scales, super_scales, original_numel=None)`
-    - Returns the reconstructed `fp16` tensor via the CUDA extension
-- Input / output
-  - `tensor` for quantization must be floating-point
-  - `packed` is a flat `torch.int8` tensor containing two signed int4 values per byte, padded to a whole number of super-blocks
-  - `sub_scales` is a `torch.int8` tensor with shape `(<num_super_blocks>, 8)` containing local scale codes in `0..127`
-  - `super_scales` is a flat `torch.float16` tensor with one scale per super-block
-  - `dequantize_from_double_block` requires CUDA tensors and the built extension in `utils/quant/double/cuda`
-- Example
-```python
-import torch
-from utils.quant.double import dequantize_from_double_block, quantize_to_double_block
-
-weight = torch.randn(128, 64, device="cuda", dtype=torch.float16)
-packed, sub_scales, super_scales = quantize_to_double_block(weight)
-restored = dequantize_from_double_block(
-    packed,
-    sub_scales,
-    super_scales,
-    original_numel=weight.numel(),
-).view_as(weight)
-```
-
-#### `utils.quant.double.cuda`
-- Features
-  - CUDA full dequant kernel for the double-block quantization format produced by `utils.quant.double.to.quantize_to_double_block`
-  - Decodes packed signed `int4` weights into `fp16` with a `256`-entry constant-memory byte LUT, where each byte decodes to one `half2`
-  - Applies the hierarchical scale path inside the kernel:
-    - one `fp16` `super_scale` per `128` values
-    - eight `int8` local scale codes per super-block, one per `16` values
-    - effective scale per sub-block is `super_scale * local_scale_code`
-  - Stages CTA-local effective scales for the four super-blocks covered by each `256`-thread launch block
-  - Tuned for GTX 1060 6GB / GP106 / compute capability `6.1`
-- Files
-  - Header: [dequantize_from_double_block.cuh](utils/quant/double/cuda/dequantize_from_double_block.cuh)
-  - CUDA source: [dequantize_from_double_block.cu](utils/quant/double/cuda/dequantize_from_double_block.cu)
-  - Python extension shim: [dequantize_from_double_block_extension.cpp](utils/quant/double/cuda/dequantize_from_double_block_extension.cpp)
-  - Build script: [setup.py](utils/quant/double/cuda/setup.py)
-- Build
-  - Open a shell with your venv active and CUDA/MSVC available
-  - Build the prebuilt CUDA Python module in place:
-```bash
-cd utils/quant/double/cuda
-python setup.py build_ext --inplace
-```
-  - This build path uses `BuildExtension.with_options(use_ninja=False)`, so it does not require `ninja`
-- Python usage after build
-```python
-import torch
-import dequantize_from_double_block_cuda
-
-packed = torch.empty((1024,), device="cuda", dtype=torch.int8)
-sub_scales = torch.empty((16, 8), device="cuda", dtype=torch.int8)
-super_scales = torch.empty((16,), device="cuda", dtype=torch.float16)
-out = torch.empty((2048,), device="cuda", dtype=torch.float16)
-
-dequantize_from_double_block_cuda.dequantize_from_double_block_fp16(
-    packed,
-    sub_scales,
-    super_scales,
-    out,
-    out.numel(),
-)
-```
-- Public API
-  - `iml::cuda::dequantize_from_double_block::init_byte_to_half2_lut(cudaStream_t stream = nullptr)`
-    - Initializes the constant-memory LUT once before dequant launches
-  - `iml::cuda::dequantize_from_double_block::launch_dequantize_from_double_block(const int8_t* packed, const int8_t* sub_scales, const __half* super_scales, __half* out, int64_t original_numel, cudaStream_t stream = nullptr)`
-    - Launches the full double-block dequant kernel
-- Input / output
-  - `packed` is a contiguous CUDA `int8` tensor containing two signed int4 values per byte using the nibble packing from `utils.quant.double.to`
-  - `sub_scales` is a contiguous CUDA `int8` tensor with shape `(<num_super_blocks>, 8)` or an equivalent contiguous flat layout, with values in `0..127`
-  - `super_scales` is a contiguous CUDA `fp16` tensor with one scale per super-block
-  - `out` must point to a device buffer large enough for `original_numel` `fp16` values
-  - `original_numel` is the number of decoded scalar outputs, not the number of packed bytes
-- Notes
-  - This module performs full dequant for the current double-block `fp16 super_scale + int8 local-scale code + packed int4 payload` format only.
-  - The LUT must be initialized before the first dequant launch in the current CUDA context.
-  - The kernel assumes CUDA device pointers for `packed`, `sub_scales`, `super_scales`, and `out`.

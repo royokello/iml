@@ -8,6 +8,7 @@ from pathlib import Path
 from safetensors.torch import save_file
 
 from utils.quant.model import quantize_model_tensors
+from utils.quant.validators import CLI_QUANT_METHODS, normalize_quant_method
 
 _MODEL_DIRS = {
     "4b": "flux_2_klein_4b",
@@ -59,20 +60,25 @@ def _quantize_text_encoder(
     version: str,
     method: str,
 ) -> Path:
-    model_dir = Path(input_root).expanduser().resolve() if input_root is not None else _resolve_model_dir(root, version)
+    method = normalize_quant_method(method)
+    output_dir = _resolve_model_dir(root, version)
+    if input_root is not None:
+        model_dir = Path(input_root).expanduser().resolve()
+    else:
+        model_dir = output_dir
+
     if not model_dir.is_dir():
         raise FileNotFoundError(f"Text encoder directory not found: {model_dir}")
 
     checkpoint_files = _build_checkpoint_files(model_dir, version)
     target_tensors = _build_target_tensors()
-    output_path = model_dir / f"{method}_quant.safetensors"
+    output_path = output_dir / f"{method}_quant.safetensors"
 
     print(f"Applying {method} quantization for Flux2 {version} text encoder ...")
     quantize_start = time.perf_counter()
     state_dict = quantize_model_tensors(
         files=checkpoint_files,
-        tensors=target_tensors,
-        method=method,
+        targets={method: target_tensors},
     )
     state_dict = {
         name: tensor
@@ -84,6 +90,7 @@ def _quantize_text_encoder(
 
     print(f"Saving {output_path} ...")
     save_start = time.perf_counter()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     save_file(
         state_dict,
         str(output_path),
@@ -103,11 +110,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         required=True,
-        help="Root folder that contains flux_2_klein_4b or flux2_9b.",
+        help="Root folder where flux_2_klein_4b or flux2_9b is stored or should receive the quantized output.",
     )
     parser.add_argument(
         "--input",
-        help="Full text_encoder model directory. Bypasses the --root/--version default path.",
+        help="Full source text_encoder model directory. Bypasses the --root/--version input default.",
     )
     parser.add_argument(
         "--version",
@@ -117,7 +124,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--method",
-        choices=("single", "double"),
+        choices=CLI_QUANT_METHODS,
         required=True,
         help="Quantization method to apply.",
     )

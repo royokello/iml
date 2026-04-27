@@ -10,6 +10,7 @@ from safetensors import safe_open
 from utils.loaders.sharded import load_local_sharded_checkpoint
 from utils.loaders.single import load_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
+from utils.quant.validators import normalize_quant_method
 
 from flux2.models.denoiser.transformer import Flux2Transformer2DModel
 from flux2.quant.denoiser import _build_target_tensors
@@ -23,6 +24,24 @@ def _materialize_meta_tensors(model: torch.nn.Module) -> None:
     unresolved_buffers = [name for name, buffer in model.named_buffers() if getattr(buffer, "is_meta", False)]
     if unresolved_buffers:
         raise RuntimeError("Checkpoint load left buffers on meta: " + ", ".join(unresolved_buffers))
+
+
+def _cast_float_tensors_except_quantized_linear(module: torch.nn.Module, dtype: torch.dtype) -> None:
+    for parameter_name, parameter in module.named_parameters(recurse=False):
+        if parameter is not None and parameter.is_floating_point() and parameter.dtype != dtype:
+            module._parameters[parameter_name] = torch.nn.Parameter(
+                parameter.to(dtype=dtype),
+                requires_grad=parameter.requires_grad,
+            )
+
+    for buffer_name, buffer in module.named_buffers(recurse=False):
+        if buffer is not None and buffer.is_floating_point() and buffer.dtype != dtype:
+            module._buffers[buffer_name] = buffer.to(dtype=dtype)
+
+    for child in module.children():
+        if isinstance(child, QuantizedLinear):
+            continue
+        _cast_float_tensors_except_quantized_linear(child, dtype)
 
 
 def _build_model_from_config(model_dir: Path) -> Flux2Transformer2DModel:
@@ -104,7 +123,7 @@ def _is_targeted_linear(
     if checkpoint_keys is None:
         return True
 
-    return f"{full_name}.scales" in checkpoint_keys
+    return f"{full_name}.sub_scales" in checkpoint_keys
 
 
 def _build_quantized_linear(
@@ -147,9 +166,7 @@ def _load_flux2_denoiser(
         raise FileNotFoundError(f"Denoiser checkpoint directory not found: {checkpoint_dir}")
 
     if quant_method is not None:
-        quant_method = quant_method.lower()
-        if quant_method not in {"single", "double"}:
-            raise ValueError('quant_method must be "single", "double", or None.')
+        quant_method = normalize_quant_method(quant_method)
 
     model = _build_model_from_config(model_dir)
     quantized_checkpoint_path = None
@@ -201,6 +218,9 @@ def _load_flux2_denoiser(
             method=quant_method,
             target_linear_names=target_linear_names,
         )
-    model = model.to(dtype=torch.float16)
+    if quant_method is None:
+        model = model.to(dtype=torch.float16)
+    else:
+        _cast_float_tensors_except_quantized_linear(model, torch.float16)
     model.eval()
     return model

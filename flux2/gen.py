@@ -11,6 +11,8 @@ import json
 import time
 from pathlib import Path
 
+from utils.quant.validators import CLI_QUANT_METHODS
+
 DEFAULT_DISTILLED_STEPS = 4
 DEFAULT_BASE_STEPS = 50
 DEFAULT_SEED = 19930625
@@ -367,7 +369,7 @@ def generate_image(
     max_length: int = 512,
 ) -> None:
     from flux2.loaders import load_flux2_denoiser, load_flux2_text_encoder
-    from flux_2_klein_4b.lora import apply_lora
+    from flux2.lora import apply_lora
 
     print("1. Text Encoding")
     text_encoding_start = time.perf_counter()
@@ -729,14 +731,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--text-quant-method",
-        choices=("none", "single", "double"),
-        default="none",
+        choices=("none", *CLI_QUANT_METHODS),
+        default="sym-high",
         help='Text encoder quantization method. "none" keeps checkpoint weights as loaded.',
     )
     parser.add_argument(
         "--denoiser-quant-method",
-        choices=("none", "single", "double"),
-        default="none",
+        choices=("none", *CLI_QUANT_METHODS),
+        default="sym-low",
         help='Denoiser quantization method. Use "none" to load the fp16 checkpoint directly.',
     )
     parser.add_argument(

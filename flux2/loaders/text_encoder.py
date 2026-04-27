@@ -10,6 +10,7 @@ from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 from utils.loaders.sharded import load_local_sharded_checkpoint
 from utils.loaders.single import load_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
+from utils.quant.validators import normalize_quant_method
 
 from flux2.models.text_encoder.embedding import Qwen3RotaryEmbedding
 from flux2.models.text_encoder.model import Qwen3Model
@@ -24,7 +25,7 @@ def _resolve_model_dir(path: str | Path) -> Path:
 
 def _strip_model_prefix(name: str) -> str:
     if name.startswith("model."):
-        return name[len("model.") :]
+        name = name[len("model.") :]
     return name
 
 
@@ -80,9 +81,7 @@ def _load_flux2_text_encoder(
 ) -> Qwen3Model:
     model_dir = _resolve_model_dir(path)
     if quant_method is not None:
-        quant_method = quant_method.lower()
-        if quant_method not in {"single", "double"}:
-            raise ValueError('quant_method must be "single", "double", or None.')
+        quant_method = normalize_quant_method(quant_method)
 
     config = Qwen3Config.from_pretrained(str(model_dir), local_files_only=True)
     default_dtype = torch.get_default_dtype()

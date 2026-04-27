@@ -56,10 +56,23 @@ def inject_trainable_lora_modules(
 ) -> list[str]:
     injected_module_names: list[str] = []
 
+    def _matches_target(full_name: str, child_name: str) -> bool:
+        normalized_full_name = ".".join(part for part in full_name.split(".") if not part.isdigit())
+        for target_name in target_linear_names:
+            if "." not in target_name:
+                if child_name == target_name:
+                    return True
+                continue
+            if full_name == target_name or normalized_full_name == target_name:
+                return True
+            if full_name.endswith(f".{target_name}") or normalized_full_name.endswith(f".{target_name}"):
+                return True
+        return False
+
     def _inject(parent: torch.nn.Module, prefix: str = "") -> None:
         for child_name, child in list(parent.named_children()):
             full_name = f"{prefix}.{child_name}" if prefix else child_name
-            if child_name in target_linear_names and isinstance(child, (torch.nn.Linear, QuantizedLinear)):
+            if _matches_target(full_name, child_name) and isinstance(child, (torch.nn.Linear, QuantizedLinear)):
                 setattr(parent, child_name, TrainableLoraLinear(child, rank=rank, alpha=alpha))
                 injected_module_names.append(full_name)
                 continue

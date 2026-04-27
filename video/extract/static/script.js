@@ -9,6 +9,7 @@ const selectAllButton = document.getElementById("select-all-button");
 const clearSelectionButton = document.getElementById("clear-selection-button");
 
 let previewItems = [];
+let latestLoadId = 0;
 
 function setStatus(message, tone = "") {
   statusNode.textContent = message;
@@ -49,7 +50,16 @@ function renderMeta(state) {
   `;
 }
 
-function renderGallery(items) {
+function previewUrl(item, loadId) {
+  if (!item.preview_url) {
+    return "";
+  }
+
+  const separator = item.preview_url.includes("?") ? "&" : "?";
+  return `${item.preview_url}${separator}v=${loadId}`;
+}
+
+function renderGallery(items, loadId = latestLoadId) {
   previewItems = items;
   if (!items.length) {
     galleryNode.innerHTML = `<div class="empty">No preview frames were generated for this video.</div>`;
@@ -60,7 +70,7 @@ function renderGallery(items) {
   galleryNode.innerHTML = items.map((item, index) => `
     <article class="card">
       <div class="thumb-wrap">
-        <img src="${item.preview_url}" alt="Preview ${index + 1}" loading="lazy" />
+        <img src="${previewUrl(item, loadId)}" alt="Preview ${index + 1}" loading="lazy" />
       </div>
       <div class="card-body">
         <div class="card-top">
@@ -112,17 +122,26 @@ async function postJson(url, payload) {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  const loadId = ++latestLoadId;
+  renderMeta({});
+  renderGallery([], loadId);
   setStatus("Generating preview set...", "");
   saveResultsNode.textContent = "";
 
   try {
     const state = await postJson("/api/load", loadPayload());
+    if (loadId !== latestLoadId) {
+      return;
+    }
     renderMeta(state);
-    renderGallery(state.items);
+    renderGallery(state.items, loadId);
     setStatus(`Loaded ${state.items.length} preview marks.`, "success");
   } catch (error) {
+    if (loadId !== latestLoadId) {
+      return;
+    }
     renderMeta({});
-    renderGallery([]);
+    renderGallery([], loadId);
     setStatus(error.message, "error");
   }
 });
