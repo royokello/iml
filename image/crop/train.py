@@ -96,7 +96,8 @@ def main():
         verbose=True,
         rect=True,
         augment=False,
-        patience=16,
+        patience=8,
+        imgsz=512,
     )
 
     # figure out which run directory to pull artifacts from

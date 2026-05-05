@@ -1,109 +1,93 @@
 import torch
 import torch.nn.functional as F
 
-INT4_MIN = 0
-INT4_MAX = 15
-INT5_MIN = 0
-INT5_MAX = 31
 SCALE_CODE_MIN = 0
-SCALE_CODE_MAX = 127
-MIN_CODE_MIN = -128
-MIN_CODE_MAX = 127
 
 SUPER_BLOCK_SIZE = 256
-SUB_BLOCK_SIZE = 32
-INT5_PACKED_WORDS_PER_SUB_BLOCK = 5
+HALF_SUPER_BLOCK_SIZE = 128
+SUPPORTED_SUPER_BLOCK_SIZES = (SUPER_BLOCK_SIZE, HALF_SUPER_BLOCK_SIZE)
+_TARGET_FP32_CHUNK_BYTES = 256 * 1024 * 1024 * 2
+
+AFFINE_MODES = {
+    "high": {
+        "weight_bits": 5,
+        "meta_bits": 6,
+        "sub_block_size": 32,
+    },
+    "med": {
+        "weight_bits": 4,
+        "meta_bits": 6,
+        "sub_block_size": 32,
+    },
+    "low": {
+        "weight_bits": 2,
+        "meta_bits": 4,
+        "sub_block_size": 16,
+    },
+}
 
 
-def _pack_uint5_sub_blocks(qweight: torch.Tensor) -> torch.Tensor:
-    if qweight.shape[-1] != SUB_BLOCK_SIZE:
-        raise ValueError(f"uint5 packing expects sub-blocks of {SUB_BLOCK_SIZE} values.")
+def _packed_words_for_values(value_count: int, bits: int) -> int:
+    return (value_count * bits + 31) // 32
 
-    codes = qweight.to(torch.int64) & 0x1F
+
+def _pack_unsigned_values(values: torch.Tensor, *, bits: int) -> torch.Tensor:
+    mask = (1 << bits) - 1
+    codes = values.to(torch.int64) & mask
     packed = torch.zeros(
-        (*codes.shape[:-1], INT5_PACKED_WORDS_PER_SUB_BLOCK),
+        (*codes.shape[:-1], _packed_words_for_values(int(codes.shape[-1]), bits)),
         dtype=torch.int64,
-        device=qweight.device,
+        device=values.device,
     )
 
     bit_offset = 0
-    for value_index in range(SUB_BLOCK_SIZE):
+    for value_index in range(int(codes.shape[-1])):
         word_index = bit_offset // 32
         word_shift = bit_offset % 32
         value = codes[..., value_index]
 
         packed[..., word_index] |= value << word_shift
-        if word_shift > 27:
+        if word_shift + bits > 32:
             packed[..., word_index + 1] |= value >> (32 - word_shift)
 
-        bit_offset += 5
+        bit_offset += bits
 
     signed_packed = torch.where(packed >= (1 << 31), packed - (1 << 32), packed)
-    return signed_packed.to(torch.int32).view(qweight.shape[0], -1)
+    return signed_packed.to(torch.int32).view(values.shape[0], -1)
 
 
-def quantize_to_affine(
-    tensor: torch.Tensor,
-    mode: str = "low",
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    mode="high": packed uint5 weights, 5 int32 words per 32-weight sub-block
-    mode="low": packed uint4 weights
-    sub scale: int8 scale + int8 min
-    superscale: fp16 d + fp16 dmin
-    blocks: 32 weights per sub block x 8 sub blocks = 256 weights super block
-    """
-    mode = mode.strip().lower()
-    if mode not in {"high", "low"}:
-        raise ValueError(f"Unsupported affine quantization mode: {mode!r}. Expected 'high' or 'low'.")
-    if not torch.is_floating_point(tensor):
-        raise TypeError("Quantization expects fp16/fp32 tensors.")
+def _pack_signed_values(values: torch.Tensor, *, bits: int) -> torch.Tensor:
+    return _pack_unsigned_values(values, bits=bits)
 
-    block_size = int(tensor.shape[1]) if tensor.ndim == 2 else int(tensor.numel())
-    super_block_size = SUPER_BLOCK_SIZE if block_size % SUPER_BLOCK_SIZE == 0 else block_size
-    if super_block_size % SUB_BLOCK_SIZE != 0:
-        raise ValueError(
-            "Unsupported block size for affine quantization: "
-            f"{block_size}. Block size must be divisible by {SUB_BLOCK_SIZE}."
-        )
-    sub_blocks_per_super = super_block_size // SUB_BLOCK_SIZE
-    qweight_columns = (
-        super_block_size // 2
-        if mode == "low"
-        else sub_blocks_per_super * INT5_PACKED_WORDS_PER_SUB_BLOCK
+
+def _select_super_block_size(row_size: int, sub_block_size: int) -> int:
+    for super_block_size in SUPPORTED_SUPER_BLOCK_SIZES:
+        if row_size % super_block_size == 0:
+            return super_block_size
+    raise ValueError(
+        "Unsupported linear weight shape for affine quantization: "
+        f"in_features={row_size}. Input features must be divisible by "
+        f"{HALF_SUPER_BLOCK_SIZE} or {SUPER_BLOCK_SIZE}, and by sub-block size {sub_block_size}."
     )
-    qweight_dtype = torch.uint8 if mode == "low" else torch.int32
 
-    if tensor.numel() == 0:
-        return (
-            torch.empty((0, qweight_columns), dtype=qweight_dtype, device=tensor.device),
-            torch.empty((0, sub_blocks_per_super), dtype=torch.int8, device=tensor.device),
-            torch.empty((0, sub_blocks_per_super), dtype=torch.int8, device=tensor.device),
-            torch.empty((0,), dtype=torch.float16, device=tensor.device),
-            torch.empty((0,), dtype=torch.float16, device=tensor.device),
-        )
 
-    arr32 = tensor.detach().to(dtype=torch.float32)
-    if arr32.ndim == 2:
-        row_size = arr32.shape[1]
-        pad_len = (super_block_size - (row_size % super_block_size)) % super_block_size
-        if pad_len:
-            arr32 = F.pad(arr32, (0, pad_len))
-        super_blocks = arr32.contiguous().view(-1, super_block_size)
-    else:
-        flattened = arr32.flatten()
-        pad_len = (super_block_size - (flattened.numel() % super_block_size)) % super_block_size
-        if pad_len:
-            flattened = F.pad(flattened, (0, pad_len))
-        super_blocks = flattened.view(-1, super_block_size)
-
-    sub_blocks = super_blocks.view(-1, sub_blocks_per_super, SUB_BLOCK_SIZE)
+def _quantize_super_blocks(
+    super_blocks: torch.Tensor,
+    *,
+    sub_blocks_per_super: int,
+    sub_block_size: int,
+    weight_bits: int,
+    meta_bits: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    sub_blocks = super_blocks.view(-1, sub_blocks_per_super, sub_block_size)
 
     sub_mins = sub_blocks.amin(dim=2)
     sub_maxes = sub_blocks.amax(dim=2)
-    weight_min = INT4_MIN if mode == "low" else INT5_MIN
-    weight_max = INT4_MAX if mode == "low" else INT5_MAX
-    sub_scales = (sub_maxes - sub_mins) / float(weight_max)
+    weight_code_max = (1 << weight_bits) - 1
+    scale_code_max = (1 << meta_bits) - 1
+    min_code_min = -(1 << (meta_bits - 1))
+    min_code_max = (1 << (meta_bits - 1)) - 1
+    sub_scales = (sub_maxes - sub_mins) / float(weight_code_max)
 
     safe_sub_scales = torch.where(
         sub_scales > 0,
@@ -116,15 +100,10 @@ def quantize_to_affine(
         quantized,
         torch.zeros_like(quantized),
     )
-    quantized = quantized.clamp(weight_min, weight_max).to(torch.uint8)
-    if mode == "low":
-        paired = quantized.flatten().view(-1, 2)
-        packed = (paired[:, 0] | (paired[:, 1] << 4)).to(torch.uint8)
-        packed = packed.view(-1, super_block_size // 2)
-    else:
-        packed = _pack_uint5_sub_blocks(quantized)
+    quantized = quantized.clamp(0, weight_code_max).to(torch.uint8)
+    packed = _pack_unsigned_values(quantized, bits=weight_bits)
 
-    super_scales = sub_scales.abs().amax(dim=1) / float(SCALE_CODE_MAX)
+    super_scales = sub_scales.abs().amax(dim=1) / float(scale_code_max)
     safe_super_scales = torch.where(super_scales > 0, super_scales, torch.ones_like(super_scales))
     sub_scale_codes = torch.round(sub_scales / safe_super_scales.unsqueeze(1))
     sub_scale_codes = torch.where(
@@ -132,9 +111,9 @@ def quantize_to_affine(
         sub_scale_codes,
         torch.zeros_like(sub_scale_codes),
     )
-    sub_scale_codes = sub_scale_codes.clamp(SCALE_CODE_MIN, SCALE_CODE_MAX).to(torch.int8)
+    sub_scale_codes = sub_scale_codes.clamp(SCALE_CODE_MIN, scale_code_max).to(torch.int8)
 
-    super_mins = sub_mins.abs().amax(dim=1) / float(SCALE_CODE_MAX)
+    super_mins = sub_mins.abs().amax(dim=1) / float(min_code_max)
     safe_super_mins = torch.where(super_mins > 0, super_mins, torch.ones_like(super_mins))
     sub_min_codes = torch.round(sub_mins / safe_super_mins.unsqueeze(1))
     sub_min_codes = torch.where(
@@ -142,12 +121,112 @@ def quantize_to_affine(
         sub_min_codes,
         torch.zeros_like(sub_min_codes),
     )
-    sub_min_codes = sub_min_codes.clamp(MIN_CODE_MIN, MIN_CODE_MAX).to(torch.int8)
+    sub_min_codes = sub_min_codes.clamp(min_code_min, min_code_max).to(torch.int8)
 
     return (
         packed,
-        sub_scale_codes,
-        sub_min_codes,
+        _pack_unsigned_values(sub_scale_codes, bits=meta_bits),
+        _pack_signed_values(sub_min_codes, bits=meta_bits),
         super_scales.to(torch.float16),
         super_mins.to(torch.float16),
+    )
+
+
+def quantize_to_affine(
+    tensor: torch.Tensor,
+    mode: str = "low",
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    mode="high": packed uint5 weights, 6-bit sub-scales/mins, 32-weight sub-blocks
+    mode="med": packed uint4 weights, 6-bit sub-scales/mins, 32-weight sub-blocks
+    mode="low": packed uint2 weights, 4-bit sub-scales/mins, 16-weight sub-blocks
+    weights and sub-scales/mins are bit-packed into int32 words
+    superscale: fp16 d + fp16 dmin
+    blocks: 128/256-weight super-blocks
+    """
+    mode = mode.strip().lower()
+    if mode not in AFFINE_MODES:
+        raise ValueError(
+            f"Unsupported affine quantization mode: {mode!r}. Expected 'high', 'med', or 'low'."
+        )
+    if not torch.is_floating_point(tensor):
+        raise TypeError("Quantization expects fp16/fp32 tensors.")
+    if tensor.ndim != 2:
+        raise ValueError(
+            "Affine quantization expects a 2D linear weight tensor "
+            f"with shape (out_features, in_features), got {tuple(tensor.shape)}."
+        )
+    if not torch.cuda.is_available():
+        raise RuntimeError("Affine quantization requires CUDA to process weight chunks.")
+
+    work_device = torch.device("cuda")
+
+    config = AFFINE_MODES[mode]
+    weight_bits = int(config["weight_bits"])
+    meta_bits = int(config["meta_bits"])
+    sub_block_size = int(config["sub_block_size"])
+    row_size = int(tensor.shape[1])
+    super_block_size = _select_super_block_size(row_size, sub_block_size)
+    sub_blocks_per_super = super_block_size // sub_block_size
+    qweight_columns = sub_blocks_per_super * _packed_words_for_values(sub_block_size, weight_bits)
+    sub_metadata_columns = _packed_words_for_values(sub_blocks_per_super, meta_bits)
+    qweight_dtype = torch.int32
+
+    if tensor.numel() == 0:
+        return (
+            torch.empty((0, qweight_columns), dtype=qweight_dtype, device=tensor.device),
+            torch.empty((0, sub_metadata_columns), dtype=torch.int32, device=tensor.device),
+            torch.empty((0, sub_metadata_columns), dtype=torch.int32, device=tensor.device),
+            torch.empty((0,), dtype=torch.float16, device=tensor.device),
+            torch.empty((0,), dtype=torch.float16, device=tensor.device),
+        )
+
+    pad_len = (super_block_size - (row_size % super_block_size)) % super_block_size
+    padded_row_size = row_size + pad_len
+    blocks_per_row = padded_row_size // super_block_size
+    num_super_blocks = int(tensor.shape[0]) * blocks_per_row
+    packed_out = torch.empty((num_super_blocks, qweight_columns), dtype=qweight_dtype, device=tensor.device)
+    sub_scale_codes_out = torch.empty(
+        (num_super_blocks, sub_metadata_columns),
+        dtype=torch.int32,
+        device=tensor.device,
+    )
+    sub_min_codes_out = torch.empty_like(sub_scale_codes_out)
+    super_scales_out = torch.empty((num_super_blocks,), dtype=torch.float16, device=tensor.device)
+    super_mins_out = torch.empty_like(super_scales_out)
+    rows_per_chunk = max(1, _TARGET_FP32_CHUNK_BYTES // (padded_row_size * 4))
+
+    for start in range(0, int(tensor.shape[0]), rows_per_chunk):
+        stop = min(int(tensor.shape[0]), start + rows_per_chunk)
+        out_start = start * blocks_per_row
+        out_stop = stop * blocks_per_row
+        arr32 = tensor[start:stop].detach().to(device=work_device, dtype=torch.float32)
+        if pad_len:
+            arr32 = F.pad(arr32, (0, pad_len))
+        super_blocks = arr32.contiguous().view(-1, super_block_size)
+        (
+            packed_chunk,
+            sub_scale_codes_chunk,
+            sub_min_codes_chunk,
+            super_scales_chunk,
+            super_mins_chunk,
+        ) = _quantize_super_blocks(
+            super_blocks,
+            sub_blocks_per_super=sub_blocks_per_super,
+            sub_block_size=sub_block_size,
+            weight_bits=weight_bits,
+            meta_bits=meta_bits,
+        )
+        packed_out[out_start:out_stop].copy_(packed_chunk)
+        sub_scale_codes_out[out_start:out_stop].copy_(sub_scale_codes_chunk)
+        sub_min_codes_out[out_start:out_stop].copy_(sub_min_codes_chunk)
+        super_scales_out[out_start:out_stop].copy_(super_scales_chunk)
+        super_mins_out[out_start:out_stop].copy_(super_mins_chunk)
+
+    return (
+        packed_out,
+        sub_scale_codes_out,
+        sub_min_codes_out,
+        super_scales_out,
+        super_mins_out,
     )

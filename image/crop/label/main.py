@@ -195,6 +195,27 @@ def navigate():
             return jsonify(error='No labelled images'), 400
         prev = [i for i in labelled_idxs if i < current_image_index]
         current_image_index = prev[-1] if prev else labelled_idxs[-1]
+    elif action == 'search_by_name':
+        search_term = str(data.get('query', '')).strip().lower()
+        if not search_term:
+            return jsonify(error='Empty search query'), 400
+
+        found_idx = -1
+        for idx, img_name in enumerate(image_files):
+            if search_term == os.path.splitext(img_name)[0].lower():
+                found_idx = idx
+                break
+
+        if found_idx == -1:
+            for idx, img_name in enumerate(image_files):
+                if search_term in img_name.lower():
+                    found_idx = idx
+                    break
+
+        if found_idx == -1:
+            return jsonify(error=f'Image containing "{search_term}" not found'), 404
+
+        current_image_index = found_idx
     else:
         return jsonify(error='Invalid action'), 400
 

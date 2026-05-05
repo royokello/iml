@@ -1,7 +1,14 @@
 from __future__ import annotations
 
-CLI_QUANT_METHODS = ("sym-high", "sym-low", "aff-high", "aff-low")
-STORED_QUANT_METHODS = ("symmetric_high", "symmetric_low", "affine_high", "affine_low")
+CLI_QUANT_METHODS = ("sym-high", "sym-med", "sym-low", "aff-high", "aff-med", "aff-low")
+STORED_QUANT_METHODS = (
+    "symmetric_high",
+    "symmetric_med",
+    "symmetric_low",
+    "affine_high",
+    "affine_med",
+    "affine_low",
+)
 
 _METHOD_ALIASES = {
     "sym-high": "symmetric_high",
@@ -9,6 +16,10 @@ _METHOD_ALIASES = {
     "symmetric-high": "symmetric_high",
     "symmetric_high": "symmetric_high",
     "symmetric": "symmetric_high",
+    "sym-med": "symmetric_med",
+    "sym_med": "symmetric_med",
+    "symmetric-med": "symmetric_med",
+    "symmetric_med": "symmetric_med",
     "sym-low": "symmetric_low",
     "sym_low": "symmetric_low",
     "symmetric-low": "symmetric_low",
@@ -17,6 +28,10 @@ _METHOD_ALIASES = {
     "aff_high": "affine_high",
     "affine-high": "affine_high",
     "affine_high": "affine_high",
+    "aff-med": "affine_med",
+    "aff_med": "affine_med",
+    "affine-med": "affine_med",
+    "affine_med": "affine_med",
     "aff-low": "affine_low",
     "aff_low": "affine_low",
     "affine-low": "affine_low",

@@ -368,7 +368,8 @@ def generate_image(
     loras: dict[str, float] | None = None,
     max_length: int = 512,
 ) -> None:
-    from flux2.loaders import load_flux2_denoiser, load_flux2_text_encoder
+    from flux2.denoiser.loader import _load_flux2_denoiser as load_flux2_denoiser
+    from flux2.text_encoder.loader import _load_flux2_text_encoder as load_flux2_text_encoder
     from flux2.lora import apply_lora
 
     print("1. Text Encoding")
@@ -381,7 +382,7 @@ def generate_image(
         raise RuntimeError("CUDA is not available in this environment.")
 
     resolved_version = version.strip().lower()
-    model_root = _resolve_model_root(root, resolved_version)
+    model_root = Path(root) / f"flux2_{resolved_version}" / "model"
     tokenizer_path = model_root / "tokenizer"
     text_encoder_path = model_root / "text_encoder"
     vae_path = model_root / "vae"
@@ -659,7 +660,7 @@ def generate_image(
 
     print("7. Saving")
     saving_start = time.perf_counter()
-    output_dir = _resolve_output_dir(root, resolved_version)
+    output_dir = Path(root) / f"flux2_{version}" / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}.png"
     image.save(output_path)
@@ -738,7 +739,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--denoiser-quant-method",
         choices=("none", *CLI_QUANT_METHODS),
-        default="sym-low",
+        default="sym-med",
         help='Denoiser quantization method. Use "none" to load the fp16 checkpoint directly.',
     )
     parser.add_argument(

@@ -10,8 +10,8 @@ if __package__ in (None, ""):
 
 from utils.quant.validators import CLI_QUANT_METHODS
 
-DEFAULT_SAMPLE_STEPS = 10
 DEFAULT_SAMPLE_SEED = 19930625
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def _positive_int(value: str) -> int:
@@ -58,42 +58,52 @@ def _resolve_sample_indices(
     return resolved_indices
 
 
-def _list_epoch_checkpoints(models_dir: Path) -> list[tuple[int, Path]]:
+def _list_step_checkpoints(checkpoints_dir: Path) -> list[tuple[int, Path]]:
     checkpoints: list[tuple[int, Path]] = []
-    for checkpoint_path in models_dir.glob("epoch_*.safetensors"):
-        epoch_text = checkpoint_path.stem.removeprefix("epoch_")
+    for checkpoint_path in checkpoints_dir.glob("*.safetensors"):
+        if not checkpoint_path.stem.isdigit():
+            continue
         try:
-            epoch_number = int(epoch_text)
+            step_number = int(checkpoint_path.stem)
         except ValueError:
             continue
-        checkpoints.append((epoch_number, checkpoint_path))
+        checkpoints.append((step_number, checkpoint_path))
 
     checkpoints.sort(key=lambda item: item[0])
     if not checkpoints:
-        raise FileNotFoundError(f"No epoch checkpoints found in {models_dir}")
+        raise FileNotFoundError(f"No step checkpoints found in {checkpoints_dir}")
     return checkpoints
 
 
-def _normalize_image_latent_resolution(
-    *,
-    image_width: int,
-    image_height: int,
-    vae_scale_factor: int,
-) -> tuple[int, int]:
-    original_width = image_width
-    original_height = image_height
-    multiple_of = vae_scale_factor * 2
-    image_width = (image_width // multiple_of) * multiple_of
-    image_height = (image_height // multiple_of) * multiple_of
-    if image_width <= 0 or image_height <= 0:
-        raise ValueError(
-            f"Image is smaller than required multiple {multiple_of}: {original_width}x{original_height}"
-        )
-    return image_width, image_height
+def _is_supported_image(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+
+
+def _list_image_files(directory: Path) -> list[Path]:
+    if not directory.is_dir():
+        raise FileNotFoundError(f"Dataset directory not found: {directory}")
+    image_paths = sorted(
+        (path for path in directory.iterdir() if _is_supported_image(path)),
+        key=lambda path: path.name,
+    )
+    if not image_paths:
+        raise FileNotFoundError(f"No supported images found in dataset: {directory}")
+    return image_paths
+
+
+def _resize_to_max_side(*, image_width: int, image_height: int, max_side: int) -> tuple[int, int]:
+    if image_width >= image_height:
+        scaled_width = max_side
+        scaled_height = round(image_height * max_side / image_width)
+    else:
+        scaled_height = max_side
+        scaled_width = round(image_width * max_side / image_height)
+
+    return max(1, scaled_width), max(1, scaled_height)
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Render Flux 2 training samples for saved LoRA epochs.")
+    parser = argparse.ArgumentParser(description="Render Flux 2 training samples for saved LoRA checkpoints.")
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument(
         "--version",
@@ -101,24 +111,47 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Model family to load.",
     )
-    parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument(
-        "--output",
+        "--project",
         type=Path,
         required=True,
-        help="Training output directory that contains the models subdirectory.",
+        help="Training project directory.",
+    )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        help="Prompt to render without loading a dataset.",
+    )
+    parser.add_argument(
+        "--width",
+        type=_positive_int,
+        default=512,
+        help="Prompt-only sample width.",
+    )
+    parser.add_argument(
+        "--height",
+        type=_positive_int,
+        default=512,
+        help="Prompt-only sample height.",
+    )
+    parser.add_argument(
+        "--force-size",
+        "--force_size",
+        dest="force_size",
+        type=_positive_int,
+        help="Dataset-only override for the longest image side. Keeps each sample's aspect ratio.",
     )
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument(
         "--start",
         type=_positive_int,
         default=1,
-        help="First epoch number to render samples for.",
+        help="First step checkpoint number to render samples for.",
     )
     parser.add_argument("--sample-seed", "--sample_seed", dest="sample_seed", type=int, default=DEFAULT_SAMPLE_SEED)
-    parser.add_argument("--sample-indices", "--sample_indices", dest="sample_indices", type=str, default=None)
+    parser.add_argument("--sample-indices", dest="sample_indices", type=str, default=None)
     parser.add_argument("--text-quant-method", choices=CLI_QUANT_METHODS, default="sym-high")
-    parser.add_argument("--denoiser-quant-method", choices=CLI_QUANT_METHODS, default="sym-low")
+    parser.add_argument("--denoiser-quant-method", choices=CLI_QUANT_METHODS, default="sym-med")
     parser.add_argument(
         "--trigger",
         type=str,
@@ -130,282 +163,208 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    from flux2.loaders import load_flux2_dataset
+    project_path = args.project.expanduser().resolve()
+    checkpoints_dir = project_path / "models"
+    if not checkpoints_dir.is_dir():
+        raise FileNotFoundError(f"Expected models directory at {checkpoints_dir}")
 
-    output_dir = args.output.expanduser().resolve()
-    models_dir = output_dir / "models"
-    if not models_dir.is_dir():
-        raise FileNotFoundError(f"Expected training models directory at {models_dir}")
-
-    checkpoints = _list_epoch_checkpoints(models_dir)
+    checkpoints = _list_step_checkpoints(checkpoints_dir)
     checkpoints = [
-        (epoch_number, checkpoint_path)
-        for epoch_number, checkpoint_path in checkpoints
-        if epoch_number >= args.start
+        (step_number, checkpoint_path)
+        for step_number, checkpoint_path in checkpoints
+        if step_number >= args.start
     ]
     if not checkpoints:
-        raise FileNotFoundError(f"No epoch checkpoints found at or after epoch {args.start} in {models_dir}")
-    sample_dir = output_dir / "sample"
+        raise FileNotFoundError(f"No step checkpoints found at or after step {args.start} in {checkpoints_dir}")
+    sample_dir = project_path / "samples"
     sample_dir.mkdir(parents=True, exist_ok=True)
 
-    def sample_output_path(epoch_number: int, sample_index: int) -> Path:
-        return sample_dir / f"epoch_{epoch_number}_{sample_index}.png"
+    def sample_output_path(step_number: int, sample_index: int) -> Path:
+        return sample_dir / f"{step_number:06d}_{sample_index}.png"
 
-    print("1. Load dataset into cpu ram ...")
-    dataset_load_start = time.perf_counter()
-    dataset = load_flux2_dataset(args.dataset)
-    target_images = dataset["target_images"]
-    text_prompts = dataset["text_prompts"]
-    reference_images = dataset["reference_images"]
-    if not (len(target_images) == len(text_prompts) == len(reference_images)):
-        raise ValueError("Dataset loader returned misaligned target, prompt, and reference lists.")
+    def next_sample_output_path(step_number: int, sample_index: int) -> Path:
+        output_path = sample_output_path(step_number, sample_index)
+        if not output_path.is_file():
+            return output_path
+
+        duplicate_index = 2
+        while True:
+            duplicate_path = sample_dir / f"{step_number:06d}_{sample_index}_{duplicate_index}.png"
+            if not duplicate_path.is_file():
+                return duplicate_path
+            duplicate_index += 1
+
+    resolved_version = args.version.strip().lower()
+    model_root = args.root / f"flux2_{resolved_version}" / "model"
+    normalized_prompt = None if args.prompt is None else args.prompt.strip()
+    if normalized_prompt == "":
+        raise ValueError("--prompt must not be empty.")
+    if normalized_prompt is not None and args.trigger is not None:
+        raise ValueError("--trigger is only used with captionless datasets.")
+    if normalized_prompt is not None and args.force_size is not None:
+        raise ValueError("--force-size is only used with datasets.")
+
+    dataset_mode = "prompt"
+    reference_images: list[list[Path]] = []
+    sample_resolutions: dict[int, tuple[int, int]] = {}
+    cached_dataset = None
+
+    print("1. Load and encode dataset ...")
+    from flux2.train.dataset import Flux2Dataset
+
+    target_images = _list_image_files(project_path / "images" / "high")
+    reference_images = []
+    for target_image in target_images:
+        references_dir = target_image.parent / target_image.stem
+        reference_images.append(_list_image_files(references_dir) if references_dir.is_dir() else [])
 
     sample_indices = _resolve_sample_indices(
         dataset_size=len(target_images),
-        samples=args.samples,
+        samples=1 if normalized_prompt is not None else args.samples,
         sample_indices=args.sample_indices,
     )
     if not sample_indices:
         print("  * no samples requested")
         return
 
-    checkpoints_to_render = []
-    skipped_epochs = 0
-    for epoch_number, checkpoint_path in checkpoints:
-        pending_sample_indices = [
-            sample_index for sample_index in sample_indices if not sample_output_path(epoch_number, sample_index).is_file()
-        ]
-        if pending_sample_indices:
-            checkpoints_to_render.append((epoch_number, checkpoint_path, pending_sample_indices))
-        else:
-            skipped_epochs += 1
+    dataset_load_start = time.perf_counter()
+    selected_dataset_indices = [sample_index - 1 for sample_index in sample_indices]
+    selected_dataset_index_by_sample = {
+        sample_index: selected_index for selected_index, sample_index in enumerate(sample_indices)
+    }
+    normalized_trigger = normalized_prompt if normalized_prompt is not None else args.trigger
+    cached_dataset = Flux2Dataset(
+        model_root,
+        args.text_quant_method,
+        project_path,
+        normalized_trigger,
+        indices=selected_dataset_indices,
+    )
 
-    if skipped_epochs:
-        print(f"  * epochs with existing samples: {skipped_epochs}")
-    if not checkpoints_to_render:
-        print("  * all requested epoch samples already exist")
-        return
-    print(f"  * epochs to render: {len(checkpoints_to_render)}")
+    if normalized_prompt is not None:
+        dataset_mode = "prompt"
+    elif cached_dataset.shared_prompt_embeds is not None:
+        dataset_mode = "captionless"
+    else:
+        dataset_mode = "captioned"
 
-    normalized_trigger = None if args.trigger is None else args.trigger.strip()
-    if normalized_trigger == "":
-        raise ValueError("--trigger must not be empty.")
-
-    missing_prompt_count = sum(prompt is None for prompt in text_prompts)
-    if missing_prompt_count and normalized_trigger is None:
-        raise ValueError(f"{missing_prompt_count} samples without .txt prompts require --trigger.")
-    if not missing_prompt_count and normalized_trigger is not None:
-        raise ValueError("--trigger is only used for samples without .txt prompts.")
-
-    dataset_mode = "captionless" if missing_prompt_count == len(text_prompts) else "captioned"
-    trigger_text = normalized_trigger if dataset_mode == "captionless" else None
-    captions = [prompt if prompt is not None else normalized_trigger for prompt in text_prompts]
-    if any(caption is None for caption in captions):
-        raise ValueError("Internal dataset prompt resolution failed.")
-
-    from PIL import Image
-
-    sample_resolutions: dict[int, tuple[int, int]] = {}
-    with Image.open(target_images[0]) as first_image:
-        first_image_size = first_image.size
+    first_image_size = cached_dataset.high_res_encodings.target_image_resolutions[0]
 
     selected_reference_count = 0
     for sample_index in sample_indices:
-        dataset_index = sample_index - 1
-        with Image.open(target_images[dataset_index]) as sample_image:
-            sample_resolutions[sample_index] = sample_image.size
-        selected_reference_count += len(reference_images[dataset_index])
+        selected_index = selected_dataset_index_by_sample[sample_index]
+        sample_width, sample_height = cached_dataset.high_res_encodings.target_image_resolutions[selected_index]
+        if args.force_size is not None:
+            sample_width, sample_height = _resize_to_max_side(
+                image_width=sample_width,
+                image_height=sample_height,
+                max_side=args.force_size,
+            )
+        elif normalized_prompt is not None:
+            sample_width = args.width
+            sample_height = args.height
+        sample_resolutions[sample_index] = (sample_width, sample_height)
+        selected_reference_count += len(reference_images[sample_index - 1])
 
     print(f"  * dataset mode: {dataset_mode}")
     print(f"  * images: {len(target_images)}")
     print(f"  * selected samples: {', '.join(str(sample_index) for sample_index in sample_indices)}")
     print(f"  * selected reference images: {selected_reference_count}")
-    if trigger_text is not None:
-        print(f"  * trigger: {trigger_text!r}")
+    if normalized_trigger is not None:
+        print(f"  * trigger: {normalized_trigger!r}")
+    if args.force_size is not None:
+        print(f"  * forced max side: {args.force_size}")
+    if normalized_prompt is not None:
+        print(f"  * requested image size: {args.width}x{args.height}")
     print(f"  * first image size: {first_image_size[0]}x{first_image_size[1]}")
     print(f"  * done in {time.perf_counter() - dataset_load_start:.3f}s")
 
-    from diffusers import AutoencoderKLFlux2
+    if not sample_indices:
+        print("  * no samples requested")
+        return
+
+    checkpoints_to_render = []
+    existing_step_outputs = 0
+    for step_number, checkpoint_path in checkpoints:
+        has_existing_outputs = any(sample_output_path(step_number, sample_index).is_file() for sample_index in sample_indices)
+        if has_existing_outputs:
+            existing_step_outputs += 1
+        checkpoints_to_render.append((step_number, checkpoint_path, sample_indices))
+
+    if existing_step_outputs:
+        print(f"  * steps with existing samples: {existing_step_outputs}")
+        print("  * existing samples will be preserved; new renders use the next available suffix")
+    print(f"  * steps to render: {len(checkpoints_to_render)}")
+
     from diffusers.pipelines.flux2.image_processor import Flux2ImageProcessor
     from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
     from safetensors.torch import load_file as safe_load_file
     import torch
-    from transformers import Qwen2TokenizerFast
 
-    from flux2.loaders import load_flux2_denoiser, load_flux2_text_encoder
+    from flux2.denoiser.loader import _load_flux2_denoiser as load_flux2_denoiser
     from flux2.lora import TrainableLoraLinear, inject_trainable_lora_modules
-    from flux2.train import INITIAL_LORA_ALPHA, INITIAL_LORA_RANK, INITIAL_LORA_TARGET_LINEAR_NAMES
+    from flux2.train.main import INITIAL_LORA_ALPHA, INITIAL_LORA_RANK, INITIAL_LORA_TARGET_LINEAR_NAMES
+    from flux2.train.images import normalize_image_latent_resolution
     from flux2.gen import (
-        DEFAULT_BASE_GUIDANCE_SCALE,
+        DEFAULT_DISTILLED_STEPS,
         _compute_empirical_mu,
-        _encode_prompt_embeddings,
         _load_transformer_in_channels,
         _load_vae_scale_factor,
         _pack_latents,
-        _patchify_latents,
-        _prepare_image_ids,
         _prepare_latent_ids,
-        _resolve_model_root,
-        _retrieve_latents,
         _retrieve_timesteps,
         _unpack_latents_with_ids,
         _unpatchify_latents,
     )
 
     device = torch.device("cuda")
-    resolved_version = args.version.strip().lower()
-    model_root = _resolve_model_root(args.root, resolved_version)
-    tokenizer_path = model_root / "tokenizer"
-    text_encoder_path = model_root / "text_encoder"
     vae_path = model_root / "vae"
     scheduler_path = model_root / "scheduler"
     transformer_path = model_root / "transformer"
 
-    print("2. Load text encoder into gpu ...")
-    text_encoder_load_start = time.perf_counter()
-    tokenizer = Qwen2TokenizerFast.from_pretrained(str(tokenizer_path))
-    text_encoder = load_flux2_text_encoder(
-        str(text_encoder_path),
-        quant_method=args.text_quant_method,
-    )
-    text_encoder = text_encoder.to(device)
-    torch.cuda.synchronize(device)
-    print(f"  * done in {time.perf_counter() - text_encoder_load_start:.3f}s")
-
-    print("3. Prepare text encodings ...")
+    print("2. Select cached sample conditioning ...")
     text_encoding_start = time.perf_counter()
-    prompt_embeds_by_sample: dict[int, torch.Tensor] = {}
-    text_ids_by_sample: dict[int, torch.Tensor] = {}
-    shared_prompt_embeds = None
-    shared_text_ids = None
-    negative_prompt_embeds = None
-    negative_text_ids = None
-
-    if dataset_mode == "captioned":
-        for sample_index in sample_indices:
-            dataset_index = sample_index - 1
-            print(f"  * encode sample {sample_index} ...")
-            encode_start = time.perf_counter()
-            sample_prompt_embeds, sample_text_ids = _encode_prompt_embeddings(
-                torch,
-                tokenizer,
-                text_encoder,
-                prompt=captions[dataset_index],
-                device=device,
-                max_length=512,
-            )
-            torch.cuda.synchronize(device)
-            prompt_embeds_by_sample[sample_index] = sample_prompt_embeds.cpu()
-            text_ids_by_sample[sample_index] = sample_text_ids.cpu()
-            print(f"    encode time: {time.perf_counter() - encode_start:.3f}s")
+    current_encodings = cached_dataset.high_res_encodings
+    if current_encodings.prompt_embeds is not None and current_encodings.text_ids is not None:
+        print("  * using high-res caption encodings from dataset")
     else:
-        encode_start = time.perf_counter()
-        shared_prompt_embeds, shared_text_ids = _encode_prompt_embeddings(
-            torch,
-            tokenizer,
-            text_encoder,
-            prompt=trigger_text,
-            device=device,
-            max_length=512,
-        )
-        torch.cuda.synchronize(device)
-        print(f"  * trigger encode time: {time.perf_counter() - encode_start:.3f}s")
-
-    encode_start = time.perf_counter()
-    negative_prompt_embeds, negative_text_ids = _encode_prompt_embeddings(
-        torch,
-        tokenizer,
-        text_encoder,
-        prompt="",
-        device=device,
-        max_length=512,
-    )
-    torch.cuda.synchronize(device)
-    negative_prompt_embeds = negative_prompt_embeds.cpu()
-    negative_text_ids = negative_text_ids.cpu()
-    print(f"  * negative prompt encode time: {time.perf_counter() - encode_start:.3f}s")
-
-    del tokenizer
-    del text_encoder
+        print("  * using shared trigger encoding from dataset")
     torch.cuda.empty_cache()
     print(f"  * done in {time.perf_counter() - text_encoding_start:.3f}s")
 
-    print("4. Prepare reference image latents ...")
+    print("3. Prepare VAE for sample resolutions and decode ...")
     image_latent_prep_start = time.perf_counter()
     vae_scale_factor = _load_vae_scale_factor(vae_path)
+    from diffusers import AutoencoderKLFlux2
+
     vae = AutoencoderKLFlux2.from_pretrained(str(vae_path), local_files_only=True)
-    vae = vae.to(device, dtype=torch.float16)
     image_processor = Flux2ImageProcessor(vae_scale_factor=vae_scale_factor * 2)
 
-    for sample_index, (sample_width, sample_height) in list(sample_resolutions.items()):
-        sample_resolutions[sample_index] = _normalize_image_latent_resolution(
-            image_width=sample_width,
-            image_height=sample_height,
-            vae_scale_factor=vae_scale_factor,
-        )
+    if normalized_prompt is not None or args.force_size is not None:
+        for sample_index, (sample_width, sample_height) in list(sample_resolutions.items()):
+            sample_resolutions[sample_index] = normalize_image_latent_resolution(
+                sample_width,
+                sample_height,
+                vae_scale_factor=vae_scale_factor,
+            )
     sample_resolution_text = ", ".join(
         f"{sample_index}={width}x{height}" for sample_index, (width, height) in sample_resolutions.items()
     )
     print(f"  * sample resolutions: {sample_resolution_text}")
 
-    def encode_reference_image(image) -> tuple[torch.Tensor, torch.Tensor]:
-        image_processor.check_image_input(image)
-        image_width, image_height = _normalize_image_latent_resolution(
-            image_width=image.size[0],
-            image_height=image.size[1],
-            vae_scale_factor=vae_scale_factor,
-        )
-
-        image_tensor = image_processor.preprocess(image, height=image_height, width=image_width, resize_mode="crop")
-        image_tensor = image_tensor.to(device=device, dtype=torch.float16)
-        with torch.inference_mode():
-            latent = _retrieve_latents(vae.encode(image_tensor))
-        latent = _patchify_latents(latent)
-
-        latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latent.device, latent.dtype)
-        latents_bn_std = torch.sqrt(
-            vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps
-        ).to(latent.device, latent.dtype)
-        latent = (latent - latents_bn_mean) / latents_bn_std
-
-        return _pack_latents(latent).squeeze(0).cpu(), latent
-
-    reference_latents_by_sample: dict[int, torch.Tensor] = {}
-    reference_latent_ids_by_sample: dict[int, torch.Tensor] = {}
-    for sample_index in sample_indices:
-        dataset_index = sample_index - 1
-        sample_references = reference_images[dataset_index]
-        if not sample_references:
-            continue
-
-        print(f"  * sample {sample_index} references: {len(sample_references)} ...")
-        reference_encode_start = time.perf_counter()
-        encoded_reference_latents = []
-        raw_reference_latents = []
-        for reference_index, reference_path in enumerate(sample_references, start=1):
-            print(f"    * reference {reference_index} / {len(sample_references)} ...")
-            reference_image = Image.open(reference_path).convert("RGB")
-            reference_latent, raw_reference_latent = encode_reference_image(reference_image)
-            encoded_reference_latents.append(reference_latent)
-            raw_reference_latents.append(raw_reference_latent)
-
-        reference_latents_by_sample[sample_index] = torch.cat(encoded_reference_latents, dim=0)
-        reference_latent_ids_by_sample[sample_index] = _prepare_image_ids(torch, raw_reference_latents).squeeze(0).cpu()
-        torch.cuda.synchronize(device)
-        print(f"    encode time: {time.perf_counter() - reference_encode_start:.3f}s")
-
-    reference_latent_token_count = sum(latent.shape[0] for latent in reference_latents_by_sample.values())
+    reference_latent_token_count = sum(
+        latent.shape[0] for latent in current_encodings.reference_latents if latent is not None
+    )
     print(f"  * cached reference latent tokens on cpu: {reference_latent_token_count}")
-    vae.to("cpu")
     torch.cuda.empty_cache()
     print(f"  * done in {time.perf_counter() - image_latent_prep_start:.3f}s")
 
-    print("5. Load denoiser ...")
+    print("4. Load denoiser ...")
     denoiser_load_start = time.perf_counter()
     transformer = load_flux2_denoiser(
         str(transformer_path),
         quant_method=args.denoiser_quant_method,
-        variant="base",
+        variant="distill",
         version=resolved_version,
     )
     transformer = transformer.to(device)
@@ -441,8 +400,8 @@ def main() -> None:
                 checkpoint_state[lora_b_key].to(device=child.lora_B.device, dtype=child.lora_B.dtype)
             )
 
-    def denoise_samples(epoch_number: int, pending_sample_indices: list[int]) -> list[tuple[int, torch.Tensor, torch.Tensor]]:
-        sample_steps = DEFAULT_SAMPLE_STEPS
+    def denoise_samples(step_number: int, pending_sample_indices: list[int]) -> list[tuple[int, torch.Tensor, torch.Tensor]]:
+        sample_steps = DEFAULT_DISTILLED_STEPS
         scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(str(scheduler_path), local_files_only=True)
         sigmas = torch.linspace(1.0, 1 / sample_steps, sample_steps, dtype=torch.float32).tolist()
         if hasattr(scheduler.config, "use_flow_sigmas") and scheduler.config.use_flow_sigmas:
@@ -451,17 +410,20 @@ def main() -> None:
         sample_latents = []
         with torch.inference_mode():
             for sample_index in pending_sample_indices:
+                selected_index = selected_dataset_index_by_sample[sample_index]
                 sample_width, sample_height = sample_resolutions[sample_index]
                 print(f"    * denoise sample {sample_index} at {sample_width}x{sample_height} ...")
-                if prompt_embeds_by_sample and text_ids_by_sample:
-                    prompt_embeds_batch = prompt_embeds_by_sample[sample_index].to(device=device, dtype=transformer.dtype)
-                    text_ids_batch = text_ids_by_sample[sample_index].to(device=device)
+                if current_encodings.prompt_embeds is not None and current_encodings.text_ids is not None:
+                    prompt_embeds_batch = current_encodings.prompt_embeds[
+                        selected_index : selected_index + 1
+                    ].to(device=device, dtype=transformer.dtype)
+                    text_ids_batch = current_encodings.text_ids[selected_index : selected_index + 1].to(device=device)
                 else:
-                    prompt_embeds_batch = shared_prompt_embeds.to(device=device, dtype=transformer.dtype)
-                    text_ids_batch = shared_text_ids.to(device=device)
-
-                negative_prompt_embeds_batch = negative_prompt_embeds.to(device=device, dtype=transformer.dtype)
-                negative_text_ids_batch = negative_text_ids.to(device=device)
+                    prompt_embeds_batch = cached_dataset.shared_prompt_embeds.to(
+                        device=device,
+                        dtype=transformer.dtype,
+                    )
+                    text_ids_batch = cached_dataset.shared_text_ids.to(device=device)
 
                 latent_height = 2 * (sample_height // (vae_scale_factor * 2))
                 latent_width = 2 * (sample_width // (vae_scale_factor * 2))
@@ -491,12 +453,15 @@ def main() -> None:
 
                 reference_latents_batch = None
                 reference_latent_ids_batch = None
-                if sample_index in reference_latents_by_sample:
-                    reference_latents_batch = reference_latents_by_sample[sample_index].unsqueeze(0).to(
+                if (
+                    current_encodings.reference_latents[selected_index] is not None
+                    and current_encodings.reference_latent_ids[selected_index] is not None
+                ):
+                    reference_latents_batch = current_encodings.reference_latents[selected_index].unsqueeze(0).to(
                         device=device,
                         dtype=latents.dtype,
                     )
-                    reference_latent_ids_batch = reference_latent_ids_by_sample[sample_index].unsqueeze(0).to(
+                    reference_latent_ids_batch = current_encodings.reference_latent_ids[selected_index].unsqueeze(0).to(
                         device=device
                     )
 
@@ -523,20 +488,6 @@ def main() -> None:
                         )[0]
                     noise_pred = noise_pred[:, : latents.size(1)]
 
-                    with transformer.cache_context("uncond"):
-                        neg_noise_pred = transformer(
-                            hidden_states=latent_model_input,
-                            timestep=timestep / 1000,
-                            guidance=None,
-                            encoder_hidden_states=negative_prompt_embeds_batch,
-                            txt_ids=negative_text_ids_batch,
-                            img_ids=latent_image_ids,
-                            joint_attention_kwargs=None,
-                            return_dict=False,
-                        )[0]
-                    neg_noise_pred = neg_noise_pred[:, : latents.size(1)]
-                    noise_pred = neg_noise_pred + DEFAULT_BASE_GUIDANCE_SCALE * (noise_pred - neg_noise_pred)
-
                     latents_dtype = latents.dtype
                     latents = scheduler.step(noise_pred, timestep_value, latents, return_dict=False)[0]
                     if latents.dtype != latents_dtype:
@@ -547,23 +498,20 @@ def main() -> None:
                 del (
                     prompt_embeds_batch,
                     text_ids_batch,
-                    negative_prompt_embeds_batch,
-                    negative_text_ids_batch,
                     latents,
                     latent_ids,
                     reference_latents_batch,
                     reference_latent_ids_batch,
                     noise_pred,
-                    neg_noise_pred,
                 )
 
         return sample_latents
 
-    def decode_samples(epoch_number: int, sample_latents: list[tuple[int, torch.Tensor, torch.Tensor]]) -> None:
+    def decode_samples(step_number: int, sample_latents: list[tuple[int, torch.Tensor, torch.Tensor]]) -> None:
         vae.to(device, dtype=torch.float16)
         with torch.inference_mode():
             for sample_index, latents_cpu, latent_ids_cpu in sample_latents:
-                output_path = sample_output_path(epoch_number, sample_index)
+                output_path = next_sample_output_path(step_number, sample_index)
                 latents = latents_cpu.to(device=device)
                 latent_ids = latent_ids_cpu.to(device=device)
                 latents = _unpack_latents_with_ids(torch, latents, latent_ids)
@@ -583,22 +531,22 @@ def main() -> None:
         vae.to("cpu")
         torch.cuda.empty_cache()
 
-    print("6. Render checkpoint samples ...")
+    print("5. Render checkpoint samples ...")
     render_start = time.perf_counter()
     print(f"  * checkpoints: {len(checkpoints)}")
     print(f"  * sample output dir: {sample_dir}")
-    for epoch_number, checkpoint_path, pending_sample_indices in checkpoints_to_render:
-        print(f"  * epoch {epoch_number}: {checkpoint_path}")
-        epoch_start = time.perf_counter()
+    for step_number, checkpoint_path, pending_sample_indices in checkpoints_to_render:
+        print(f"  * step {step_number}: {checkpoint_path}")
+        step_start = time.perf_counter()
         load_checkpoint(checkpoint_path)
-        sample_latents = denoise_samples(epoch_number, pending_sample_indices)
+        sample_latents = denoise_samples(step_number, pending_sample_indices)
         transformer.to("cpu")
         torch.cuda.empty_cache()
         print("    * decoding samples ...")
-        decode_samples(epoch_number, sample_latents)
+        decode_samples(step_number, sample_latents)
         transformer.to(device)
         torch.cuda.synchronize(device)
-        print(f"    * epoch sample time: {time.perf_counter() - epoch_start:.3f}s")
+        print(f"    * step sample time: {time.perf_counter() - step_start:.3f}s")
 
     del transformer
     del vae

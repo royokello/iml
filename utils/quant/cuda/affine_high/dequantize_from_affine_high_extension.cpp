@@ -8,6 +8,10 @@
 
 namespace {
 
+int64_t packed_words_for_values(int64_t value_count, int64_t bits) {
+    return (value_count * bits + 31) / 32;
+}
+
 void validate_inputs(
     const torch::Tensor& packed,
     const torch::Tensor& sub_scales,
@@ -40,11 +44,11 @@ void validate_inputs(
     if (packed.scalar_type() != torch::kInt32) {
         throw std::invalid_argument("packed must have dtype torch.int32");
     }
-    if (sub_scales.scalar_type() != torch::kInt8) {
-        throw std::invalid_argument("sub_scales must have dtype torch.int8");
+    if (sub_scales.scalar_type() != torch::kInt32) {
+        throw std::invalid_argument("sub_scales must have dtype torch.int32");
     }
-    if (sub_mins.scalar_type() != torch::kInt8) {
-        throw std::invalid_argument("sub_mins must have dtype torch.int8");
+    if (sub_mins.scalar_type() != torch::kInt32) {
+        throw std::invalid_argument("sub_mins must have dtype torch.int32");
     }
     if (super_scales.scalar_type() != torch::kFloat16) {
         throw std::invalid_argument("super_scales must have dtype torch.float16");
@@ -107,9 +111,15 @@ void validate_inputs(
         (original_numel + super_block_size - 1) / super_block_size;
     const int64_t sub_blocks_per_super =
         super_block_size / iml::cuda::dequantize_from_affine_high::kSubBlockSize;
-    const int64_t expected_sub_metadata = num_super_blocks * sub_blocks_per_super;
+    const int64_t metadata_words_per_super = packed_words_for_values(
+        sub_blocks_per_super,
+        iml::cuda::dequantize_from_affine_high::kScaleBits
+    );
+    const int64_t expected_sub_metadata = num_super_blocks * metadata_words_per_super;
     const int64_t expected_packed_words =
-        expected_sub_metadata * iml::cuda::dequantize_from_affine_high::kPackedWordsPerSubBlock;
+        num_super_blocks *
+        sub_blocks_per_super *
+        iml::cuda::dequantize_from_affine_high::kPackedWordsPerSubBlock;
 
     if (packed.numel() < expected_packed_words) {
         throw std::invalid_argument("packed does not contain enough words");
@@ -154,8 +164,8 @@ void dequantize_from_affine_high_fp16(
 
     iml::cuda::dequantize_from_affine_high::launch_dequantize_from_affine_high(
         packed.data_ptr<int32_t>(),
-        sub_scales.data_ptr<int8_t>(),
-        sub_mins.data_ptr<int8_t>(),
+        sub_scales.data_ptr<int32_t>(),
+        sub_mins.data_ptr<int32_t>(),
         reinterpret_cast<const __half*>(super_scales.data_ptr<at::Half>()),
         reinterpret_cast<const __half*>(super_mins.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(out.data_ptr<at::Half>()),

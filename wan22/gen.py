@@ -1,0 +1,1 @@
+DEFAULT_PROMPT = "Two anthropomorphic cats in comfy boxing gear and bright gloves fight intensely on a spotlighted stage"

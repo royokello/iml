@@ -76,7 +76,7 @@ def pick_ratio_size(
             tw = square_side
             th = square_side
         elif min_short_side is not None:
-            desired_short = min_short_side
+            desired_short = min(min_short_side, min(width, height))
             short_ratio = min(rw, rh)
             long_ratio = max(rw, rh)
             exact_long = desired_short * long_ratio / short_ratio

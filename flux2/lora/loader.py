@@ -11,12 +11,15 @@ from safetensors.torch import load_file as safe_load_file
 
 from utils.quant.cuda.affine_high import dequantize_from_affine_high
 from utils.quant.cuda.affine_low import dequantize_from_affine_low
+from utils.quant.cuda.affine_med import dequantize_from_affine_med
 from utils.quant.cuda.symmetric_high import dequantize_from_symmetric_high
 from utils.quant.cuda.symmetric_low import dequantize_from_symmetric_low
+from utils.quant.cuda.symmetric_med import dequantize_from_symmetric_med
 from utils.quant.linear import QuantizedLinear
 from utils.quant.to.affine import quantize_to_affine
 from utils.quant.to.symmetric import quantize_to_symmetric
 from utils.quant.validators import quant_method_family, quant_method_mode
+from .model import TrainableLoraLinear
 
 _WEIGHT_SUFFIXES = {
     ".lora_A.weight": "a",
@@ -63,6 +66,25 @@ def apply_lora(
             _merge_lora_delta(module, delta, module_name)
 
     return transformer
+
+
+def load_checkpoint(transformer: torch.nn.Module, checkpoint_path: Path) -> None:
+    checkpoint_state = safe_load_file(str(checkpoint_path), device="cpu")
+    for module_name, child in transformer.named_modules():
+        if not isinstance(child, TrainableLoraLinear):
+            continue
+
+        lora_a_key = f"{module_name}.lora_A.weight"
+        lora_b_key = f"{module_name}.lora_B.weight"
+        if lora_a_key not in checkpoint_state or lora_b_key not in checkpoint_state:
+            raise KeyError(f"Missing LoRA weights for {module_name} in checkpoint {checkpoint_path}")
+
+        child.lora_A.data.copy_(
+            checkpoint_state[lora_a_key].to(device=child.lora_A.device, dtype=child.lora_A.dtype)
+        )
+        child.lora_B.data.copy_(
+            checkpoint_state[lora_b_key].to(device=child.lora_B.device, dtype=child.lora_B.dtype)
+        )
 
 
 def _iter_lora_sources(
@@ -333,15 +355,32 @@ def _merge_quantized_linear_delta(module: QuantizedLinear, delta: torch.Tensor, 
     original_shape = (module.out_features, module.in_features)
 
     if family == "symmetric":
-        dequantize = dequantize_from_symmetric_high if mode == "high" else dequantize_from_symmetric_low
-        weight = dequantize(
-            quantized_weight,
-            module.sub_scales,
-            module.super_scales,
-            original_shape=original_shape,
-        ).to(dtype=torch.float32)
+        if mode == "high":
+            dequantize = dequantize_from_symmetric_high
+        elif mode == "med":
+            dequantize = dequantize_from_symmetric_med
+        else:
+            dequantize = dequantize_from_symmetric_low
+        if mode == "high":
+            weight = dequantize(
+                quantized_weight,
+                module.sub_scales,
+                original_shape=original_shape,
+            ).to(dtype=torch.float32)
+        else:
+            weight = dequantize(
+                quantized_weight,
+                module.sub_scales,
+                module.super_scales,
+                original_shape=original_shape,
+            ).to(dtype=torch.float32)
     elif family == "affine":
-        dequantize = dequantize_from_affine_high if mode == "high" else dequantize_from_affine_low
+        if mode == "high":
+            dequantize = dequantize_from_affine_high
+        elif mode == "med":
+            dequantize = dequantize_from_affine_med
+        else:
+            dequantize = dequantize_from_affine_low
         weight = dequantize(
             quantized_weight,
             module.sub_scales,
@@ -366,7 +405,8 @@ def _merge_quantized_linear_delta(module: QuantizedLinear, delta: torch.Tensor, 
             qweight, sub_scales, super_scales = quantize_to_symmetric(merged_weight, mode=mode)
             module.weight.copy_(qweight.to(device=merge_device))
             module.sub_scales.copy_(sub_scales.to(device=merge_device))
-            module.super_scales.copy_(super_scales.to(device=merge_device))
+            if super_scales is not None:
+                module.super_scales.copy_(super_scales.to(device=merge_device))
         else:
             qweight, sub_scales, sub_mins, super_scales, super_mins = quantize_to_affine(
                 merged_weight,
@@ -382,4 +422,4 @@ def _merge_quantized_linear_delta(module: QuantizedLinear, delta: torch.Tensor, 
         module.to(device=original_device)
 
 
-__all__ = ["apply_lora"]
+__all__ = ["apply_lora", "load_checkpoint"]

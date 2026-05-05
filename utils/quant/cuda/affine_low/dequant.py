@@ -8,7 +8,11 @@ from pathlib import Path
 
 import torch
 
-SUB_BLOCK_SIZE = 32
+SUB_BLOCK_SIZE = 16
+SUPER_BLOCK_SIZE = 256
+HALF_SUPER_BLOCK_SIZE = 128
+PACKED_WORDS_PER_WEIGHT_SUB_BLOCK = 1
+META_BITS = 4
 
 
 @lru_cache(maxsize=1)
@@ -41,6 +45,22 @@ def _load_prebuilt_affine_low_dequant_module():
     )
 
 
+def _select_super_block_size(row_size: int) -> int:
+    if row_size % SUPER_BLOCK_SIZE == 0:
+        return SUPER_BLOCK_SIZE
+    if row_size % HALF_SUPER_BLOCK_SIZE == 0:
+        return HALF_SUPER_BLOCK_SIZE
+    raise ValueError(
+        "Unsupported linear weight shape for affine low dequantization: "
+        f"in_features={row_size}. Input features must be divisible by "
+        f"{HALF_SUPER_BLOCK_SIZE} or {SUPER_BLOCK_SIZE}."
+    )
+
+
+def _packed_words_for_values(value_count: int, bits: int) -> int:
+    return (value_count * bits + 31) // 32
+
+
 def dequantize_from_affine_low(
     qweight: torch.Tensor,
     sub_scales: torch.Tensor,
@@ -49,12 +69,12 @@ def dequantize_from_affine_low(
     super_mins: torch.Tensor,
     original_shape: tuple[int, ...] | torch.Size,
 ) -> torch.Tensor:
-    if qweight.dtype != torch.uint8:
-        raise TypeError("qweight must be uint8.")
-    if sub_scales.dtype != torch.int8:
-        raise TypeError("sub_scales must be int8.")
-    if sub_mins.dtype != torch.int8:
-        raise TypeError("sub_mins must be int8.")
+    if qweight.dtype != torch.int32:
+        raise TypeError("qweight must be int32.")
+    if sub_scales.dtype != torch.int32:
+        raise TypeError("sub_scales must be int32.")
+    if sub_mins.dtype != torch.int32:
+        raise TypeError("sub_mins must be int32.")
     if super_scales.dtype != torch.float16:
         raise TypeError("super_scales must be float16.")
     if super_mins.dtype != torch.float16:
@@ -71,33 +91,55 @@ def dequantize_from_affine_low(
         raise TypeError("super_mins must be a CUDA tensor.")
 
     original_shape = tuple(original_shape)
-    original_numel = 1
-    for dim in original_shape:
-        original_numel *= int(dim)
-
-    if sub_scales.ndim != 2:
-        raise ValueError("sub_scales must have shape [num_super_blocks, sub_blocks_per_super].")
-    if sub_mins.shape != sub_scales.shape:
-        raise ValueError("sub_mins must have the same shape as sub_scales.")
-
-    num_super_blocks, sub_blocks_per_super = sub_scales.shape
-    super_block_size = int(sub_blocks_per_super) * SUB_BLOCK_SIZE
-    padded_numel = int(num_super_blocks) * super_block_size
-
-    if original_numel > padded_numel:
+    if len(original_shape) != 2:
         raise ValueError(
-            "original_shape contains more values than the quantized blocks: "
-            f"expected at most {padded_numel}, got {original_numel}."
+            "Affine low dequantization expects a 2D linear weight shape "
+            f"(out_features, in_features), got {original_shape}."
         )
-    if qweight.numel() * 2 < padded_numel:
-        raise ValueError("qweight does not contain enough packed values.")
-    if super_scales.numel() != num_super_blocks:
-        raise ValueError("super_scales must contain one value per super-block.")
-    if super_mins.numel() != num_super_blocks:
-        raise ValueError("super_mins must contain one value per super-block.")
+
+    row_count = int(original_shape[0])
+    row_size = int(original_shape[1])
+    original_numel = row_count * row_size
 
     if original_numel == 0:
         return torch.empty(original_shape, dtype=torch.float16, device=qweight.device)
+
+    super_block_size = _select_super_block_size(row_size)
+    sub_blocks_per_super = super_block_size // SUB_BLOCK_SIZE
+    blocks_per_row = row_size // super_block_size
+    num_super_blocks = row_count * blocks_per_row
+    metadata_words_per_super = _packed_words_for_values(sub_blocks_per_super, META_BITS)
+    expected_qweight_shape = (
+        num_super_blocks,
+        sub_blocks_per_super * PACKED_WORDS_PER_WEIGHT_SUB_BLOCK,
+    )
+    expected_metadata_shape = (num_super_blocks, metadata_words_per_super)
+
+    if qweight.shape != expected_qweight_shape:
+        raise ValueError(
+            "qweight shape does not match original_shape for affine low: "
+            f"expected {expected_qweight_shape}, got {tuple(qweight.shape)}."
+        )
+    if sub_scales.shape != expected_metadata_shape:
+        raise ValueError(
+            "sub_scales shape does not match original_shape for affine low: "
+            f"expected {expected_metadata_shape}, got {tuple(sub_scales.shape)}."
+        )
+    if sub_mins.shape != expected_metadata_shape:
+        raise ValueError(
+            "sub_mins shape does not match original_shape for affine low: "
+            f"expected {expected_metadata_shape}, got {tuple(sub_mins.shape)}."
+        )
+    if super_scales.shape != (num_super_blocks,):
+        raise ValueError(
+            "super_scales shape does not match original_shape for affine low: "
+            f"expected {(num_super_blocks,)}, got {tuple(super_scales.shape)}."
+        )
+    if super_mins.shape != (num_super_blocks,):
+        raise ValueError(
+            "super_mins shape does not match original_shape for affine low: "
+            f"expected {(num_super_blocks,)}, got {tuple(super_mins.shape)}."
+        )
 
     output = torch.empty((original_numel,), dtype=torch.float16, device=qweight.device)
     module = _load_prebuilt_affine_low_dequant_module()

@@ -10,6 +10,9 @@ const navGapInput = document.getElementById('navGapInput');
 const randomBtn = document.getElementById('randomBtn');
 const prevLabelledBtn = document.getElementById('prevLabelledBtn');
 const nextLabelledBtn = document.getElementById('nextLabelledBtn');
+const imageSearchInput = document.getElementById('imageSearchInput');
+const imageSearchBtn = document.getElementById('imageSearchBtn');
+const imageSearchStatus = document.getElementById('imageSearchStatus');
 const saveBtn = document.getElementById('saveBtn');
 const deleteSelBtn = document.getElementById('deleteSelBtn');
 
@@ -309,6 +312,10 @@ nextBtn.onclick = () => navigate('next');
 randomBtn.onclick = () => navigate('random');
 prevLabelledBtn.onclick = () => navigate('prev_labelled');
 nextLabelledBtn.onclick = () => navigate('next_labelled');
+imageSearchBtn.onclick = () => searchByImageName();
+imageSearchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') searchByImageName();
+});
 
 function navigate(action) {
     const payload = { action };
@@ -316,6 +323,29 @@ function navigate(action) {
     fetch('/navigate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
     .then(r=>r.json()).then(resp => {
         if (typeof resp.index === 'number') loadImage(resp.index);
+    });
+}
+
+function searchByImageName() {
+    const query = imageSearchInput.value.trim();
+    imageSearchStatus.textContent = '';
+    if (!query) return;
+
+    fetch('/navigate', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ action: 'search_by_name', query })
+    })
+    .then(async r => {
+        const resp = await r.json();
+        if (!r.ok) throw new Error(resp.error || 'Image not found');
+        return resp;
+    })
+    .then(resp => {
+        if (typeof resp.index === 'number') loadImage(resp.index);
+    })
+    .catch(err => {
+        imageSearchStatus.textContent = err.message;
     });
 }
 

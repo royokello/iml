@@ -36,13 +36,15 @@ def _store_quantized_or_fp16(
         sub_scales_name = f"{metadata_base_name}.sub_scales"
         super_scales_name = f"{metadata_base_name}.super_scales"
         if quant_method_family(target_method) == "symmetric":
+            mode = quant_method_mode(target_method)
             qweight, sub_scales, super_scales = quantize_to_symmetric(
                 tensor,
-                mode=quant_method_mode(target_method),
+                mode=mode,
             )
             result[name] = qweight
             result[sub_scales_name] = sub_scales
-            result[super_scales_name] = super_scales
+            if super_scales is not None:
+                result[super_scales_name] = super_scales
         else:
             sub_mins_name = f"{metadata_base_name}.sub_mins"
             super_mins_name = f"{metadata_base_name}.super_mins"

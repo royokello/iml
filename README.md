@@ -126,6 +126,17 @@ Notes
 - Example
   - `python -m image.collect --input_dir "images" --output_dir "images_flat" --mode file`
 
+#### `image.dataset`
+- Features
+  - Appends input images to an output dataset using the next numeric filename found in the output folder
+  - Randomly selects reference image + `.txt` caption pairs without repeating within a run
+  - Copies the input image to `<output>/<number>.<ext>` and the selected reference caption to `<output>/<number>.txt`
+  - Creates `<output>/<number>/` and copies the selected reference image into that subfolder
+- Example
+  - `python -m image.dataset --inputs "images" --refs "refs" --output "dataset"`
+- Useful args
+  - `--filename-width` (default `6`), `--seed`, `--dry-run`
+
 #### `image.shape`
 - Features
   - Writes resized/cropped images to an output directory or updates files in place with `--inplace`
@@ -171,6 +182,13 @@ Notes
   - `python -m image.tag.add --input "images" --tags "1girl, blonde_hair"`
 - Useful args
   - `--position` (`start` or `end`)
+
+#### `image.tag.replace`
+- Features
+  - Replaces matching text in every `.txt` caption under a dataset directory
+  - Matches whole comma-separated tags, ignoring spaces around commas
+- Example
+  - `python -m image.tag.replace --dataset "images" --old "old tag" --new "new tag"`
 
 #### `image.tag.group`
 - Features
@@ -254,7 +272,7 @@ Notes
      - Custom port: `python -m image.crop.label.main --project "C:\\proj" --stage 1 --port 5001`
      - Writes `stage_<N>_crop_labels.csv` under the project root (resumes if present)
   2) Prepare YOLO dataset from labels CSV
-      - `python -m image.crop.prepare --project "C:\\proj" --stage 1 --val_split 0.2`
+      - `python -m image.crop.prepare.main --model yolo --project "C:\\proj" --stage 1 --val_split 0.2`
       - Add `--balance` only if you explicitly want to downsample every class to the smallest class count
   3) Train a detector (Ultralytics)
      - `python -m image.crop.train --project "C:\\proj" --stage 1 --variant yolo11n --epochs 100 --batch 16`
@@ -270,26 +288,45 @@ Notes
   - Quantizes the Gemma 4 language component by default
   - Loads `<root>/gemma4/model.safetensors` by default
   - `--input` can point directly at a source `model.safetensors` file and bypass the default input path
-  - Applies hardcoded mixed quantization to the language component
-  - Writes `<root>/gemma4/language_mixed_quant.safetensors`, creating the output directory if needed
+  - Applies a hardcoded mixed quantization preset to the language component
+  - Writes `<root>/gemma4/language_<method>_quant.safetensors`, creating the output directory if needed
   - Add `--media` to also extract media tensors:
     - Saves audio tensors as fp16 to `<root>/gemma4/audio.safetensors`
     - Saves vision tensors as fp16 to `<root>/gemma4/vision.safetensors`
   - Uses `sym-high` quantization for:
     - `model.language_model.embed_tokens_per_layer.weight`
-  - Uses `sym-low` quantization for:
+  - Uses `sym-med` quantization for:
     - `model.language_model.embed_tokens.weight`
     - `self_attn.q_proj.weight`, `self_attn.k_proj.weight`, `self_attn.v_proj.weight`, `self_attn.o_proj.weight`
     - `mlp.gate_proj.weight`, `mlp.up_proj.weight`, `mlp.down_proj.weight`
+  - The `aff-med-mini` method uses `aff-med` quantization for:
+    - `model.language_model.embed_tokens_per_layer.weight`
+    - `self_attn.o_proj.weight`, `self_attn.v_proj.weight`
+    - `mlp.down_proj.weight`
+  - The `aff-med-mini` method uses `sym-low` quantization for:
+    - `model.language_model.embed_tokens.weight`
+    - `self_attn.k_proj.weight`, `self_attn.q_proj.weight`
+    - `mlp.gate_proj.weight`, `mlp.up_proj.weight`
+  - The `aff-high-mini` method uses `aff-high` quantization for:
+    - `model.language_model.embed_tokens_per_layer.weight`
+    - `self_attn.o_proj.weight`, `self_attn.v_proj.weight`
+    - `mlp.down_proj.weight`
+  - The `aff-high-mini` method uses `aff-med` quantization for:
+    - `model.language_model.embed_tokens.weight`
+    - `self_attn.k_proj.weight`, `self_attn.q_proj.weight`
+    - `mlp.gate_proj.weight`, `mlp.up_proj.weight`
   - Keeps non-target language tensors in the language output, converting `float32` and `bfloat16` tensors to `float16`
   - Drops audio and vision tensors before processing the shared model quantization result for the language output
 - Examples
   - `python -m gemma4.quant --root "/models"`
+  - `python -m gemma4.quant --root "/models" --method aff-med-mini`
+  - `python -m gemma4.quant --root "/models" --method aff-high-mini`
   - `python -m gemma4.quant --root "/models" --input "/models/custom/gemma4/model.safetensors"`
   - `python -m gemma4.quant --root "/models" --media`
 - Useful args
   - `--root`
   - `--input`
+  - `--method`
   - `--media`
 
 ### Flux 2
@@ -313,11 +350,11 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - `--base` switches to base-model defaults: `50` steps and CFG guidance scale `4.0`
   - Supports optional image conditioning with `--images "img1.png, img2.png"` by encoding reference images into latent tokens
   - Reference images are resized so their longest side is at most `--ref-size`, then cropped to the nearest valid VAE multiple before encoding
-  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `none`, `sym-high`, `sym-low`, `aff-high`, or `aff-low`
+  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `none`, `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
   - Passing `--text-quant-method none` or `--denoiser-quant-method none` keeps the original fp16 checkpoint weights
   - Saved quantized checkpoints are loaded automatically when present:
-    - text encoder: `<root>/<model>/model/text_encoder/symmetric_high_quant.safetensors`, `symmetric_low_quant.safetensors`, `affine_high_quant.safetensors`, or `affine_low_quant.safetensors`
-    - denoiser: `<root>/<model>/model/transformer/<variant>/symmetric_high_quant.safetensors`, `symmetric_low_quant.safetensors`, `affine_high_quant.safetensors`, or `affine_low_quant.safetensors`
+    - text encoder: `<root>/<model>/model/text_encoder/symmetric_high_quant.safetensors`, `symmetric_med_quant.safetensors`, `affine_high_quant.safetensors`, `affine_med_quant.safetensors`, or `affine_low_quant.safetensors`
+    - denoiser: `<root>/<model>/model/transformer/<variant>/symmetric_high_quant.safetensors`, `symmetric_med_quant.safetensors`, `affine_high_quant.safetensors`, `affine_med_quant.safetensors`, or `affine_low_quant.safetensors`
   - Supports merging one or more LoRA checkpoints at load time with `--loras "path1:1.0,path2:0.7"`
 - Examples
   - Prompt-only distilled generation:
@@ -354,43 +391,101 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Encodes captions from a local image-caption dataset into `prompt_embeds` and `text_ids`
   - Keeps text encodings on CPU while the text encoder is active, then frees the text encoder and moves the encodings to VRAM
   - Loads the base denoiser checkpoint from the selected model's `model/transformer/base` directory
-  - Writes LoRA checkpoints to `<output>/models/epoch_<n>.safetensors`
-  - Writes training losses to `<output>/logs.csv`
+  - Uses `--project` as the dataset directory and training run directory
+  - Writes LoRA checkpoints to `<project>/models/epoch_<n>.safetensors`
+  - Writes training losses to `<project>/logs/steps.csv`
   - Uses text encoder quantization method from the CLI
   - Uses denoiser quantization method from the CLI
   - Prints encoded text memory size in MB
 - Current CLI
   - `--root`
   - `--version`
-  - `--dataset`
-  - `--output`
+  - `--project`
   - `--steps`
   - `--resume`
+  - `--checkpoint`
   - `--text-quant-method` (default: `sym-high`)
-  - `--denoiser-quant-method` (default: `aff-low`)
+  - `--denoiser-quant-method` (default: `sym-med`)
   - `--trigger`
 - Example
-  - `python -m flux2.train --root "/models/flux" --version 4b --dataset "/data/flux_dataset" --output "/runs/flux_style_a"`
+  - `python -m flux2.train --root "/models/flux" --version 4b --project "/data/flux_dataset"`
 
-#### `flux2.quant.text_encoder`
+#### `flux2.sample`
+- Features
+  - Renders sample images for LoRA checkpoints saved by `flux2.train`
+  - Uses `--project` as the training project directory
+  - Scans `<project>/models` for `epoch_<n>.safetensors` and writes images to `<project>/samples`
+  - Uses `--start` to skip earlier epochs and only render checkpoints at or after the selected epoch number
+  - Skips any sample image that already exists, so reruns only render missing epoch/sample pairs
+  - Supports two modes:
+    - dataset-backed sampling from `--project`
+    - prompt-only sampling with `--prompt`
+  - Dataset-backed mode loads prompts and reference images from the Flux 2 dataset loader
+  - Captioned datasets encode each selected caption independently
+  - Captionless datasets require `--trigger`, which is encoded once and reused for all samples
+  - `--samples` spreads selections evenly across the dataset from image `1` to the last image
+  - `--sample-indices` overrides `--samples` with explicit 1-based dataset indices such as `"1,25,100"`
+  - `--force-size` is dataset-only and rescales each selected sample so its longest side matches the requested size while preserving aspect ratio
+  - Prompt-only mode renders a single logical sample using `--width` and `--height`
+  - Sample seeds are deterministic per dataset index via `--sample-seed + sample_index`
+  - Uses the distilled denoiser defaults from `flux2.gen`
+  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `none`, `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
+  - Requires local Flux 2 assets under the selected model's `model` directory:
+    - `tokenizer`
+    - `text_encoder`
+    - `scheduler`
+    - `vae`
+    - `transformer/distill`
+  - CUDA-only runtime
+- Output naming
+  - Files are written as `<project>/samples/000012_3.png`
+  - Example: `000012_3.png` is sample `3` rendered from step checkpoint `models/12.safetensors`
+- Examples
+  - Render one evenly-selected dataset sample for every checkpoint from epoch 1 onward:
+    - `python -m flux2.sample --root "/models/flux" --version 4b --project "/data/flux_dataset"`
+  - Render four evenly-spaced dataset samples for checkpoints starting at epoch 10:
+    - `python -m flux2.sample --root "/models/flux" --version 4b --project "/data/flux_dataset" --samples 4 --start 10`
+  - Render explicit dataset indices instead of evenly-spaced sampling:
+    - `python -m flux2.sample --root "/models/flux" --version 9b --project "/data/flux_dataset" --sample-indices "1,25,100"`
+  - Render captionless dataset samples using a shared trigger and resize the longest side to 768 before latent encoding:
+    - `python -m flux2.sample --root "/models/flux" --version 4b --project "/data/flux_dataset" --sample-indices "5,9" --trigger "TOK" --force-size 768`
+  - Render prompt-only samples for each checkpoint without loading a dataset:
+    - `python -m flux2.sample --root "/models/flux" --version 9b --project "/data/flux_dataset" --prompt "fashion portrait, soft key light, editorial pose" --width 768 --height 1024`
+- Useful args
+  - `--root`
+  - `--version`
+  - `--project`
+  - `--prompt`
+  - `--samples`
+  - `--sample-indices`
+  - `--start`
+  - `--sample-seed`
+  - `--trigger`
+  - `--force-size`
+  - `--width`, `--height`
+  - `--text-quant-method`
+  - `--denoiser-quant-method`
+
+#### `flux2.text_encoder.quant`
 - Features
   - Quantizes the Flux 2 text encoder for `4b` or `9b`
   - Uses `model-00001-of-00002.safetensors` for `4b`
   - Uses `model-00001-of-00004.safetensors` through `model-00004-of-00004.safetensors` for `9b`
-  - `--input` can point directly at a source `text_encoder` model directory and bypass the `<root>/<model>/model/text_encoder` input default
+  - `--input` must point directly at the source `text_encoder` model directory
   - Builds the target tensor list from the shared Qwen linear suffixes and the version layer count
   - Saves `<root>/<model>/model/text_encoder/<method>_quant.safetensors`, creating that output directory if needed
 - Examples
-  - `python -m flux2.quant.text_encoder --root "/models/flux" --version 4b --method sym-high`
-  - `python -m flux2.quant.text_encoder --root "/models/flux" --version 9b --method aff-low`
-  - `python -m flux2.quant.text_encoder --root "/models/flux" --version 9b --input "/models/custom/text_encoder" --method aff-high`
+  - `python -m flux2.text_encoder.quant --root "/models/flux" --version 4b --input "/models/flux/flux2_4b/model/text_encoder" --method sym-high`
+  - `python -m flux2.text_encoder.quant --root "/models/flux" --version 9b --input "/models/flux/flux2_9b/model/text_encoder" --method aff-low`
+  - `python -m flux2.text_encoder.quant --root "/models/flux" --version 9b --input "/models/flux/flux2_9b/model/text_encoder" --method aff-med`
+  - `python -m flux2.text_encoder.quant --root "/models/flux" --version 9b --input "/models/custom/text_encoder" --method aff-high`
 - Useful args
   - `--root`
   - `--input`
   - `--version`
   - `--method`
 
-#### `flux2.quant.denoiser`
+#### `flux2.denoiser.quant`
 - Features
   - Quantizes the Flux 2 denoiser for `4b` or `9b`
   - Uses `diffusion_pytorch_model.safetensors` for `4b`
@@ -400,9 +495,10 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Quantizes `8` double blocks and `24` single blocks for `9b`
   - Saves `<root>/<model>/model/transformer/<variant>/<method>_quant.safetensors`, creating that output directory if needed
 - Examples
-  - `python -m flux2.quant.denoiser --root "/models/flux" --version 4b --variant distill --method sym-high`
-  - `python -m flux2.quant.denoiser --root "/models/flux" --version 9b --variant base --method aff-low`
-  - `python -m flux2.quant.denoiser --root "/models/flux" --version 9b --variant base --input "/models/custom/transformer/base" --method aff-high`
+  - `python -m flux2.denoiser.quant --root "/models/flux" --version 4b --variant distill --method sym-high`
+  - `python -m flux2.denoiser.quant --root "/models/flux" --version 9b --variant base --method aff-low`
+  - `python -m flux2.denoiser.quant --root "/models/flux" --version 9b --variant base --method aff-med`
+  - `python -m flux2.denoiser.quant --root "/models/flux" --version 9b --variant base --input "/models/custom/transformer/base" --method aff-high`
 - Useful args
   - `--root`
   - `--version`
@@ -427,19 +523,22 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 
 #### Flux 2 Dataset
 - Current expected format
-  - A flat folder containing training images
+  - `--project` is the training run folder
+  - Training images must be under `<project>/dataset`
   - Supported image extensions: `.png`, `.jpg`, `.jpeg`, `.webp`
   - Captioned mode: each image has a `.txt` caption with the same basename
   - Captionless mode: no image has a `.txt` caption and `--trigger "<text>"` is required
 - Example
-  - Captioned dataset
-  - `000001.png`
-  - `000001.txt`
-  - `000002.jpg`
-  - `000002.txt`
-  - Captionless dataset
-  - `000001.png`
-  - `000002.jpg`
+  - Captioned project layout
+  - `dataset/000001.png`
+  - `dataset/000001.txt`
+  - `dataset/000002.jpg`
+  - `dataset/000002.txt`
+  - Captionless project layout
+  - `dataset/000001.png`
+  - `dataset/000002.jpg`
+  - `models/`
+  - `logs/`
 - Notes
   - Captioned datasets are encoded per image and cached on CPU before training
   - Captionless datasets encode the shared trigger once and keep that conditioning on GPU for every image
@@ -463,7 +562,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 
 #### `wan22.quant.text_encoder`
 - Features
-  - Quantizes the Wan 2.2 TI2V 5B T5 text encoder linear weights with one of the shared quantization methods: `sym-high`, `sym-low`, `aff-high`, or `aff-low`
+  - Quantizes the Wan 2.2 TI2V 5B T5 text encoder linear weights with one of the shared quantization methods: `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
   - Loads the base checkpoint from `<root>/wan22/model/text_encoder/t5_umt5-xxl-enc-bf16.pth` by default
   - `--input` can point directly at a source `text_encoder` model directory and bypass the `<root>/wan22/model/text_encoder` input default
   - Targets all `24` T5 blocks for attention and feed-forward linear weights:
@@ -475,6 +574,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 - Examples
   - `python -m wan22.quant.text_encoder --root "/models/wan" --method sym-high`
   - `python -m wan22.quant.text_encoder --root "/models/wan" --method aff-low`
+  - `python -m wan22.quant.text_encoder --root "/models/wan" --method aff-med`
   - `python -m wan22.quant.text_encoder --root "/models/wan" --input "/models/custom/text_encoder" --method aff-high`
 - Useful args
   - `--root`
@@ -483,7 +583,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 
 #### `wan22.quant.denoiser`
 - Features
-  - Quantizes the Wan 2.2 TI2V 5B denoiser linear weights with one of the shared quantization methods: `sym-high`, `sym-low`, `aff-high`, or `aff-low`
+  - Quantizes the Wan 2.2 TI2V 5B denoiser linear weights with one of the shared quantization methods: `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
   - Loads the base sharded denoiser checkpoint from `<root>/wan22/model/denoiser` by default:
     - `diffusion_pytorch_model-00001-of-00003.safetensors`
     - `diffusion_pytorch_model-00002-of-00003.safetensors`
@@ -499,7 +599,8 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 - Examples
   - `python -m wan22.quant.denoiser --root "/models/wan" --method sym-high`
   - `python -m wan22.quant.denoiser --root "/models/wan" --method aff-low`
-  - `python -m wan22.quant.denoiser --root "/models/wan" --input "/models/custom/denoiser" --method aff-high`
+  - `python -m wan22.quant.denoiser --root "/models/wan" --method aff-med`
+  - `python -m wan22.quant.denoiser --root "/models/wan" --input "/models/custom/denoiser" --method sym-med`
 - Useful args
   - `--root`
   - `--input`
@@ -508,13 +609,37 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 
 ### Utils
 
+#### `utils.quant.estimator.main`
+- Features
+  - Estimates the final quantized `.safetensors` output size without running CUDA quantization
+  - Reads safetensors shape/dtype metadata without materializing tensor data
+  - Supports `.pth` source checkpoints for PyTorch-backed model components
+  - Combines sharded source checkpoints into one estimated output size
+  - Uses the same target tensor lists and prefix filters as the quantization scripts
+  - Supports model presets:
+    - `flux2_4b_text_encoder`
+    - `flux2_9b_text_encoder`
+    - `flux2_4b_denoiser`, `flux2_9b_denoiser`
+    - `gemma4_2b`
+    - `wan22_5b_text_encoder`, `wan22_5b_text_decoder`, `wan22_5b_denoiser`
+- Examples
+  - `python -m utils.quant.estimator.main --model flux2_4b_text_encoder --source "/models/flux/flux_2_klein_4b/model/text_encoder" --method sym-high`
+  - `python -m utils.quant.estimator.main --model flux2_9b_denoiser --source "/models/flux/flux2_9b/model/transformer/base" --method aff-low`
+  - `python -m utils.quant.estimator.main --model gemma4_2b --source "/models/gemma4" --method high`
+  - `python -m utils.quant.estimator.main --model wan22_5b_text_decoder --source "/models/wan/wan22/model/text_encoder" --method aff-med`
+- Useful args
+  - `--model`
+  - `--source`
+  - `--method`
+
 #### `utils.quant.eval`
 - Features
   - Benchmarks dequant-to-`fp16` only for the Flux 2 Klein 4B denoiser linear tensor shapes
   - Compares the current `utils.quant` dequantizers:
     - `symmetric_high_dequant`
-    - `symmetric_low_dequant`
+    - `symmetric_med_dequant`
     - `affine_high_dequant`
+    - `affine_med_dequant`
     - `affine_low_dequant`
   - Prepares benchmark inputs with:
     - `quantize_to_symmetric`
@@ -530,3 +655,12 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Uses fixed constants in the file; there are no CLI args
 - Example
   - `python -m utils.quant.eval`
+
+
+### References
+
+- [Black Forest Labs](https://blackforestlabs.ai/) for releasing the FLUX.2 [klein] model family and open-weight tooling.
+  - [FLUX.2 documentation](https://docs.bfl.ai/flux_2)
+  - [FLUX.2 GitHub repository](https://github.com/black-forest-labs/flux2)
+- [ggml](https://github.com/ggml-org) for the quantization formats and low-level tensor/runtime work that informed the quantization utilities.
+- [Unsloth](https://huggingface.co/unsloth) for efficient quantization recipes, GGUF model releases, and practical low-memory model workflows.

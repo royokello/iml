@@ -9,7 +9,26 @@ from pathlib import Path
 import torch
 
 SUB_BLOCK_SIZE = 16
-PACKED_WORDS_PER_SUB_BLOCK = 3
+SUPER_BLOCK_SIZE = 256
+HALF_SUPER_BLOCK_SIZE = 128
+SUPPORTED_SUPER_BLOCK_SIZES = (SUPER_BLOCK_SIZE, HALF_SUPER_BLOCK_SIZE)
+PACKED_WEIGHT_WORDS_PER_SUB_BLOCK = 2
+SUB_SCALE_BITS = 6
+
+
+def _select_super_block_size(row_size: int) -> int:
+    for super_block_size in SUPPORTED_SUPER_BLOCK_SIZES:
+        if row_size % super_block_size == 0:
+            return super_block_size
+    raise ValueError(
+        "Unsupported linear weight shape for symmetric-low CUDA dequantization: "
+        f"in_features={row_size}. Input features must be divisible by "
+        f"{HALF_SUPER_BLOCK_SIZE} or {SUPER_BLOCK_SIZE}."
+    )
+
+
+def _packed_scale_words_per_super(sub_blocks_per_super: int) -> int:
+    return (sub_blocks_per_super * SUB_SCALE_BITS + 31) // 32
 
 
 @lru_cache(maxsize=1)
@@ -50,8 +69,8 @@ def dequantize_from_symmetric_low(
 ) -> torch.Tensor:
     if qweight.dtype != torch.int32:
         raise TypeError("qweight must be int32.")
-    if sub_scales.dtype != torch.int8:
-        raise TypeError("sub_scales must be int8.")
+    if sub_scales.dtype != torch.int32:
+        raise TypeError("sub_scales must be packed int32.")
     if super_scales.dtype != torch.float16:
         raise TypeError("super_scales must be float16.")
     if not qweight.is_cuda:
@@ -62,34 +81,40 @@ def dequantize_from_symmetric_low(
         raise TypeError("super_scales must be a CUDA tensor.")
 
     original_shape = tuple(original_shape)
-    original_numel = 1
-    for dim in original_shape:
-        original_numel *= int(dim)
+    if len(original_shape) != 2:
+        raise ValueError(
+            "original_shape must be a 2D linear weight shape "
+            f"(out_features, in_features), got {original_shape}."
+        )
+    row_count = int(original_shape[0])
+    row_size = int(original_shape[1])
+    original_numel = row_count * row_size
 
     if qweight.ndim != 2:
         raise ValueError("qweight must have shape [num_super_blocks, packed_words_per_super_block].")
     if sub_scales.ndim != 2:
-        raise ValueError("sub_scales must have shape [num_super_blocks, sub_blocks_per_super].")
+        raise ValueError("sub_scales must have shape [num_super_blocks, packed_scale_words_per_super].")
     if qweight.shape[0] != sub_scales.shape[0]:
         raise ValueError("qweight and sub_scales must have the same number of super-blocks.")
 
-    num_super_blocks, packed_words_per_super_block = qweight.shape
-    _, sub_blocks_per_super = sub_scales.shape
-    expected_packed_words = int(sub_blocks_per_super) * PACKED_WORDS_PER_SUB_BLOCK
-    super_block_size = int(sub_blocks_per_super) * SUB_BLOCK_SIZE
-    padded_numel = int(num_super_blocks) * super_block_size
+    super_block_size = _select_super_block_size(row_size)
+    sub_blocks_per_super = super_block_size // SUB_BLOCK_SIZE
+    blocks_per_row = row_size // super_block_size
+    expected_num_super_blocks = row_count * blocks_per_row
+    expected_packed_weight_words = sub_blocks_per_super * PACKED_WEIGHT_WORDS_PER_SUB_BLOCK
+    expected_packed_scale_words = _packed_scale_words_per_super(sub_blocks_per_super)
 
-    if packed_words_per_super_block != expected_packed_words:
+    if qweight.shape != (expected_num_super_blocks, expected_packed_weight_words):
         raise ValueError(
-            "qweight packed width does not match sub_scales: "
-            f"expected {expected_packed_words}, got {packed_words_per_super_block}."
+            "qweight shape does not match original_shape: "
+            f"expected {(expected_num_super_blocks, expected_packed_weight_words)}, got {tuple(qweight.shape)}."
         )
-    if original_numel > padded_numel:
+    if sub_scales.shape != (expected_num_super_blocks, expected_packed_scale_words):
         raise ValueError(
-            "original_shape contains more values than the quantized blocks: "
-            f"expected at most {padded_numel}, got {original_numel}."
+            "sub_scales shape does not match original_shape: "
+            f"expected {(expected_num_super_blocks, expected_packed_scale_words)}, got {tuple(sub_scales.shape)}."
         )
-    if super_scales.numel() != num_super_blocks:
+    if super_scales.shape != (expected_num_super_blocks,):
         raise ValueError("super_scales must contain one value per super-block.")
 
     if original_numel == 0:

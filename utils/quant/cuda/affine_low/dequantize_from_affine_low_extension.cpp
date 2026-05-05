@@ -8,6 +8,10 @@
 
 namespace {
 
+int64_t packed_words_for_values(int64_t value_count, int64_t bits) {
+    return (value_count * bits + 31) / 32;
+}
+
 void validate_inputs(
     const torch::Tensor& packed,
     const torch::Tensor& sub_scales,
@@ -37,14 +41,14 @@ void validate_inputs(
         throw std::invalid_argument("out must be a CUDA tensor");
     }
 
-    if (packed.scalar_type() != torch::kUInt8) {
-        throw std::invalid_argument("packed must have dtype torch.uint8");
+    if (packed.scalar_type() != torch::kInt32) {
+        throw std::invalid_argument("packed must have dtype torch.int32");
     }
-    if (sub_scales.scalar_type() != torch::kInt8) {
-        throw std::invalid_argument("sub_scales must have dtype torch.int8");
+    if (sub_scales.scalar_type() != torch::kInt32) {
+        throw std::invalid_argument("sub_scales must have dtype torch.int32");
     }
-    if (sub_mins.scalar_type() != torch::kInt8) {
-        throw std::invalid_argument("sub_mins must have dtype torch.int8");
+    if (sub_mins.scalar_type() != torch::kInt32) {
+        throw std::invalid_argument("sub_mins must have dtype torch.int32");
     }
     if (super_scales.scalar_type() != torch::kFloat16) {
         throw std::invalid_argument("super_scales must have dtype torch.float16");
@@ -93,14 +97,14 @@ void validate_inputs(
         throw std::invalid_argument("super_block_size must be positive");
     }
     if (super_block_size % iml::cuda::dequantize_from_affine_low::kSubBlockSize != 0) {
-        throw std::invalid_argument("super_block_size must be divisible by 32");
+        throw std::invalid_argument("super_block_size must be divisible by 16");
     }
     if (out.numel() < original_numel) {
         throw std::invalid_argument("out is smaller than original_numel");
     }
 
     const int64_t decoded_capacity =
-        packed.numel() * iml::cuda::dequantize_from_affine_low::kWeightsPerPackedByte;
+        packed.numel() * 32 / iml::cuda::dequantize_from_affine_low::kWeightBits;
     if (original_numel > decoded_capacity) {
         throw std::invalid_argument("original_numel exceeds packed decode capacity");
     }
@@ -109,7 +113,11 @@ void validate_inputs(
         (original_numel + super_block_size - 1) / super_block_size;
     const int64_t sub_blocks_per_super =
         super_block_size / iml::cuda::dequantize_from_affine_low::kSubBlockSize;
-    const int64_t expected_sub_metadata = num_super_blocks * sub_blocks_per_super;
+    const int64_t metadata_words_per_super = packed_words_for_values(
+        sub_blocks_per_super,
+        iml::cuda::dequantize_from_affine_low::kScaleBits
+    );
+    const int64_t expected_sub_metadata = num_super_blocks * metadata_words_per_super;
 
     if (sub_scales.numel() < expected_sub_metadata) {
         throw std::invalid_argument("sub_scales does not contain enough values");
@@ -150,9 +158,9 @@ void dequantize_from_affine_low_fp16(
     const auto stream = at::cuda::getCurrentCUDAStream(device).stream();
 
     iml::cuda::dequantize_from_affine_low::launch_dequantize_from_affine_low(
-        packed.data_ptr<uint8_t>(),
-        sub_scales.data_ptr<int8_t>(),
-        sub_mins.data_ptr<int8_t>(),
+        packed.data_ptr<int32_t>(),
+        sub_scales.data_ptr<int32_t>(),
+        sub_mins.data_ptr<int32_t>(),
         reinterpret_cast<const __half*>(super_scales.data_ptr<at::Half>()),
         reinterpret_cast<const __half*>(super_mins.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(out.data_ptr<at::Half>()),
@@ -168,6 +176,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def(
         "dequantize_from_affine_low_fp16",
         &dequantize_from_affine_low_fp16,
-        "Dequantize packed affine uint4 values into fp16"
+        "Dequantize packed affine uint2 values into fp16"
     );
 }

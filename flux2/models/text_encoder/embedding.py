@@ -11,7 +11,9 @@ class Qwen3RotaryEmbedding(nn.Module):
 
     def __init__(self, config: Qwen3Config, device=None):
         super().__init__()
-        if hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
+        if hasattr(config, "rope_parameters") and isinstance(config.rope_parameters, dict):
+            self.rope_type = config.rope_parameters.get("rope_type", config.rope_parameters.get("type"))
+        elif hasattr(config, "rope_scaling") and isinstance(config.rope_scaling, dict):
             self.rope_type = config.rope_scaling.get("rope_type", config.rope_scaling.get("type"))
         else:
             self.rope_type = "default"
@@ -19,7 +21,9 @@ class Qwen3RotaryEmbedding(nn.Module):
         self.original_max_seq_len = config.max_position_embeddings
 
         self.config = config
-        self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
+        self.rope_init_fn = self.compute_default_rope_parameters
+        if self.rope_type != "default":
+            self.rope_init_fn = ROPE_INIT_FUNCTIONS[self.rope_type]
 
         inv_freq, self.attention_scaling = self.rope_init_fn(self.config, device)
         self.register_buffer("inv_freq", inv_freq, persistent=False)
@@ -31,7 +35,11 @@ class Qwen3RotaryEmbedding(nn.Module):
         device: Optional["torch.device"] = None,
         seq_len: int | None = None,
     ) -> tuple["torch.Tensor", float]:
-        base = config.rope_theta
+        rope_parameters = getattr(config, "rope_parameters", None)
+        if isinstance(rope_parameters, dict):
+            base = rope_parameters["rope_theta"]
+        else:
+            base = config.rope_theta
         dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
         attention_factor = 1.0
         inv_freq = 1.0 / (

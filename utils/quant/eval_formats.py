@@ -11,7 +11,7 @@ from typing import Iterator
 import torch
 import torch.nn.functional as F
 
-from flux2.quant.denoiser import _build_target_tensors
+from flux2.denoiser.quant import _build_target_tensors
 from utils.loaders.single import safe_load_file as load_safetensors_file
 
 BLOCK_SIZES = (16, 32, 64, 128, 256)

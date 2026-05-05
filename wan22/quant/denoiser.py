@@ -60,6 +60,14 @@ def quantize_denoiser(
 
     method = normalize_quant_method(method)
     checkpoint_files = _build_checkpoint_files(model_dir)
+    missing_files = [path.name for path in checkpoint_files if not path.is_file()]
+    if missing_files:
+        raise FileNotFoundError(
+            "WAN22 denoiser input directory is missing expected shard files: "
+            f"{', '.join(missing_files)}. "
+            f"Directory checked: {model_dir}. "
+            "If you meant to quantize the text encoder, use `python -m wan22.quant.text_encoder` instead."
+        )
     target_tensors = _build_target_tensors()
     output_path = output_dir / f"{method}_quant.safetensors"
 

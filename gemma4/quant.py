@@ -10,11 +10,19 @@ import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
 
+from gemma4.config import (
+    _GEMMA4_QUANT_CONFIGS,
+    _GEMMA4_QUANT_METHODS,
+    _KV_PROJECTION_WEIGHT_SUFFIXES,
+    _LANGUAGE_PER_LAYER_TOKEN_EMBED_WEIGHT,
+    _LANGUAGE_TOKEN_EMBED_WEIGHT,
+    _NUM_LANGUAGE_KV_PROJECTION_LAYERS,
+    _NUM_LANGUAGE_LAYERS,
+)
 from utils.quant.model import quantize_model_tensors
 
 _MODEL_DIR = "gemma4"
 _CHECKPOINT_NAME = "model.safetensors"
-_NUM_LANGUAGE_LAYERS = 35
 _DEFAULT_QUANT_METHOD = "high"
 
 _AUDIO_PREFIXES = (
@@ -28,37 +36,6 @@ _VISION_PREFIXES = (
 _LANGUAGE_PREFIXES = (
     "model.language_model.",
 )
-_LANGUAGE_HIGH_SYM_LOW_TARGETS = (
-    "model.language_model.embed_tokens.weight",
-)
-_LANGUAGE_HIGH_SYM_HIGH_TARGETS = (
-    "model.language_model.embed_tokens_per_layer.weight",
-)
-_LANGUAGE_HIGH_SYM_LOW_LINEAR_WEIGHT_SUFFIXES = (
-    "mlp.down_proj.weight",
-    "self_attn.v_proj.weight",
-    "mlp.gate_proj.weight",
-    "mlp.up_proj.weight",
-    "self_attn.q_proj.weight",
-    "self_attn.k_proj.weight",
-    "self_attn.o_proj.weight",
-)
-_LANGUAGE_HIGH_SYM_HIGH_LINEAR_WEIGHT_SUFFIXES: tuple[str, ...] = ()
-
-_GEMMA4_HIGH_QUANT_CONFIG = {
-    "sym-low": {
-        "targets": _LANGUAGE_HIGH_SYM_LOW_TARGETS,
-        "layer_suffixes": _LANGUAGE_HIGH_SYM_LOW_LINEAR_WEIGHT_SUFFIXES,
-    },
-    "sym-high": {
-        "targets": _LANGUAGE_HIGH_SYM_HIGH_TARGETS,
-        "layer_suffixes": _LANGUAGE_HIGH_SYM_HIGH_LINEAR_WEIGHT_SUFFIXES,
-    },
-}
-_GEMMA4_QUANT_CONFIGS = {
-    "high": _GEMMA4_HIGH_QUANT_CONFIG,
-}
-_GEMMA4_QUANT_METHODS = tuple(_GEMMA4_QUANT_CONFIGS)
 
 
 def _matches_any_prefix(name: str, prefixes: Iterable[str]) -> bool:
@@ -72,16 +49,34 @@ def _to_fp16(tensor: torch.Tensor) -> torch.Tensor:
 
 
 def _build_language_targets(
-    config: Mapping[str, Mapping[str, tuple[str, ...]]],
+    config: Mapping[str, str | Mapping[str, tuple[str, ...]]],
 ) -> dict[str, list[str]]:
     targets_by_method: dict[str, list[str]] = {}
-    for quant_method, method_config in config.items():
-        tensors = list(method_config["targets"])
+    for target, quant_method in (
+        ("token_embed", config.get("token_embed")),
+        ("per_layer_token_embed", config.get("per_layer_token_embed")),
+    ):
+        if quant_method is None:
+            continue
+        target_name = (
+            _LANGUAGE_TOKEN_EMBED_WEIGHT
+            if target == "token_embed"
+            else _LANGUAGE_PER_LAYER_TOKEN_EMBED_WEIGHT
+        )
+        targets_by_method.setdefault(quant_method, []).append(target_name)
+
+    linears = config.get("linears", {})
+    if not isinstance(linears, Mapping):
+        raise TypeError("Gemma 4 quant config 'linears' must be a mapping of quant methods to suffixes.")
+
+    for quant_method, suffixes in linears.items():
+        tensors = targets_by_method.setdefault(quant_method, [])
         for layer_idx in range(_NUM_LANGUAGE_LAYERS):
             layer_prefix = f"model.language_model.layers.{layer_idx}."
-            for suffix in method_config["layer_suffixes"]:
+            for suffix in suffixes:
+                if suffix in _KV_PROJECTION_WEIGHT_SUFFIXES and layer_idx >= _NUM_LANGUAGE_KV_PROJECTION_LAYERS:
+                    continue
                 tensors.append(layer_prefix + suffix)
-        targets_by_method[quant_method] = tensors
     return targets_by_method
 
 
@@ -148,7 +143,7 @@ def _save_language_quantized(
 ) -> Path:
     print(
         f"Applying Gemma 4 {method} quantization to "
-        f"{_format_target_counts(targets_by_method)} language tensors ..."
+        f"{_format_target_counts(targets_by_method)} language tensors on cuda ..."
     )
     quantize_start = time.perf_counter()
     quantized_state_dict = quantize_model_tensors(
@@ -202,7 +197,7 @@ def quantize_gemma4(
             f"Unsupported Gemma 4 quantization method: {method!r}. Expected one of: {allowed}."
         ) from exc
 
-    gemma4_path = Path(root).expanduser().resolve() / _MODEL_DIR
+    gemma4_path = Path(root) / "gemma4_2b"
     checkpoint_path = (
         Path(input_path).expanduser().resolve()
         if input_path is not None

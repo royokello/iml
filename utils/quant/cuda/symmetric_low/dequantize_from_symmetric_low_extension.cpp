@@ -10,7 +10,7 @@ namespace {
 
 void validate_inputs(
     const torch::Tensor& packed,
-    const torch::Tensor& sub_scales,
+    const torch::Tensor& packed_sub_scales,
     const torch::Tensor& super_scales,
     const torch::Tensor& out,
     int64_t original_numel,
@@ -19,8 +19,8 @@ void validate_inputs(
     if (!packed.is_cuda()) {
         throw std::invalid_argument("packed must be a CUDA tensor");
     }
-    if (!sub_scales.is_cuda()) {
-        throw std::invalid_argument("sub_scales must be a CUDA tensor");
+    if (!packed_sub_scales.is_cuda()) {
+        throw std::invalid_argument("packed_sub_scales must be a CUDA tensor");
     }
     if (!super_scales.is_cuda()) {
         throw std::invalid_argument("super_scales must be a CUDA tensor");
@@ -32,8 +32,8 @@ void validate_inputs(
     if (packed.scalar_type() != torch::kInt32) {
         throw std::invalid_argument("packed must have dtype torch.int32");
     }
-    if (sub_scales.scalar_type() != torch::kInt8) {
-        throw std::invalid_argument("sub_scales must have dtype torch.int8");
+    if (packed_sub_scales.scalar_type() != torch::kInt32) {
+        throw std::invalid_argument("packed_sub_scales must have dtype torch.int32");
     }
     if (super_scales.scalar_type() != torch::kFloat16) {
         throw std::invalid_argument("super_scales must have dtype torch.float16");
@@ -45,8 +45,8 @@ void validate_inputs(
     if (!packed.is_contiguous()) {
         throw std::invalid_argument("packed must be contiguous");
     }
-    if (!sub_scales.is_contiguous()) {
-        throw std::invalid_argument("sub_scales must be contiguous");
+    if (!packed_sub_scales.is_contiguous()) {
+        throw std::invalid_argument("packed_sub_scales must be contiguous");
     }
     if (!super_scales.is_contiguous()) {
         throw std::invalid_argument("super_scales must be contiguous");
@@ -57,7 +57,7 @@ void validate_inputs(
 
     const int device = packed.get_device();
     if (
-        sub_scales.get_device() != device ||
+        packed_sub_scales.get_device() != device ||
         super_scales.get_device() != device ||
         out.get_device() != device
     ) {
@@ -73,26 +73,35 @@ void validate_inputs(
     if (super_block_size % iml::cuda::dequantize_from_symmetric_low::kSubBlockSize != 0) {
         throw std::invalid_argument("super_block_size must be divisible by 16");
     }
+    if (super_block_size != 128 && super_block_size != 256) {
+        throw std::invalid_argument("super_block_size must be 128 or 256");
+    }
     if (out.numel() < original_numel) {
         throw std::invalid_argument("out is smaller than original_numel");
     }
     if (packed.numel() % iml::cuda::dequantize_from_symmetric_low::kPackedWordsPerSubBlock != 0) {
-        throw std::invalid_argument("packed must contain 3 int32 words per sub-block");
+        throw std::invalid_argument("packed must contain 2 int32 words per sub-block");
     }
 
     const int64_t sub_blocks_per_super =
         super_block_size / iml::cuda::dequantize_from_symmetric_low::kSubBlockSize;
+    const int64_t packed_scale_words_per_super =
+        (
+            sub_blocks_per_super * iml::cuda::dequantize_from_symmetric_low::kBitsPerSubScale + 31
+        ) / 32;
     const int64_t num_super_blocks =
         (original_numel + super_block_size - 1) / super_block_size;
     const int64_t expected_sub_metadata = num_super_blocks * sub_blocks_per_super;
     const int64_t expected_packed_words =
         expected_sub_metadata * iml::cuda::dequantize_from_symmetric_low::kPackedWordsPerSubBlock;
+    const int64_t expected_packed_scale_words =
+        num_super_blocks * packed_scale_words_per_super;
 
     if (packed.numel() < expected_packed_words) {
         throw std::invalid_argument("packed does not contain enough words");
     }
-    if (sub_scales.numel() < expected_sub_metadata) {
-        throw std::invalid_argument("sub_scales does not contain enough values");
+    if (packed_sub_scales.numel() < expected_packed_scale_words) {
+        throw std::invalid_argument("packed_sub_scales does not contain enough values");
     }
     if (super_scales.numel() < num_super_blocks) {
         throw std::invalid_argument("super_scales does not contain enough values");
@@ -101,20 +110,20 @@ void validate_inputs(
 
 void dequantize_from_symmetric_low_fp16(
     torch::Tensor packed,
-    torch::Tensor sub_scales,
+    torch::Tensor packed_sub_scales,
     torch::Tensor super_scales,
     torch::Tensor out,
     int64_t original_numel,
     int64_t super_block_size
 ) {
-    validate_inputs(packed, sub_scales, super_scales, out, original_numel, super_block_size);
+    validate_inputs(packed, packed_sub_scales, super_scales, out, original_numel, super_block_size);
 
     const int device = packed.get_device();
     const auto stream = at::cuda::getCurrentCUDAStream(device).stream();
 
     iml::cuda::dequantize_from_symmetric_low::launch_dequantize_from_symmetric_low(
         packed.data_ptr<int32_t>(),
-        sub_scales.data_ptr<int8_t>(),
+        packed_sub_scales.data_ptr<int32_t>(),
         reinterpret_cast<const __half*>(super_scales.data_ptr<at::Half>()),
         reinterpret_cast<__half*>(out.data_ptr<at::Half>()),
         original_numel,
@@ -129,6 +138,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def(
         "dequantize_from_symmetric_low_fp16",
         &dequantize_from_symmetric_low_fp16,
-        "Dequantize packed signed int6 symmetric-low values into fp16"
+        "Dequantize packed signed int3 symmetric-low values into fp16"
     );
 }

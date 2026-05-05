@@ -11,13 +11,15 @@ constexpr int kThreadsPerBlock = 256;
 constexpr int kTargetMinBlocksPerSm = 8;
 constexpr int kSubBlockSize = 32;
 constexpr int kBitsPerWeight = 5;
+constexpr int kScaleBits = 6;
+constexpr int kMinBits = 6;
 constexpr int kPackedWordsPerSubBlock = 5;
 constexpr int kWeightsPerPackedSubBlock = 32;
 
 void launch_dequantize_from_affine_high(
     const int32_t* packed,
-    const int8_t* sub_scales,
-    const int8_t* sub_mins,
+    const int32_t* sub_scales,
+    const int32_t* sub_mins,
     const __half* super_scales,
     const __half* super_mins,
     __half* out,

@@ -51,7 +51,6 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         self.post_init()
 
-    @check_model_inputs
     def forward(
         self,
         input_ids: torch.LongTensor | None = None,
@@ -61,6 +60,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         inputs_embeds: torch.FloatTensor | None = None,
         use_cache: bool | None = None,
         cache_position: torch.LongTensor | None = None,
+        output_hidden_states: bool | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
         if (input_ids is None) ^ (inputs_embeds is not None):
@@ -98,8 +98,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         hidden_states = inputs_embeds
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
+        all_hidden_states = () if output_hidden_states else None
 
         for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+            if output_hidden_states:
+                all_hidden_states += (hidden_states,)
             hidden_states = decoder_layer(
                 hidden_states,
                 attention_mask=causal_mask_mapping[decoder_layer.attention_type],
@@ -112,9 +115,13 @@ class Qwen3Model(Qwen3PreTrainedModel):
             )
 
         hidden_states = self.norm(hidden_states)
+        if output_hidden_states:
+            all_hidden_states += (hidden_states,)
+
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=past_key_values if use_cache else None,
+            hidden_states=all_hidden_states,
         )
 
 

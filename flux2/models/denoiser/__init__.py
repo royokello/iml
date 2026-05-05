@@ -15,6 +15,6 @@ from .transformer import Flux2SingleTransformerBlock, Flux2Transformer2DModel, F
 
 
 def load_flux2_denoiser(*args, **kwargs):
-    from flux2.loaders import load_flux2_denoiser as _load_flux2_denoiser
+    from flux2.denoiser.loader import _load_flux2_denoiser
 
     return _load_flux2_denoiser(*args, **kwargs)

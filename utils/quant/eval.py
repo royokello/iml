@@ -11,8 +11,10 @@ import torch
 
 from utils.quant.cuda.affine_high import dequantize_from_affine_high as dequantize_from_affine_high_cuda
 from utils.quant.cuda.affine_low import dequantize_from_affine_low as dequantize_from_affine_low_cuda
+from utils.quant.cuda.affine_med import dequantize_from_affine_med as dequantize_from_affine_med_cuda
 from utils.quant.cuda.symmetric_high import dequantize_from_symmetric_high as dequantize_from_symmetric_high_cuda
 from utils.quant.cuda.symmetric_low import dequantize_from_symmetric_low as dequantize_from_symmetric_low_cuda
+from utils.quant.cuda.symmetric_med import dequantize_from_symmetric_med as dequantize_from_symmetric_med_cuda
 from utils.quant.to.affine import quantize_to_affine
 from utils.quant.to.symmetric import quantize_to_symmetric
 
@@ -21,8 +23,8 @@ dequantize_from_symmetric = importlib.import_module("utils.quant.from.symmetric"
 
 LINEAR_SHAPES = (
     (6144, 128),
-    # (6144, 15360),
-    (6144, 6144),
+    (6144, 15360),
+    # (6144, 6144),
     # (36864, 6144),
     # (6144, 18432),
     # (55296, 6144),
@@ -32,10 +34,14 @@ LINEAR_SHAPES = (
 METHODS = (
     "affine_low_dequant",
     "affine_low_cuda_dequant",
+    "affine_med_dequant",
+    "affine_med_cuda_dequant",
     "affine_high_dequant",
     "affine_high_cuda_dequant",
     "symmetric_low_dequant",
     "symmetric_low_cuda_dequant",
+    "symmetric_med_dequant",
+    "symmetric_med_cuda_dequant",
     "symmetric_high_dequant",
     "symmetric_high_cuda_dequant",
 )
@@ -151,6 +157,10 @@ def _prepare_quantized_case(
         return _prepare_affine_case(shape, device=device, mode="high", use_kernel=True)
     if method == "affine_high_dequant":
         return _prepare_affine_case(shape, device=device, mode="high", use_kernel=False)
+    if method == "affine_med_cuda_dequant":
+        return _prepare_affine_case(shape, device=device, mode="med", use_kernel=True)
+    if method == "affine_med_dequant":
+        return _prepare_affine_case(shape, device=device, mode="med", use_kernel=False)
     if method == "affine_low_cuda_dequant":
         return _prepare_affine_case(shape, device=device, mode="low", use_kernel=True)
     if method == "affine_low_dequant":
@@ -159,6 +169,10 @@ def _prepare_quantized_case(
         return _prepare_symmetric_case(shape, device=device, mode="high", use_kernel=True)
     if method == "symmetric_high_dequant":
         return _prepare_symmetric_case(shape, device=device, mode="high", use_kernel=False)
+    if method == "symmetric_med_cuda_dequant":
+        return _prepare_symmetric_case(shape, device=device, mode="med", use_kernel=True)
+    if method == "symmetric_med_dequant":
+        return _prepare_symmetric_case(shape, device=device, mode="med", use_kernel=False)
     if method == "symmetric_low_cuda_dequant":
         return _prepare_symmetric_case(shape, device=device, mode="low", use_kernel=True)
     if method == "symmetric_low_dequant":
@@ -170,6 +184,8 @@ def _run_method(quantized_case: QuantizedCase) -> torch.Tensor:
     if quantized_case.method in {
         "affine_high_cuda_dequant",
         "affine_high_dequant",
+        "affine_med_cuda_dequant",
+        "affine_med_dequant",
         "affine_low_cuda_dequant",
         "affine_low_dequant",
     }:
@@ -180,40 +196,80 @@ def _run_method(quantized_case: QuantizedCase) -> torch.Tensor:
             or quantized_case.super_mins is None
         ):
             raise ValueError(f"{quantized_case.method} case is missing affine metadata.")
-        mode = "high" if "_high_" in quantized_case.method else "low"
+        if "_high_" in quantized_case.method:
+            mode = "high"
+        elif "_med_" in quantized_case.method:
+            mode = "med"
+        else:
+            mode = "low"
         use_kernel = "_cuda_" in quantized_case.method
         if use_kernel:
-            dequantize = dequantize_from_affine_high_cuda if mode == "high" else dequantize_from_affine_low_cuda
-        else:
-            dequantize = dequantize_from_affine
-        return dequantize(
+            if mode == "high":
+                dequantize = dequantize_from_affine_high_cuda
+            elif mode == "med":
+                dequantize = dequantize_from_affine_med_cuda
+            else:
+                dequantize = dequantize_from_affine_low_cuda
+            return dequantize(
+                quantized_case.tensor,
+                quantized_case.sub_scales,
+                quantized_case.sub_mins,
+                quantized_case.super_scales,
+                quantized_case.super_mins,
+                quantized_case.output_shape,
+            )
+        return dequantize_from_affine(
             quantized_case.tensor,
             quantized_case.sub_scales,
             quantized_case.sub_mins,
             quantized_case.super_scales,
             quantized_case.super_mins,
             quantized_case.output_shape,
-            **({} if use_kernel else {"mode": mode}),
+            mode=mode,
         )
 
     if quantized_case.method in {
         "symmetric_high_cuda_dequant",
         "symmetric_high_dequant",
+        "symmetric_med_cuda_dequant",
+        "symmetric_med_dequant",
         "symmetric_low_cuda_dequant",
         "symmetric_low_dequant",
     }:
-        if quantized_case.sub_scales is None or quantized_case.super_scales is None:
-            raise ValueError(f"{quantized_case.method} case is missing sub_scales or super_scales.")
-        mode = "high" if "_high_" in quantized_case.method else "low"
+        if quantized_case.sub_scales is None:
+            raise ValueError(f"{quantized_case.method} case is missing sub_scales.")
+        if "_high_" in quantized_case.method:
+            mode = "high"
+        elif "_med_" in quantized_case.method:
+            mode = "med"
+        else:
+            mode = "low"
         use_kernel = "_cuda_" in quantized_case.method
         if use_kernel:
-            dequantize = (
-                dequantize_from_symmetric_high_cuda
-                if mode == "high"
-                else dequantize_from_symmetric_low_cuda
-            )
+            if mode == "high":
+                dequantize = dequantize_from_symmetric_high_cuda
+            elif mode == "med":
+                dequantize = dequantize_from_symmetric_med_cuda
+            else:
+                dequantize = dequantize_from_symmetric_low_cuda
         else:
             dequantize = dequantize_from_symmetric
+        if mode != "high" and quantized_case.super_scales is None:
+            raise ValueError(f"{quantized_case.method} case is missing super_scales.")
+        if mode == "high":
+            if use_kernel:
+                return dequantize(
+                    quantized_case.tensor,
+                    quantized_case.sub_scales,
+                    quantized_case.output_shape,
+                )
+            return dequantize(
+                quantized_case.tensor,
+                quantized_case.sub_scales,
+                None,
+                quantized_case.output_shape,
+                mode=mode,
+            )
         return dequantize(
             quantized_case.tensor,
             quantized_case.sub_scales,

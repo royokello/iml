@@ -8,3 +8,4 @@ diffusers
 matplotlib
 huggingface_hub
 tensorflow
+numpy

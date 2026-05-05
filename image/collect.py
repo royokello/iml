@@ -24,6 +24,7 @@ def main(
     height: int | None = None,
     square: bool = False,
     mode: str = "folder",
+    filename_width: int = 6,
     verbose: bool = False,
 ) -> None:
     """
@@ -50,6 +51,7 @@ def main(
     print(f"Target height: {height}")
     print(f"Square output: {square}")
     print(f"Mode: {mode}")
+    print(f"Filename width: {filename_width}")
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -67,17 +69,18 @@ def main(
 
     file_counter = 1
     for file_path in image_files:
+        output_stem = f"{file_counter:0{filename_width}d}"
         src_suffix = Path(file_path).suffix.lower()
         try:
             if width is None and height is None and not square and src_suffix == ".png":
-                output_file_path = out_dir / f"{file_counter}.png"
+                output_file_path = out_dir / f"{output_stem}.png"
                 shutil.copy2(file_path, output_file_path)
 
                 caption_file_path = os.path.splitext(file_path)[0] + ".txt"
                 if os.path.exists(caption_file_path):
                     with open(caption_file_path, "r", encoding="utf-8") as caption_file:
                         caption_text = caption_file.read()
-                    caption_output_path = out_dir / f"{file_counter}.txt"
+                    caption_output_path = out_dir / f"{output_stem}.txt"
                     with open(caption_output_path, "w", encoding="utf-8") as output_caption_file:
                         output_caption_file.write(caption_text)
 
@@ -118,14 +121,14 @@ def main(
                 else:
                     final_img = img
 
-                output_file_path = out_dir / f"{file_counter}.png"
+                output_file_path = out_dir / f"{output_stem}.png"
                 final_img.save(output_file_path, "PNG")
 
                 caption_file_path = os.path.splitext(file_path)[0] + ".txt"
                 if os.path.exists(caption_file_path):
                     with open(caption_file_path, "r", encoding="utf-8") as caption_file:
                         caption_text = caption_file.read()
-                    caption_output_path = out_dir / f"{file_counter}.txt"
+                    caption_output_path = out_dir / f"{output_stem}.txt"
                     with open(caption_output_path, "w", encoding="utf-8") as output_caption_file:
                         output_caption_file.write(caption_text)
 
@@ -176,11 +179,24 @@ def parse_args() -> argparse.Namespace:
         help="Mode to gather files: folder, file, or random.",
     )
     parser.add_argument(
+        "--filename-width",
+        type=parse_filename_width,
+        default=6,
+        help="Zero-pad output filenames to this width.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print per-file output and config details.",
     )
     return parser.parse_args()
+
+
+def parse_filename_width(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("--filename-width must be a positive integer")
+    return parsed
 
 
 def cli() -> None:
@@ -192,6 +208,7 @@ def cli() -> None:
         height=args.height,
         square=args.square,
         mode=args.mode,
+        filename_width=args.filename_width,
         verbose=args.verbose,
     )
 

@@ -184,6 +184,7 @@ def perform_cropping(
 
     results = model.predict(
         source=src_dir,
+        imgsz=768,
         conf=conf,
         iou=iou,
         max_det=max_det,
