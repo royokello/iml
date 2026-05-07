@@ -6,8 +6,6 @@ from pathlib import Path
 
 from flux2.train.run import run_training
 from flux2.train.prepare import prepare_project_dir
-from utils.quant.validators import CLI_QUANT_METHODS
-
 INITIAL_LORA_TARGET_LINEAR_NAMES = (
     "transformer_blocks.attn.to_q",
     "transformer_blocks.attn.to_k",
@@ -49,8 +47,8 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Resume training from the latest checkpoint.",
     )
-    parser.add_argument("--text-quant-method", choices=CLI_QUANT_METHODS, default="sym-high")
-    parser.add_argument("--denoiser-quant-method", choices=CLI_QUANT_METHODS, default="sym-med")
+    parser.add_argument("--text-quant-method", default="sym-high")
+    parser.add_argument("--denoiser-quant-method", default="sym-med")
     parser.add_argument(
         "--trigger",
         type=str,

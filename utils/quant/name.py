@@ -42,8 +42,3 @@ def convert_quant_name(name: str) -> tuple[str, str]:
         )
 
     return (order[high_idx], order[low_idx])
-
-# Example usage (matching your description):
-print(convert_quant_name("aff-med-max"))   # ('sym-med', 'aff-med')
-print(convert_quant_name("aff-med"))       # ('aff-med', 'aff-med')
-print(convert_quant_name("aff-med-mini"))  # ('aff-med', 'sym-low')

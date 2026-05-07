@@ -8,7 +8,6 @@ from pathlib import Path
 from safetensors.torch import save_file
 
 from utils.quant.model import quantize_model_tensors
-from utils.quant.validators import CLI_QUANT_METHODS, normalize_quant_method
 
 _MODEL_DIR = "wan22"
 _MODEL_SHARDS = 3
@@ -58,7 +57,6 @@ def quantize_denoiser(
     if not model_dir.is_dir():
         raise FileNotFoundError(f"Denoiser directory not found: {model_dir}")
 
-    method = normalize_quant_method(method)
     checkpoint_files = _build_checkpoint_files(model_dir)
     missing_files = [path.name for path in checkpoint_files if not path.is_file()]
     if missing_files:
@@ -109,7 +107,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--method",
-        choices=CLI_QUANT_METHODS,
         required=True,
         help="Quantization method to apply.",
     )

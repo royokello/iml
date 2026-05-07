@@ -4,7 +4,7 @@ import json
 import math
 from typing import Any
 
-from utils.quant.validators import normalize_quant_method, quant_method_family, quant_method_mode
+from utils.quant.validators import quant_method_family, quant_method_mode
 
 _SAFETENSORS_HEADER_LEN_BYTES = 8
 
@@ -192,7 +192,6 @@ def _estimate_output_tensors(
         output_dtype = "F16" if dtype in _FP16_CAST_DTYPES else dtype
         return [(name, output_dtype, shape)]
 
-    method = normalize_quant_method(method)
     family = quant_method_family(method)
     mode = quant_method_mode(method)
     if family == "symmetric":

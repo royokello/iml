@@ -11,8 +11,6 @@ import json
 import time
 from pathlib import Path
 
-from utils.quant.validators import CLI_QUANT_METHODS
-
 DEFAULT_DISTILLED_STEPS = 4
 DEFAULT_BASE_STEPS = 50
 DEFAULT_SEED = 19930625
@@ -20,7 +18,7 @@ DEFAULT_DISTILLED_GUIDANCE_SCALE = 1.0
 DEFAULT_BASE_GUIDANCE_SCALE = 4.0
 DEFAULT_TEXT_ENCODER_OUT_LAYERS = (9, 18, 27)
 _MODEL_DIRS = {
-    "4b": "flux_2_klein_4b",
+    "4b": "flux2_4b",
     "9b": "flux2_9b",
 }
 
@@ -732,13 +730,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--text-quant-method",
-        choices=("none", *CLI_QUANT_METHODS),
         default="sym-high",
         help='Text encoder quantization method. "none" keeps checkpoint weights as loaded.',
     )
     parser.add_argument(
         "--denoiser-quant-method",
-        choices=("none", *CLI_QUANT_METHODS),
         default="sym-med",
         help='Denoiser quantization method. Use "none" to load the fp16 checkpoint directly.',
     )

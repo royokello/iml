@@ -8,7 +8,7 @@ from safetensors import safe_open
 
 from .to.affine import quantize_to_affine
 from .to.symmetric import quantize_to_symmetric
-from .validators import normalize_quant_method, quant_method_family, quant_method_mode
+from .validators import quant_method_family, quant_method_mode
 
 
 def _load_state_dict(path: Path) -> dict[str, torch.Tensor]:
@@ -24,14 +24,12 @@ def _load_state_dict(path: Path) -> dict[str, torch.Tensor]:
     raise ValueError(f"Unsupported model file: {path}")
 
 
-def _store_quantized_or_fp16(
-    result: dict[str, torch.Tensor],
+def _build_quantized_or_fp16_tensors(
     name: str,
     tensor: torch.Tensor,
     target_method: str | None,
-) -> None:
+) -> dict[str, torch.Tensor]:
     if target_method is not None:
-        target_method = normalize_quant_method(target_method)
         metadata_base_name = name.removesuffix(".weight")
         sub_scales_name = f"{metadata_base_name}.sub_scales"
         super_scales_name = f"{metadata_base_name}.super_scales"
@@ -41,10 +39,13 @@ def _store_quantized_or_fp16(
                 tensor,
                 mode=mode,
             )
-            result[name] = qweight
-            result[sub_scales_name] = sub_scales
+            result = {
+                name: qweight,
+                sub_scales_name: sub_scales,
+            }
             if super_scales is not None:
                 result[super_scales_name] = super_scales
+            return result
         else:
             sub_mins_name = f"{metadata_base_name}.sub_mins"
             super_mins_name = f"{metadata_base_name}.super_mins"
@@ -52,15 +53,17 @@ def _store_quantized_or_fp16(
                 tensor,
                 mode=quant_method_mode(target_method),
             )
-            result[name] = qweight
-            result[sub_scales_name] = sub_scales
-            result[sub_mins_name] = sub_mins
-            result[super_scales_name] = super_scales
-            result[super_mins_name] = super_mins
+            return {
+                name: qweight,
+                sub_scales_name: sub_scales,
+                sub_mins_name: sub_mins,
+                super_scales_name: super_scales,
+                super_mins_name: super_mins,
+            }
     elif tensor.dtype in {torch.float32, torch.bfloat16}:
-        result[name] = tensor.to(dtype=torch.float16)
+        return {name: tensor.to(dtype=torch.float16)}
     else:
-        result[name] = tensor
+        return {name: tensor}
 
 
 def _quantize_safetensors_file(
@@ -75,17 +78,26 @@ def _quantize_safetensors_file(
         names = handle.keys()
         total = len(names)
         for i, name in enumerate(names, start=1):
-            print(f"{i}/{total}: {name} ...")
             if inclusion_prefix is not None and not name.startswith(inclusion_prefix):
                 skipped += 1
+                print(f"{i}/{total}: {name} skipped")
                 continue
 
             if exclusion_prefix is not None and name.startswith(exclusion_prefix):
                 skipped += 1
+                print(f"{i}/{total}: {name} skipped")
                 continue
 
             tensor = handle.get_tensor(name)
-            _store_quantized_or_fp16(result, name, tensor, methods_by_name.get(name))
+            method = methods_by_name.get(name)
+            print(f"{i}/{total}: {name} {tuple(tensor.shape)} at {method}")
+            result.update(
+                _build_quantized_or_fp16_tensors(
+                    name=name,
+                    tensor=tensor,
+                    target_method=method,
+                )
+            )
             del tensor
 
     if skipped:
@@ -104,19 +116,28 @@ def _quantize_state_dict(
     total = len(names)
     skipped = 0
     for i, name in enumerate(names, start=1):
-        print(f"{i}/{total}: {name} ...")
         tensor = state_dict.pop(name)
         if inclusion_prefix is not None and not name.startswith(inclusion_prefix):
             skipped += 1
+            print(f"{i}/{total}: {name} skipped")
             del tensor
             continue
 
         if exclusion_prefix is not None and name.startswith(exclusion_prefix):
             skipped += 1
+            print(f"{i}/{total}: {name} skipped")
             del tensor
             continue
 
-        _store_quantized_or_fp16(result, name, tensor, methods_by_name.get(name))
+        method = methods_by_name.get(name)
+        print(f"{i}/{total}: {name} {tuple(tensor.shape)} at {method}")
+        result.update(
+            _build_quantized_or_fp16_tensors(
+                name=name,
+                tensor=tensor,
+                target_method=method,
+            )
+        )
         del tensor
 
     if skipped:

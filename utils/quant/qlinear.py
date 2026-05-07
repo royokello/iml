@@ -10,7 +10,7 @@ from utils.quant.cuda.symmetric_med import dequantize_from_symmetric_med as dequ
 from utils.quant.to.affine import AFFINE_MODES, HALF_SUPER_BLOCK_SIZE as AFFINE_HALF_SUPER_BLOCK_SIZE, SUPER_BLOCK_SIZE as AFFINE_SUPER_BLOCK_SIZE, quantize_to_affine
 from utils.quant.to.intermediate import quantize_to_intermediate
 from utils.quant.to.symmetric import HIGH_BLOCK_SIZE as SYMMETRIC_HIGH_BLOCK_SIZE, SUB_BLOCK_SIZE as SYMMETRIC_SUB_BLOCK_SIZE, SUPER_BLOCK_SIZE as SYMMETRIC_SUPER_BLOCK_SIZE, quantize_to_symmetric
-from utils.quant.validators import normalize_quant_method, quant_method_family, quant_method_mode
+from utils.quant.validators import quant_method_family, quant_method_mode
 
 SYMMETRIC_MED_PACKED_WORDS_PER_SUB_BLOCK = 3
 SYMMETRIC_LOW_PACKED_WORDS_PER_SUB_BLOCK = 2
@@ -82,7 +82,7 @@ class QuantizedLinear(nn.Module):
         super().__init__()
         self.in_features = linear.in_features
         self.out_features = linear.out_features
-        self.method = normalize_quant_method(method)
+        self.method = method
 
         if quant_method_family(self.method) == "symmetric":
             qweight, sub_scales, super_scales = quantize_to_symmetric(
@@ -116,7 +116,7 @@ class QuantizedLinear(nn.Module):
         nn.Module.__init__(module)
         module.in_features = linear.in_features
         module.out_features = linear.out_features
-        module.method = normalize_quant_method(method)
+        module.method = method
 
         if quant_method_family(module.method) == "symmetric":
             mode = quant_method_mode(module.method)

@@ -20,7 +20,7 @@ from utils.quant.to.symmetric import (
     SUPER_BLOCK_SIZE as SYMMETRIC_SUPER_BLOCK_SIZE,
     quantize_to_symmetric,
 )
-from utils.quant.validators import normalize_quant_method, quant_method_family, quant_method_mode
+from utils.quant.validators import quant_method_family, quant_method_mode
 
 
 class QuantizedTextScaledWordEmbedding(nn.Module):
@@ -33,7 +33,7 @@ class QuantizedTextScaledWordEmbedding(nn.Module):
         self.num_embeddings = embedding.num_embeddings
         self.embedding_dim = embedding.embedding_dim
         self.padding_idx = embedding.padding_idx
-        self.method = normalize_quant_method(method)
+        self.method = method
         
         embed_scale = getattr(embedding, "scalar_embed_scale", 1.0)
         if not isinstance(embed_scale, torch.Tensor):
@@ -72,7 +72,7 @@ class QuantizedTextScaledWordEmbedding(nn.Module):
         module.num_embeddings = embedding.num_embeddings
         module.embedding_dim = embedding.embedding_dim
         module.padding_idx = embedding.padding_idx
-        module.method = normalize_quant_method(method)
+        module.method = method
         
         embed_scale = getattr(embedding, "scalar_embed_scale", 1.0)
         if not isinstance(embed_scale, torch.Tensor):

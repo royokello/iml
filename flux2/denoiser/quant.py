@@ -43,12 +43,17 @@ def _quantize_denoiser(
 
     print(f"Applying {method} quantization for Flux2 {version} denoiser ({variant}) ...")
     quantize_start = time.perf_counter()
+    targets = {
+        high_method: target_tensors["high"],
+    }
+    if low_method == high_method:
+        targets[high_method] = target_tensors["high"] + target_tensors["low"]
+    else:
+        targets[low_method] = target_tensors["low"]
+
     state_dict = quantize_model_tensors(
         files=checkpoint_files,
-        targets={
-            high_method: target_tensors["high"],
-            low_method: target_tensors["low"]
-        },
+        targets=targets,
     )
     quantize_seconds = time.perf_counter() - quantize_start
     print(f"Quantized in {quantize_seconds:.3f}s")

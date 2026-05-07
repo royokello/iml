@@ -13,10 +13,9 @@ from utils.loaders.single import load_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
 from utils.quant.name import convert_quant_name
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
-from utils.quant.validators import normalize_quant_method
 
 from flux2.models.denoiser.transformer import Flux2Transformer2DModel
-from flux2.denoiser.quant import _build_target_tensors
+from flux2.denoiser.targets import _build_flux2_denoiser_target_tensors
 
 
 def _materialize_meta_tensors(model: torch.nn.Module) -> None:
@@ -87,17 +86,13 @@ def _load_flux2_denoiser(
 
     # ---- Parse mixed-precision quantisation ----
     if quant_method is not None:
-        # Normalise the raw name (e.g. "aff-med-max" → "aff_med_max")
         quant_method_key = quant_method.replace("-", "_")
-        # Split into high / low methods (e.g. "aff_med_max" → ("sym_med", "aff_med"))
-        high_raw, low_raw = convert_quant_name(quant_method)
-        high_method = normalize_quant_method(high_raw)
-        low_method = normalize_quant_method(low_raw)
+        high_method, low_method = convert_quant_name(quant_method)
     else:
         high_method = low_method = None
 
     # ---- Build target tensor groups ----
-    target_tensors: Dict[str, list[str]] = _build_target_tensors(version)
+    target_tensors: Dict[str, list[str]] = _build_flux2_denoiser_target_tensors(version)
     high_linear = target_tensors_to_linear_names(target_tensors["high"])
     low_linear = target_tensors_to_linear_names(target_tensors["low"])
 

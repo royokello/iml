@@ -5,56 +5,65 @@ Author: Roy Okello, Stelar Labs
 IML is a toolkit for image, video, and diffusion model workflows. It includes:
 - Image preprocessing (group, shape), dataset curation (cull), and YOLO-based cropping (crop)
 - Video frame extraction, grouping, loop detection, and quality analysis
-- SDXL
 - Flux 2
-
-## Symlink Setup
-
-Keep large model files outside the repository and symlink them into the expected project layout.
-
-General pattern
-- source: `<model_storage>\<model_name>\model\...`
-- target: `<project_root>\<model_name>\model\...`
-
-PowerShell examples
-- Create a directory symlink:
-  - `New-Item -ItemType SymbolicLink -Path "<project_root>\<model_name>\model\text_encoder" -Target "<model_storage>\<model_name>\model\text_encoder"`
-- Link every file in a folder:
-  - ```powershell
-    $src = "<model_storage>\<model_name>\model\text_encoder"
-    $dst = "<project_root>\<model_name>\model\text_encoder"
-    New-Item -ItemType Directory -Force -Path $dst | Out-Null
-    Get-ChildItem -Path $src -File | ForEach-Object {
-        New-Item -ItemType SymbolicLink -Path (Join-Path $dst $_.Name) -Target $_.FullName
-    }
-    ```
-- If you are linking a whole folder, create one directory symlink.
-- If you only want selected files, use the file-link loop above.
 
 ## Installation
 
-Prerequisites
-- Python 3.10+ and a virtual environment
-- NVIDIA GPU + CUDA for GPU-accelerated tools
-- FFmpeg/FFprobe on PATH for video modules
+1. Install Python 3.10+.
+   - Download: [Python releases](https://www.python.org/downloads/)
 
-Create and activate a venv
-- Windows
-  - `python -m venv venv`
-  - `venv\Scripts\activate`
-- macOS/Linux
-  - `python3 -m venv .venv`
-  - `source .venv/bin/activate`
+2. Install CUDA 12.3 for GPU-accelerated tools.
+   - Download: [CUDA Toolkit Archive](https://developer.nvidia.com/cuda-toolkit-archive)
+   - Documentation: [CUDA Toolkit 12.3](https://docs.nvidia.com/cuda/archive/12.3.0/)
 
-Install dependencies
-- `pip install -r requirements.txt`
+3. Clone the repo.
+   - `git clone <repo-url>`
+   - `cd iml`
 
-Notes
-- Some modules expect CUDA (e.g., `video.loop`, YOLO inference/training).
-- If you run into PyTorch GPU memory-caching issues, `set PYTORCH_NO_CUDA_MEMORY_CACHING=1`.
+4. Create a virtual environment.
+   - Windows: `python -m venv venv`
+   - macOS/Linux: `python3 -m venv .venv`
+
+5. Activate the virtual environment.
+   - Windows: `venv\Scripts\activate`
+   - macOS/Linux: `source .venv/bin/activate`
+
+6. Install Python dependencies.
+   - `pip install -r requirements.txt`
+
+7. Run the root directory creator.
+   - This script is not available yet. Until it exists, create the model/tool roots manually, for example:
+     - `/models/flux`
+     - `/models/gemma4`
+     - `/tools/ffmpeg`
+     - `/tools/llama.cpp`
+
+8. Install FFmpeg.
+   - Download: [FFmpeg release builds](https://github.com/BtbN/FFmpeg-Builds/releases)
+   - Make sure `ffmpeg` and `ffprobe` are on PATH, or place them under the configured tools root.
+
+9. Install llama.cpp.
+   - Download: [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases)
+   - Place the binaries under the configured tools root, or add them to PATH.
+
+10. Download FLUX.2 weights.
+    - Distilled 4B full weights: [black-forest-labs/FLUX.2-klein-4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-4B)
+    - 4B base full weights: [black-forest-labs/FLUX.2-klein-base-4B](https://huggingface.co/black-forest-labs/FLUX.2-klein-base-4B)
+    - Distilled 9B full weights: [black-forest-labs/FLUX.2-klein-9B](https://huggingface.co/black-forest-labs/FLUX.2-klein-9B)
+    - 9B base full weights: [black-forest-labs/FLUX.2-klein-base-9B](https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B)
+
+11. Download Gemma 4 weights.
+    - Full E2B instruction-tuned weights: [google/gemma-4-E2B-it](https://huggingface.co/google/gemma-4-e2b-it)
+    - Full E4B instruction-tuned weights: [google/gemma-4-E4B-it](https://huggingface.co/google/gemma-4-E4B-it)
+    - E2B GGUF Q8_0 and `mmproj.bf16` from ggml-org: [ggml-org/gemma-4-E2B-it-GGUF](https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF)
+    - E4B GGUF Q4_K_M and `mmproj.fp16` from Unsloth: [unsloth/gemma-4-E4B-it-GGUF](https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF)
+
+Notes:
+- Some modules expect CUDA, including `video.loop` and YOLO inference/training.
 - FFmpeg/FFprobe binaries are required by `video.group`, `video.loop`, and `video.quality`.
+- If you run into PyTorch GPU memory-caching issues on Windows, run `set PYTORCH_NO_CUDA_MEMORY_CACHING=1`.
 
-## Groups
+## Usage
 
 ### Video
 
@@ -164,6 +173,20 @@ Notes
     - `python -m image.tag.main --input "images" --thresh 0.35 --max-tags 50`
   - Useful args
     - `--thresh`, `--general-thresh`, `--character-thresh`, `--max-tags` (0 for none), `--model`, `--prefix`
+
+#### `image.caption`
+- Features
+  - Recursively scans the input folder for common image formats
+  - Uses a local OpenAI-compatible vision chat endpoint to write natural-language `.txt` captions beside each image
+  - Scales images down before upload only when their longest side exceeds `--max-res` (`768` by default)
+  - Skips images that already have a matching `.txt` caption
+  - Example
+    - `python -m image.caption --input "images" --trigger "trxxr" --class woman`
+    - `python -m image.caption --input "images" --trigger "trxxr" --class man`
+    - `python -m image.caption --input "images" --trigger "objxx" --class object`
+    - `python -m image.caption --input "images" --trigger "mystyle" --class style`
+  - Useful args
+    - `--trigger`, `--class`, `--max-res`, `--max-tokens`, `--server-url`, `--model`, `--print-response`
 
 #### `image.tag.extract`
 - Features
@@ -662,5 +685,8 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 - [Black Forest Labs](https://blackforestlabs.ai/) for releasing the FLUX.2 [klein] model family and open-weight tooling.
   - [FLUX.2 documentation](https://docs.bfl.ai/flux_2)
   - [FLUX.2 GitHub repository](https://github.com/black-forest-labs/flux2)
+- [Google DeepMind](https://deepmind.google/) and the Gemma 4 team for releasing the Gemma 4 open models and tooling.
+  - [Gemma documentation](https://ai.google.dev/gemma)
+  - [Gemma GitHub repository](https://github.com/google-gemma)
 - [ggml](https://github.com/ggml-org) for the quantization formats and low-level tensor/runtime work that informed the quantization utilities.
 - [Unsloth](https://huggingface.co/unsloth) for efficient quantization recipes, GGUF model releases, and practical low-memory model workflows.

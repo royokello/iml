@@ -8,8 +8,6 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from utils.quant.validators import CLI_QUANT_METHODS
-
 DEFAULT_SAMPLE_SEED = 19930625
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
@@ -150,8 +148,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--sample-seed", "--sample_seed", dest="sample_seed", type=int, default=DEFAULT_SAMPLE_SEED)
     parser.add_argument("--sample-indices", dest="sample_indices", type=str, default=None)
-    parser.add_argument("--text-quant-method", choices=CLI_QUANT_METHODS, default="sym-high")
-    parser.add_argument("--denoiser-quant-method", choices=CLI_QUANT_METHODS, default="sym-med")
+    parser.add_argument("--text-quant-method", default="sym-high")
+    parser.add_argument("--denoiser-quant-method", default="sym-med")
     parser.add_argument(
         "--trigger",
         type=str,

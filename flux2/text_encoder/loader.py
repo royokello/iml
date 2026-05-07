@@ -8,12 +8,11 @@ from safetensors import safe_open
 
 from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 
-from flux2.text_encoder.quant import _build_target_tensors
+from flux2.text_encoder.target import _build_target_tensors
 from utils.loaders.sharded import load_local_sharded_checkpoint
 from utils.loaders.single import load_local_single_checkpoint
 from utils.quant.name import convert_quant_name
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
-from utils.quant.validators import normalize_quant_method
 
 from flux2.models.text_encoder.embedding import Qwen3RotaryEmbedding
 from flux2.models.text_encoder.model import Qwen3Model
@@ -72,9 +71,7 @@ def _load_flux2_text_encoder(
     # 2. ---- Parse mixed‑precision quantisation ----
     if quant_method is not None:
         quant_method_key = replace_hyphens_with_underscores(quant_method)   # e.g. "aff_med_max"
-        high_raw, low_raw = convert_quant_name(quant_method)               # ("sym_med", "aff_med")
-        high_method = normalize_quant_method(high_raw)
-        low_method = normalize_quant_method(low_raw)
+        high_method, low_method = convert_quant_name(quant_method)
     else:
         quant_method_key = None
         high_method = low_method = None

@@ -9,55 +9,67 @@ from safetensors.torch import save_file
 
 from utils.quant.model import quantize_model_tensors
 from utils.quant.name import convert_quant_name
-from utils.quant.validators import normalize_quant_method
 
-from flux2.text_encoder.quant import _build_target_tensors
+from flux2.text_encoder.target import _build_target_tensors
 from utils.text import replace_hyphens_with_underscores
-
-_MODEL_SHARDS = {
-    "4b": 2,
-    "9b": 4,
-}
-
-def _build_checkpoint_files(model_dir: Path, version: str) -> list[Path]:
-    shard_count = _MODEL_SHARDS[version]
-    return [
-        model_dir / f"model-{index:05d}-of-{shard_count:05d}.safetensors"
-        for index in range(1, shard_count + 1)
-    ]
 
 
 def _quantize_text_encoder(
     root: str | Path,
-    input_root: str | Path,
-    *,
+    input_dirpath: str | Path,
     version: str,
     method: str,
 ) -> Path:
-    # Normalise the method name (may convert hyphens to underscores)
-    base_method = normalize_quant_method(method)
+    print(
+        "Quantize text encoder args:\n"
+        f"  root={root}\n"
+        f"  input_dirpath={input_dirpath}\n"
+        f"  version={version}\n"
+        f"  method={method}"
+    )
 
     # Split into high/low methods for mixed precision
-    high_raw, low_raw = convert_quant_name(method)   # e.g. ("sym_med", "aff_med")
-    high_method = normalize_quant_method(high_raw)
-    low_method = normalize_quant_method(low_raw)
+    high_method, low_method = convert_quant_name(method)
 
     # Build output filename (use underscored version of original input)
     quant_name = replace_hyphens_with_underscores(method)
     output_dir = Path(root) / f"flux2_{version}" / "model" / "text_encoder"
-    model_dir = Path(input_root).expanduser().resolve()
+    model_dir = Path(input_dirpath)
 
     if not model_dir.is_dir():
         raise FileNotFoundError(f"Text encoder directory not found: {model_dir}")
 
-    checkpoint_files = _build_checkpoint_files(model_dir, version)
+    if version == "4b":
+        checkpoint_files = [
+            model_dir / "model-00001-of-00002.safetensors",
+            model_dir / "model-00002-of-00002.safetensors",
+        ]
+    else:
+        checkpoint_files = [
+            model_dir / "model-00001-of-00004.safetensors",
+            model_dir / "model-00002-of-00004.safetensors",
+            model_dir / "model-00003-of-00004.safetensors",
+            model_dir / "model-00004-of-00004.safetensors",
+        ]
+
+    print("Checkpoint")
+    for checkpoint in checkpoint_files:
+        print(f" * {checkpoint}")
 
     # Get high/low target tensors from the shared builder
     target_tensors = _build_target_tensors()
+
     targets = {
         high_method: target_tensors["high"],
-        low_method: target_tensors["low"],
     }
+    if low_method == high_method:
+        targets[high_method] = target_tensors["high"] + target_tensors["low"]
+    else:
+        targets[low_method] = target_tensors["low"]
+
+    print("Targets")
+    for target_method, target_names in targets.items():
+        print(f" * {target_method}: {len(target_names)} tensors")
 
     output_path = output_dir / f"{quant_name}_quant.safetensors"
 
@@ -101,7 +113,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         required=True,
-        help="Root folder where flux_2_klein_4b or flux2_9b is stored or should receive the quantized output.",
+        help="Root folder where flux2_4b or flux2_9b is stored or should receive the quantized output.",
     )
     parser.add_argument(
         "--input",

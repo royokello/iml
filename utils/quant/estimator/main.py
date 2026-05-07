@@ -26,7 +26,6 @@ from gemma4.quant import (
 from utils.quant.estimator.safetensors import get_safetensors_tensor_metadata
 from utils.quant.estimator.torch import get_torch_tensor_metadata
 from utils.quant.estimator.utils import estimate_quantized_safetensors_size
-from utils.quant.validators import CLI_QUANT_METHODS, normalize_quant_method
 from wan22.quant.denoiser import (
     _build_checkpoint_files as _build_wan22_denoiser_files,
 )
@@ -52,7 +51,7 @@ def _standard_targets(
     builder: Callable[[], list[str]],
     method: str | None,
 ) -> dict[str, list[str]]:
-    return {normalize_quant_method(method or _DEFAULT_METHOD): builder()}
+    return {method or _DEFAULT_METHOD: builder()}
 
 
 def _gemma4_targets(method: str | None) -> dict[str, list[str]]:
@@ -166,7 +165,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--method",
-        choices=(*CLI_QUANT_METHODS, _GEMMA4_METHOD),
         help=f"Quantization method. Defaults to {_DEFAULT_METHOD}; Gemma 4 defaults to high.",
     )
     return parser.parse_args()
