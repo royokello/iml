@@ -8,28 +8,18 @@ from pathlib import Path
 from safetensors.torch import save_file
 
 from utils.quant.model import quantize_model_tensors
+from utils.quant.targets import build_mixed_target_config
+from wan22.quant.targets import _build_wan22_text_encoder_mixed_target_tensors
 
 _MODEL_DIR = "wan22"
 _CHECKPOINT_NAME = "t5_umt5-xxl-enc-bf16.pth"
-_NUM_BLOCKS = 24
-_T5_LINEAR_WEIGHT_SUFFIXES = (
-    "attn.q.weight",
-    "attn.k.weight",
-    "attn.v.weight",
-    "attn.o.weight",
-    "ffn.gate.0.weight",
-    "ffn.fc1.weight",
-    "ffn.fc2.weight",
-)
 
 
-def _build_target_tensors() -> list[str]:
-    tensors: list[str] = []
-    for block_idx in range(_NUM_BLOCKS):
-        block_prefix = f"blocks.{block_idx}."
-        for suffix in _T5_LINEAR_WEIGHT_SUFFIXES:
-            tensors.append(block_prefix + suffix)
-    return tensors
+def _build_targets_for_method(method: str) -> dict[str, list[str]]:
+    return build_mixed_target_config(
+        method,
+        _build_wan22_text_encoder_mixed_target_tensors(),
+    )
 
 
 def quantize_text_encoder(
@@ -54,7 +44,7 @@ def quantize_text_encoder(
     quantize_start = time.perf_counter()
     state_dict = quantize_model_tensors(
         files=checkpoint_path,
-        targets={method: _build_target_tensors()},
+        targets=_build_targets_for_method(method),
     )
     quantize_seconds = time.perf_counter() - quantize_start
     print(f"Quantized in {quantize_seconds:.3f}s")

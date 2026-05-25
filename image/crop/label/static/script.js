@@ -21,7 +21,7 @@ const labelledCount = document.getElementById('labelledCount');
 const totalLabels = document.getElementById('totalLabels');
 const classStatsEl = document.getElementById('classStats');
 
-const ASPECT_BY_CLASS = { 0: 1/1, 1: 3/4, 2: 4/3, 3: 1/2, 4: 2/1 }; // width / height
+const ASPECT_BY_CLASS = { 0: 1/1, 1: 2/3, 2: 3/2, 3: 1/2, 4: 2/1 }; // width / height
 function currentAspect() {
     const id = Number(classSelect.value);
     return ASPECT_BY_CLASS.hasOwnProperty(id) ? ASPECT_BY_CLASS[id] : 1;

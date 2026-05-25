@@ -57,8 +57,8 @@ def main():
     ap.add_argument("--model", type=str, default=None, help="absolute path to a trained model (for resume/continue)")
     ap.add_argument("--variant", help="e.g. yolo11n, yolov8n, ...", default="yolo11m")
     ap.add_argument("--epochs", type=int, default=100)
-    ap.add_argument("--batch", type=int, default=8)
-    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--batch", type=int, default=1)
+    ap.add_argument("--workers", type=int, default=2)
     args = ap.parse_args()
 
     stage = args.stage or find_latest_stage(args.project)
@@ -97,7 +97,7 @@ def main():
         rect=True,
         augment=False,
         patience=8,
-        imgsz=512,
+        imgsz=640,
     )
 
     # figure out which run directory to pull artifacts from

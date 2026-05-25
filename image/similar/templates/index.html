@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Image Similarity Finder — iml</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" />
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+
+    <!-- ─── SIDEBAR ─── -->
+    <aside class="similar-sidebar" id="sidebar">
+        <h2>Image Similarity</h2>
+        <p class="lead">Find and filter near-duplicate images in a directory.</p>
+
+        <!-- Directory path -->
+        <div class="mb-2">
+            <label for="dir-path">Directory Path</label>
+            <div class="input-group input-group-sm">
+                <input type="text" id="dir-path" class="form-control form-control-sm" placeholder="C:\path\to\images" />
+                <button class="btn btn-outline-light btn-sm" id="scan-btn" type="button">
+                    <i class="fas fa-search"></i> Scan
+                </button>
+            </div>
+        </div>
+
+        <!-- Recursive toggle -->
+        <div class="form-check mb-1">
+            <input class="form-check-input" type="checkbox" id="recursive" checked />
+            <label class="form-check-label" for="recursive" style="font-size:0.82rem;">Recursive</label>
+        </div>
+
+        <!-- Hash size (scan-time setting) -->
+        <div class="slider-row">
+            <label for="hash-size">Hash Size</label>
+            <input type="range" id="hash-size" min="4" max="32" value="16" step="1" />
+            <span class="slider-value" id="hash-size-value">16</span>
+        </div>
+
+        <!-- Hash mode toggle -->
+        <div style="display:flex;gap:12px;align-items:center;margin-bottom:6px;font-size:0.82rem;">
+            <label style="color:#a0a0c0;min-width:60px;">Hash On</label>
+            <label style="color:#c0c0c0;">
+                <input type="radio" name="hash-mode" value="grey" checked /> Grey
+            </label>
+            <label style="color:#c0c0c0;">
+                <input type="radio" name="hash-mode" value="edge" /> Edge
+            </label>
+        </div>
+
+        <hr />
+
+        <!-- Similarity threshold -->
+        <div class="slider-row">
+            <label for="threshold-slider">Threshold</label>
+            <input type="number" id="threshold-slider" min="0" max="64" value="8" style="width:80px;" />
+        </div>
+
+        <!-- Min group size -->
+        <div class="slider-row">
+            <label for="min-group-size">Min Group Size</label>
+            <input type="number" id="min-group-size" min="2" value="2" style="width:80px;" />
+        </div>
+
+        <!-- Filter button -->
+        <button class="btn btn-primary btn-sm w-100 mt-1" id="filter-btn" disabled>
+            <i class="fas fa-filter"></i> Filter Groups
+        </button>
+
+        <hr />
+    </aside>
+
+    <!-- ─── MAIN CONTENT ─── -->
+    <main class="similar-main">
+
+        <!-- Stats bar -->
+        <div id="stats-bar">Scan a directory to begin.</div>
+
+        <!-- Scan progress -->
+        <div id="scan-progress" style="display:none;">
+            <progress id="progress-bar" max="100" value="0"></progress>
+            <span id="progress-text">Hashing image 0 / 0...</span>
+        </div>
+
+        <!-- Groups container -->
+        <div id="groups-container">
+            <div class="empty-state">
+                <i class="fas fa-images"></i>
+                Enter a directory path and click Scan to find similar images.
+            </div>
+        </div>
+
+    </main>
+
+    <!-- ─── FLOATING ACTION BAR ─── -->
+    <div id="action-bar">
+        <button class="btn-save-selected" id="save-selected-btn" disabled>
+            <i class="fas fa-save"></i> Save Selected Group
+        </button>
+        <label for="output-dir">Output:</label>
+        <input type="text" id="output-dir" placeholder="C:\path\to\output" />
+    </div>
+
+    <!-- ─── TOOLTIP ─── -->
+    <div id="tooltip"></div>
+
+    <!-- ─── GROUP CARD TEMPLATE (hidden, for JS cloning) ─── -->
+    <template id="group-card-template">
+        <div class="group-card">
+            <div class="group-header">
+                <h5 class="group-title">Group <span class="group-idx"></span> &mdash; <span class="group-count"></span> images</h5>
+                <button class="btn-save-group" type="button"><i class="fas fa-download"></i> Save Group</button>
+            </div>
+            <div class="group-images"></div>
+        </div>
+    </template>
+
+    <template id="group-thumb-template">
+        <div class="group-thumb" data-path="">
+            <img src="" alt="thumbnail" loading="lazy" />
+        </div>
+    </template>
+
+    <!-- ─── SCRIPTS ─── -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='index.js') }}"></script>
+
+</body>
+</html>

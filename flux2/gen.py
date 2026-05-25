@@ -561,10 +561,10 @@ def generate_image(
         variant=transformer_variant,
         version=resolved_version,
     )
-    transformer = transformer.to(device)
     if loras:
         print("  * applying loras ...")
         apply_lora(transformer, loras)
+    transformer = transformer.to(device)
     prompt_embeds = prompt_embeds.to(device=device, dtype=transformer.dtype)
     if negative_prompt_embeds is not None:
         negative_prompt_embeds = negative_prompt_embeds.to(device=device, dtype=transformer.dtype)

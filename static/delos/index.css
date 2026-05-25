@@ -1,0 +1,116 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  background: #47480F;
+  color: #1e1d19;
+  font-family: Arial, sans-serif;
+}
+
+.delos-shell {
+  flex: 1;
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.delos-sidebar {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.menu-button {
+  width: 2rem;
+  height: 2rem;
+  margin-top: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: url("/static/delos/menu-open.svg") center / contain no-repeat;
+  cursor: pointer;
+}
+
+.delos-sidebar.is-open .menu-button {
+  background-image: url("/static/delos/menu-close.svg");
+}
+
+.sidebar-menu {
+  display: none;
+  flex-direction: column;
+  gap: 0.75rem;
+  align-items: flex-start;
+  padding: 1rem;
+}
+
+.delos-sidebar.is-open .sidebar-menu {
+  display: flex;
+}
+
+.sidebar-menu a {
+  color: #F1ECE6;
+  font-size: 1rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.delos-content {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 1.5rem;
+  background: #F1ECE6;
+  border-radius: 1rem;
+}
+
+.delos-content h1 {
+  margin: 0;
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.content-bottom-box {
+  width: 32rem;
+  height: 8rem;
+  margin-top: auto;
+  align-self: center;
+  position: relative;
+  background: #fff;
+  border-radius: 1rem;
+}
+
+.up-button {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: url("/static/delos/up-button.svg") center / contain no-repeat;
+  cursor: pointer;
+}
+
+.plus-button {
+  position: absolute;
+  left: 1rem;
+  bottom: 1rem;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: url("/static/delos/plus-button.svg") center / contain no-repeat;
+  cursor: pointer;
+}

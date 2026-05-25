@@ -5,7 +5,7 @@ from ultralytics import YOLO
 from utils.stages import find_latest_stage
 import numpy as np
 
-CLASS_RATIOS = {0: (1, 1), 1: (3, 4), 2: (4, 3), 3: (1, 2), 4: (2, 1)}  # w:h
+CLASS_RATIOS = {0: (1, 1), 1: (2, 3), 2: (3, 2), 3: (1, 2), 4: (2, 1)}  # w:h
 
 
 def read_yolo_class_mapping(project: str, stage: int) -> tuple[dict[int, int], dict[int, int]]:
@@ -245,11 +245,11 @@ def main():
         default=None,
         help="Long-side target size for output crops. Use an integer, or omit/'none' to keep native crop size.",
     )
-    ap.add_argument("--conf", type=float, default=0.25) # confidence threshold: only keep detections above this score
+    ap.add_argument("--conf", type=float, default=0.05) # confidence threshold: only keep detections above this score
     ap.add_argument("--iou", type=float, default=0.7) # IoU threshold for non-max suppression (higher = fewer boxes kept)
     ap.add_argument("--max_det", type=int, default=50) # maximum number of detections per image to return
     ap.add_argument("--classes", type=int, nargs="*")
-    ap.add_argument("--batch", type=int, default=32)
+    ap.add_argument("--batch", type=int, default=2)
     ap.add_argument(
         "--filename-width",
         type=parse_filename_width,

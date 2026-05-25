@@ -603,7 +603,7 @@ def main() -> None:
     if args.dhash_threshold < 0 or args.dhash_threshold > max_threshold:
         sys.exit(f"ERROR: --dhash-threshold must be in [0, {max_threshold}] for --dhash-size {args.dhash_size}.")
 
-    items = scan_images(root, args.dhash_size)
+    items, _ = scan_images(root, args.dhash_size, mode="grey")
     partitions = build_partitions(items, args.first_set, args.second_set, report=False)
     if args.first_set is None:
         print("comparison sets: global")

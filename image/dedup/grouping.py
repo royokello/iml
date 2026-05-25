@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeAlias
 
-from PIL import Image
+from PIL import Image, ImageFilter
 
 IMAGE_EXTS: set[str] = {
     ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff",
@@ -74,6 +74,25 @@ def dhash_image(im: Image.Image, hash_size: int) -> int:
         raise ValueError("--dhash-size must be >= 2")
     im = im.convert("L").resize((hash_size + 1, hash_size), Image.Resampling.LANCZOS)
     pixels = list(im.getdata())
+    return _dhash_from_pixels(pixels, hash_size)
+
+
+def dhash_from_cache(pixels: bytes, max_hash_size: int, hash_size: int) -> int:
+    """Compute dhash from pre-cached grayscale pixels at max_hash_size.
+
+    Downscales from the cached resolution to the desired hash_size.
+    """
+    if hash_size == max_hash_size:
+        flat = list(pixels)
+    else:
+        small = Image.frombytes("L", (max_hash_size + 1, max_hash_size), pixels)
+        small = small.resize((hash_size + 1, hash_size), Image.Resampling.LANCZOS)
+        flat = list(small.getdata())
+    return _dhash_from_pixels(flat, hash_size)
+
+
+def _dhash_from_pixels(pixels: list[int], hash_size: int) -> int:
+    """Raw dhash computation from a flat pixel list at (hash_size+1) × hash_size."""
     value = 0
     stride = hash_size + 1
     for row in range(hash_size):
@@ -198,8 +217,9 @@ def partition_items(
     return [partition.items for partition in build_partitions(items, first_set, second_set, report=report)]
 
 
-def scan_images(root: Path, hash_size: int) -> ImageItems:
+def scan_images(root: Path, hash_size: int, max_cache: int = 32, mode: str = "grey", progress_cb=None) -> tuple[ImageItems, dict[str, dict[str, bytes]]]:
     items: ImageItems = []
+    pixel_cache: dict[str, dict[str, bytes]] = {}
     total = 0
     skipped = 0
     for path in root.rglob("*"):
@@ -208,16 +228,27 @@ def scan_images(root: Path, hash_size: int) -> ImageItems:
         try:
             with Image.open(path) as im:
                 w, h = im.size
-                dh = dhash_image(im, hash_size)
+                # Crop to square: landscape = center, portrait = top
+                side = min(w, h)
+                left = (w - side) // 2
+                top = 0 if h > w else (h - side) // 2
+                im = im.crop((left, top, left + side, top + side))
+                grey = im.convert("L").resize((max_cache + 1, max_cache), Image.Resampling.LANCZOS)
+                edges = im.filter(ImageFilter.CONTOUR).resize((max_cache + 1, max_cache), Image.Resampling.LANCZOS)
+                src = edges if mode == "edge" else grey
+                dh = _dhash_from_pixels(list(src.getdata()), hash_size)
+                pixel_cache[str(path)] = {"grey": grey.tobytes(), "edge": edges.tobytes()}
             rel = path.relative_to(root).as_posix()
             items.append((path, rel, w, h, dh))
             total += 1
+            if progress_cb:
+                progress_cb(total)
         except Exception as exc:
             skipped += 1
             print(f"skipped {path}: {exc}", file=sys.stderr)
     print(f"scanned {total} images ({skipped} skipped)")
     items.sort(key=lambda x: x[1])
-    return items
+    return items, pixel_cache
 
 
 def group_by_hash(items: list[ImageItem], threshold: int) -> list[list[int]]:
@@ -326,7 +357,7 @@ def build_groups(
     first_set: str | None = None,
     second_set: str | None = None,
 ) -> list[list[ImageItem]]:
-    items = scan_images(root, dhash_size)
+    items, _ = scan_images(root, dhash_size, mode="grey")
     return evaluate_threshold(
         items=items,
         dhash_threshold=dhash_threshold,

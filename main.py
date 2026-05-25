@@ -89,6 +89,7 @@ register_grid_generate(app, _strip_outer_quotes, _parse_pair, _grid_output_dir)
 register_inspect(app, _resolve_path)
 register_quality(app, _ensure_root_configured, _strip_outer_quotes)
 register_sdxl_generate(app, _ensure_root_configured, _sdxl_output_dir)
+# register_similar is called inside main() after ROOT_DIR is set
 
 
 @app.route("/")

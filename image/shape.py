@@ -64,50 +64,25 @@ def pick_ratio_size(
     best_size = None
     input_ar = width / height
     for rw, rh in ratios:
+        # k-scaling: output = k * rw * lm  x  k * rh * lm
+        # This guarantees exact ratio AND both dimensions are lm-aligned.
+        k_fit = max(1, int(math.floor(min(width / (rw * length_multiple), height / (rh * length_multiple)))))
         if mid_square_side is not None and rw == rh:
-            square_side = min(mid_square_side, min(width, height))
-            if min_short_side is not None and square_side >= min_short_side:
-                square_side = max(
-                    length_multiple,
-                    int((square_side + length_multiple / 2) // length_multiple)
-                    * length_multiple,
-                )
-                square_side = min(square_side, mid_square_side)
-            tw = square_side
-            th = square_side
+            k = min(mid_square_side // (rw * length_multiple), k_fit)
+            tw = th = k * rw * length_multiple
         elif min_short_side is not None:
-            desired_short = min(min_short_side, min(width, height))
-            short_ratio = min(rw, rh)
-            long_ratio = max(rw, rh)
-            exact_long = desired_short * long_ratio / short_ratio
-            snapped_long = max(
-                length_multiple,
-                int(math.floor(exact_long / length_multiple)) * length_multiple,
-            )
-            if rw >= rh:
-                tw, th = snapped_long, desired_short
-            else:
-                tw, th = desired_short, snapped_long
+            k_min = min_short_side // (min(rw, rh) * length_multiple)
+            k = min(k_fit, k_min) if k_min >= 1 else k_fit
+            tw = k * rw * length_multiple
+            th = k * rh * length_multiple
         elif max_long_side is not None:
-            desired_long = max_long_side
-            short_ratio = min(rw, rh)
-            long_ratio = max(rw, rh)
-            exact_short = desired_long * short_ratio / long_ratio
-            snapped_short = max(
-                length_multiple,
-                int(math.floor(exact_short / length_multiple)) * length_multiple,
-            )
-            if rw >= rh:
-                tw, th = desired_long, snapped_short
-            else:
-                tw, th = snapped_short, desired_long
+            k_max = max_long_side // (max(rw, rh) * length_multiple)
+            k = min(k_fit, k_max) if k_max >= 1 else k_fit
+            tw = k * rw * length_multiple
+            th = k * rh * length_multiple
         else:
-            base_w = rw * length_multiple
-            base_h = rh * length_multiple
-            fit_scale = min(width / base_w, height / base_h)
-            k = max(1, int(math.floor(fit_scale)))
-            tw = base_w * k
-            th = base_h * k
+            tw = k_fit * rw * length_multiple
+            th = k_fit * rh * length_multiple
 
         err_size = abs(tw - width) / width + abs(th - height) / height
         err_ar = abs((tw / th) - input_ar)
@@ -141,7 +116,7 @@ def save_image(im: Image.Image, out_path: Path) -> None:
 
 def reshape_file(
     path: Path,
-    out_dir: Path,
+    out_path: Path,
     mode: str,
     side: str | None,
     size: int | None,
@@ -151,7 +126,6 @@ def reshape_file(
     max_long_side: int | None,
     mid_square_side: int | None,
 ) -> tuple[str, tuple[int, int], tuple[int, int]] | None:
-    out_path = out_dir / path.name
     if out_path.exists() and out_path.resolve() != path.resolve():
         return "exists", (0, 0), (0, 0)
     try:
@@ -210,6 +184,12 @@ def reshape_file(
 def main() -> None:
     p = argparse.ArgumentParser(description="Resize or crop images to target shapes.")
     p.add_argument("-i", "--input", required=True, type=Path, help="Directory with images.")
+    p.add_argument(
+        "-r", "--recursive",
+        action="store_true",
+        default=False,
+        help="Recurse into subdirectories. Default: scan only top-level images.",
+    )
     out_group = p.add_mutually_exclusive_group()
     out_group.add_argument(
         "-o",
@@ -310,18 +290,21 @@ def main() -> None:
             sys.exit(f"ERROR: {e}")
         length_multiple = args.length_multiple
 
-    files = [
+    pattern = inp.rglob if args.recursive else inp.glob
+    files = sorted(
         f
-        for f in inp.iterdir()
+        for f in pattern("*")
         if f.is_file()
         and f.suffix.lower() in IMAGE_EXTS
         and TMP_MARKER not in f.name
-    ]
+    )
     total = len(files)
     for i, f in enumerate(files, start=1):
+        rel = f.relative_to(inp)
+        out_path = out / rel
         result = reshape_file(
             f,
-            out,
+            out_path,
             args.mode,
             args.side,
             args.size,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from utils.quant.name import convert_quant_name, mixed_quant_methods
+
 _NUM_LANGUAGE_LAYERS = 35
 _NUM_LANGUAGE_KV_PROJECTION_LAYERS = 15
 
@@ -21,46 +23,22 @@ _LOW_LINEAR_WEIGHT_SUFFIXES = (
     "mlp.gate_proj.weight",
     "mlp.up_proj.weight",
 )
-_ALL_LINEAR_WEIGHT_SUFFIXES = _HIGH_LINEAR_WEIGHT_SUFFIXES + _LOW_LINEAR_WEIGHT_SUFFIXES
 
+def _build_gemma4_quant_config(method: str) -> dict[str, str | dict[str, str]]:
+    high_method, low_method = convert_quant_name(method)
+
+    return {
+        "token_embed": low_method,
+        "per_layer_token_embed": high_method,
+        "linears": {
+            "high": high_method,
+            "low": low_method,
+        },
+    }
+
+
+_GEMMA4_QUANT_METHODS = mixed_quant_methods()
 _GEMMA4_QUANT_CONFIGS = {
-    "high": {
-        "token_embed": "sym-med",
-        "per_layer_token_embed": "sym-high",
-        "linears": {
-            "sym-med": _ALL_LINEAR_WEIGHT_SUFFIXES,
-        },
-    },
-    "aff-med-max": {
-        "token_embed": "aff-med",
-        "per_layer_token_embed": "sym-med",
-        "linears": {
-            "aff-med": _LOW_LINEAR_WEIGHT_SUFFIXES,
-            "sym-med": _HIGH_LINEAR_WEIGHT_SUFFIXES,
-        },
-    },
-    "aff-med": {
-        "token_embed": "aff-med",
-        "per_layer_token_embed": "aff-med",
-        "linears": {
-            "aff-med": _ALL_LINEAR_WEIGHT_SUFFIXES
-        },
-    },
-    "aff-med-mini": {
-        "token_embed": "sym-low",
-        "per_layer_token_embed": "aff-med",
-        "linears": {
-            "aff-med": _HIGH_LINEAR_WEIGHT_SUFFIXES,
-            "sym-low": _LOW_LINEAR_WEIGHT_SUFFIXES,
-        },
-    },
-    "aff-high-mini": {
-        "token_embed": "aff-med",
-        "per_layer_token_embed": "aff-high",
-        "linears": {
-            "aff-high": _HIGH_LINEAR_WEIGHT_SUFFIXES,
-            "aff-med": _LOW_LINEAR_WEIGHT_SUFFIXES,
-        },
-    },
+    method: _build_gemma4_quant_config(method)
+    for method in _GEMMA4_QUANT_METHODS
 }
-_GEMMA4_QUANT_METHODS = tuple(_GEMMA4_QUANT_CONFIGS)

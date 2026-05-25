@@ -18,7 +18,7 @@ def main(argv: Sequence[str] | None = None):
         help="Dataset format/model target to prepare.",
     )
     parser.add_argument("--project", required=True, help="Path to project root")
-    parser.add_argument("--val_split", type=float, default=0.2, help="Validation fraction (0..1)")
+    parser.add_argument("--val_split", type=float, default=0.25, help="Validation fraction (0..1)")
     parser.add_argument("--test_split", type=float, default=0.1, help="Test fraction (0..1)")
     parser.add_argument("--stage", type=int, default=None, help="Stage number (optional)")
     parser.add_argument(

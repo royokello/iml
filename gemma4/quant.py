@@ -13,9 +13,11 @@ from safetensors.torch import save_file
 from gemma4.config import (
     _GEMMA4_QUANT_CONFIGS,
     _GEMMA4_QUANT_METHODS,
+    _HIGH_LINEAR_WEIGHT_SUFFIXES,
     _KV_PROJECTION_WEIGHT_SUFFIXES,
     _LANGUAGE_PER_LAYER_TOKEN_EMBED_WEIGHT,
     _LANGUAGE_TOKEN_EMBED_WEIGHT,
+    _LOW_LINEAR_WEIGHT_SUFFIXES,
     _NUM_LANGUAGE_KV_PROJECTION_LAYERS,
     _NUM_LANGUAGE_LAYERS,
 )
@@ -23,7 +25,7 @@ from utils.quant.model import quantize_model_tensors
 
 _MODEL_DIR = "gemma4"
 _CHECKPOINT_NAME = "model.safetensors"
-_DEFAULT_QUANT_METHOD = "high"
+_DEFAULT_QUANT_METHOD = "sym-high-mini"
 
 _AUDIO_PREFIXES = (
     "model.audio_tower.",
@@ -48,8 +50,14 @@ def _to_fp16(tensor: torch.Tensor) -> torch.Tensor:
     return tensor
 
 
+_LINEAR_SUFFIXES_BY_GROUP = {
+    "high": _HIGH_LINEAR_WEIGHT_SUFFIXES,
+    "low": _LOW_LINEAR_WEIGHT_SUFFIXES,
+}
+
+
 def _build_language_targets(
-    config: Mapping[str, str | Mapping[str, tuple[str, ...]]],
+    config: Mapping[str, str | Mapping[str, str]],
 ) -> dict[str, list[str]]:
     targets_by_method: dict[str, list[str]] = {}
     for target, quant_method in (
@@ -67,9 +75,13 @@ def _build_language_targets(
 
     linears = config.get("linears", {})
     if not isinstance(linears, Mapping):
-        raise TypeError("Gemma 4 quant config 'linears' must be a mapping of quant methods to suffixes.")
+        raise TypeError("Gemma 4 quant config 'linears' must be a mapping of target groups to quant methods.")
 
-    for quant_method, suffixes in linears.items():
+    for target_group, quant_method in linears.items():
+        try:
+            suffixes = _LINEAR_SUFFIXES_BY_GROUP[target_group]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported Gemma 4 linear target group: {target_group!r}.") from exc
         tensors = targets_by_method.setdefault(quant_method, [])
         for layer_idx in range(_NUM_LANGUAGE_LAYERS):
             layer_prefix = f"model.language_model.layers.{layer_idx}."

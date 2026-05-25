@@ -17,5 +17,8 @@ venv.bak/
 # YOLO models
 yolo11m.pt
 yolo11n.pt
+yolo26m.pt
 
 .codex
+.hermes
+/docs

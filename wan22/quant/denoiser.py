@@ -8,22 +8,11 @@ from pathlib import Path
 from safetensors.torch import save_file
 
 from utils.quant.model import quantize_model_tensors
+from utils.quant.targets import build_mixed_target_config
+from wan22.quant.targets import _build_wan22_denoiser_mixed_target_tensors
 
 _MODEL_DIR = "wan22"
 _MODEL_SHARDS = 3
-_NUM_BLOCKS = 30
-_BLOCK_LINEAR_WEIGHT_SUFFIXES = (
-    "self_attn.q.weight",
-    "self_attn.k.weight",
-    "self_attn.v.weight",
-    "self_attn.o.weight",
-    "cross_attn.q.weight",
-    "cross_attn.k.weight",
-    "cross_attn.v.weight",
-    "cross_attn.o.weight",
-    "ffn.0.weight",
-    "ffn.2.weight",
-)
 
 
 def _build_checkpoint_files(model_dir: Path) -> list[Path]:
@@ -33,13 +22,11 @@ def _build_checkpoint_files(model_dir: Path) -> list[Path]:
     ]
 
 
-def _build_target_tensors() -> list[str]:
-    tensors: list[str] = []
-    for block_idx in range(_NUM_BLOCKS):
-        block_prefix = f"blocks.{block_idx}."
-        for suffix in _BLOCK_LINEAR_WEIGHT_SUFFIXES:
-            tensors.append(block_prefix + suffix)
-    return tensors
+def _build_targets_for_method(method: str) -> dict[str, list[str]]:
+    return build_mixed_target_config(
+        method,
+        _build_wan22_denoiser_mixed_target_tensors(),
+    )
 
 
 def quantize_denoiser(
@@ -66,14 +53,13 @@ def quantize_denoiser(
             f"Directory checked: {model_dir}. "
             "If you meant to quantize the text encoder, use `python -m wan22.quant.text_encoder` instead."
         )
-    target_tensors = _build_target_tensors()
     output_path = output_dir / f"{method}_quant.safetensors"
 
     print(f"Applying {method} quantization for WAN22 denoiser ...")
     quantize_start = time.perf_counter()
     state_dict = quantize_model_tensors(
         files=checkpoint_files,
-        targets={method: target_tensors},
+        targets=_build_targets_for_method(method),
     )
     quantize_seconds = time.perf_counter() - quantize_start
     print(f"Quantized in {quantize_seconds:.3f}s")

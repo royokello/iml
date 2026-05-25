@@ -89,15 +89,12 @@ def _list_image_files(directory: Path) -> list[Path]:
     return image_paths
 
 
-def _resize_to_max_side(*, image_width: int, image_height: int, max_side: int) -> tuple[int, int]:
-    if image_width >= image_height:
-        scaled_width = max_side
-        scaled_height = round(image_height * max_side / image_width)
-    else:
-        scaled_height = max_side
-        scaled_width = round(image_width * max_side / image_height)
-
-    return max(1, scaled_width), max(1, scaled_height)
+def _resolution_from_ratio(*, ratio: float, short_side: int) -> tuple[int, int]:
+    if ratio <= 0:
+        raise ValueError(f"Image ratio must be positive: {ratio}")
+    if ratio >= 1:
+        return max(1, round(short_side * ratio)), short_side
+    return short_side, max(1, round(short_side / ratio))
 
 
 def parse_args() -> argparse.Namespace:
@@ -137,7 +134,7 @@ def parse_args() -> argparse.Namespace:
         "--force_size",
         dest="force_size",
         type=_positive_int,
-        help="Dataset-only override for the longest image side. Keeps each sample's aspect ratio.",
+        help="Dataset-backed override for the shortest image side. Keeps each sample's aspect ratio.",
     )
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument(
@@ -145,6 +142,17 @@ def parse_args() -> argparse.Namespace:
         type=_positive_int,
         default=1,
         help="First step checkpoint number to render samples for.",
+    )
+    parser.add_argument(
+        "--steps",
+        type=_positive_int,
+        default=16,
+        help="Base-model denoising steps per sample. Distilled mode uses its default step count.",
+    )
+    parser.add_argument(
+        "--distill",
+        action="store_true",
+        help="Use the distilled denoiser checkpoint instead of the base denoiser.",
     )
     parser.add_argument("--sample-seed", "--sample_seed", dest="sample_seed", type=int, default=DEFAULT_SAMPLE_SEED)
     parser.add_argument("--sample-indices", dest="sample_indices", type=str, default=None)
@@ -177,11 +185,8 @@ def main() -> None:
     sample_dir = project_path / "samples"
     sample_dir.mkdir(parents=True, exist_ok=True)
 
-    def sample_output_path(step_number: int, sample_index: int) -> Path:
-        return sample_dir / f"{step_number:06d}_{sample_index}.png"
-
     def next_sample_output_path(step_number: int, sample_index: int) -> Path:
-        output_path = sample_output_path(step_number, sample_index)
+        output_path = sample_dir / f"{step_number:06d}_{sample_index}.png"
         if not output_path.is_file():
             return output_path
 
@@ -192,29 +197,22 @@ def main() -> None:
                 return duplicate_path
             duplicate_index += 1
 
-    resolved_version = args.version.strip().lower()
-    model_root = args.root / f"flux2_{resolved_version}" / "model"
+    model_root = args.root / f"flux2_{args.version}" / "model"
     normalized_prompt = None if args.prompt is None else args.prompt.strip()
     if normalized_prompt == "":
         raise ValueError("--prompt must not be empty.")
     if normalized_prompt is not None and args.trigger is not None:
         raise ValueError("--trigger is only used with captionless datasets.")
-    if normalized_prompt is not None and args.force_size is not None:
-        raise ValueError("--force-size is only used with datasets.")
+    if normalized_prompt is not None and args.force_size is not None and args.sample_indices is None:
+        raise ValueError("--force-size requires --sample-indices when used with --prompt.")
 
-    dataset_mode = "prompt"
-    reference_images: list[list[Path]] = []
     sample_resolutions: dict[int, tuple[int, int]] = {}
-    cached_dataset = None
 
     print("1. Load and encode dataset ...")
     from flux2.train.dataset import Flux2Dataset
 
-    target_images = _list_image_files(project_path / "images" / "high")
-    reference_images = []
-    for target_image in target_images:
-        references_dir = target_image.parent / target_image.stem
-        reference_images.append(_list_image_files(references_dir) if references_dir.is_dir() else [])
+    dataset_dir = project_path / "images"
+    target_images = _list_image_files(dataset_dir / "base")
 
     sample_indices = _resolve_sample_indices(
         dataset_size=len(target_images),
@@ -234,74 +232,67 @@ def main() -> None:
     cached_dataset = Flux2Dataset(
         model_root,
         args.text_quant_method,
-        project_path,
+        dataset_dir,
         normalized_trigger,
         indices=selected_dataset_indices,
+        ratios=True,
+        load_target_image=False,
     )
 
     if normalized_prompt is not None:
         dataset_mode = "prompt"
-    elif cached_dataset.shared_prompt_embeds is not None:
-        dataset_mode = "captionless"
     else:
         dataset_mode = "captioned"
 
-    first_image_size = cached_dataset.high_res_encodings.target_image_resolutions[0]
+    if len(cached_dataset.ratios) != len(sample_indices):
+        raise ValueError(
+            "Collected image ratio count does not match selected sample count: "
+            f"{len(cached_dataset.ratios)} != {len(sample_indices)}"
+        )
 
-    selected_reference_count = 0
+    short_side = args.force_size or 512
     for sample_index in sample_indices:
         selected_index = selected_dataset_index_by_sample[sample_index]
-        sample_width, sample_height = cached_dataset.high_res_encodings.target_image_resolutions[selected_index]
-        if args.force_size is not None:
-            sample_width, sample_height = _resize_to_max_side(
-                image_width=sample_width,
-                image_height=sample_height,
-                max_side=args.force_size,
-            )
-        elif normalized_prompt is not None:
+        if normalized_prompt is not None and args.sample_indices is None:
             sample_width = args.width
             sample_height = args.height
+        else:
+            sample_width, sample_height = _resolution_from_ratio(
+                ratio=cached_dataset.ratios[selected_index],
+                short_side=short_side,
+            )
         sample_resolutions[sample_index] = (sample_width, sample_height)
-        selected_reference_count += len(reference_images[sample_index - 1])
 
     print(f"  * dataset mode: {dataset_mode}")
     print(f"  * images: {len(target_images)}")
     print(f"  * selected samples: {', '.join(str(sample_index) for sample_index in sample_indices)}")
-    print(f"  * selected reference images: {selected_reference_count}")
     if normalized_trigger is not None:
         print(f"  * trigger: {normalized_trigger!r}")
     if args.force_size is not None:
-        print(f"  * forced max side: {args.force_size}")
+        print(f"  * forced short side: {args.force_size}")
     if normalized_prompt is not None:
         print(f"  * requested image size: {args.width}x{args.height}")
-    print(f"  * first image size: {first_image_size[0]}x{first_image_size[1]}")
+    print(f"  * short side for ratio samples: {short_side}")
     print(f"  * done in {time.perf_counter() - dataset_load_start:.3f}s")
 
     if not sample_indices:
         print("  * no samples requested")
         return
 
-    checkpoints_to_render = []
-    existing_step_outputs = 0
-    for step_number, checkpoint_path in checkpoints:
-        has_existing_outputs = any(sample_output_path(step_number, sample_index).is_file() for sample_index in sample_indices)
-        if has_existing_outputs:
-            existing_step_outputs += 1
-        checkpoints_to_render.append((step_number, checkpoint_path, sample_indices))
-
-    if existing_step_outputs:
-        print(f"  * steps with existing samples: {existing_step_outputs}")
-        print("  * existing samples will be preserved; new renders use the next available suffix")
+    checkpoints_to_render = [
+        (step_number, checkpoint_path, sample_indices)
+        for step_number, checkpoint_path in checkpoints
+    ]
     print(f"  * steps to render: {len(checkpoints_to_render)}")
 
     from diffusers.pipelines.flux2.image_processor import Flux2ImageProcessor
     from diffusers.schedulers import FlowMatchEulerDiscreteScheduler
-    from safetensors.torch import load_file as safe_load_file
     import torch
 
     from flux2.denoiser.loader import _load_flux2_denoiser as load_flux2_denoiser
-    from flux2.lora import TrainableLoraLinear, inject_trainable_lora_modules
-    from flux2.train.main import INITIAL_LORA_ALPHA, INITIAL_LORA_RANK, INITIAL_LORA_TARGET_LINEAR_NAMES
+    from flux2.lora import inject_trainable_lora_modules
+    from flux2.lora.config import FLUX2_LORA_ALPHA, FLUX2_LORA_RANK, FLUX2_LORA_TARGETS
+    from flux2.lora.loader import load_checkpoint as load_lora_checkpoint
     from flux2.train.images import normalize_image_latent_resolution
     from flux2.gen import (
         DEFAULT_DISTILLED_STEPS,
@@ -319,14 +310,15 @@ def main() -> None:
     vae_path = model_root / "vae"
     scheduler_path = model_root / "scheduler"
     transformer_path = model_root / "transformer"
+    transformer_variant = "distill" if args.distill else "base"
+    sample_steps = DEFAULT_DISTILLED_STEPS if args.distill else args.steps
 
     print("2. Select cached sample conditioning ...")
     text_encoding_start = time.perf_counter()
-    current_encodings = cached_dataset.high_res_encodings
-    if current_encodings.prompt_embeds is not None and current_encodings.text_ids is not None:
-        print("  * using high-res caption encodings from dataset")
+    if dataset_mode == "prompt":
+        print("  * using prompt encoding from dataset")
     else:
-        print("  * using shared trigger encoding from dataset")
+        print("  * using caption encodings from dataset")
     torch.cuda.empty_cache()
     print(f"  * done in {time.perf_counter() - text_encoding_start:.3f}s")
 
@@ -338,68 +330,46 @@ def main() -> None:
     vae = AutoencoderKLFlux2.from_pretrained(str(vae_path), local_files_only=True)
     image_processor = Flux2ImageProcessor(vae_scale_factor=vae_scale_factor * 2)
 
-    if normalized_prompt is not None or args.force_size is not None:
-        for sample_index, (sample_width, sample_height) in list(sample_resolutions.items()):
-            sample_resolutions[sample_index] = normalize_image_latent_resolution(
-                sample_width,
-                sample_height,
-                vae_scale_factor=vae_scale_factor,
-            )
+    for sample_index, (sample_width, sample_height) in list(sample_resolutions.items()):
+        sample_resolutions[sample_index] = normalize_image_latent_resolution(
+            sample_width,
+            sample_height,
+            vae_scale_factor=vae_scale_factor,
+        )
     sample_resolution_text = ", ".join(
         f"{sample_index}={width}x{height}" for sample_index, (width, height) in sample_resolutions.items()
     )
     print(f"  * sample resolutions: {sample_resolution_text}")
 
-    reference_latent_token_count = sum(
-        latent.shape[0] for latent in current_encodings.reference_latents if latent is not None
-    )
-    print(f"  * cached reference latent tokens on cpu: {reference_latent_token_count}")
+
     torch.cuda.empty_cache()
     print(f"  * done in {time.perf_counter() - image_latent_prep_start:.3f}s")
 
     print("4. Load denoiser ...")
     denoiser_load_start = time.perf_counter()
+    print(f"  * variant: {transformer_variant}")
+    print(f"  * steps: {sample_steps}")
     transformer = load_flux2_denoiser(
         str(transformer_path),
         quant_method=args.denoiser_quant_method,
-        variant="distill",
-        version=resolved_version,
+        variant=transformer_variant,
+        version=args.version,
     )
     transformer = transformer.to(device)
     for parameter in transformer.parameters():
         parameter.requires_grad = False
     lora_module_names = inject_trainable_lora_modules(
         transformer,
-        target_linear_names=INITIAL_LORA_TARGET_LINEAR_NAMES,
-        rank=INITIAL_LORA_RANK,
-        alpha=INITIAL_LORA_ALPHA,
+        target_linear_names=FLUX2_LORA_TARGETS,
+        rank=FLUX2_LORA_RANK,
+        alpha=FLUX2_LORA_ALPHA,
     )
     transformer.eval()
     num_channels_latents = _load_transformer_in_channels(transformer_path) // 4
-    torch.cuda.synchronize(device)
     print(f"  * injected lora modules: {len(lora_module_names)}")
     print(f"  * done in {time.perf_counter() - denoiser_load_start:.3f}s")
 
-    def load_checkpoint(checkpoint_path: Path) -> None:
-        checkpoint_state = safe_load_file(str(checkpoint_path), device="cpu")
-        for module_name, child in transformer.named_modules():
-            if not isinstance(child, TrainableLoraLinear):
-                continue
-
-            lora_a_key = f"{module_name}.lora_A.weight"
-            lora_b_key = f"{module_name}.lora_B.weight"
-            if lora_a_key not in checkpoint_state or lora_b_key not in checkpoint_state:
-                raise KeyError(f"Missing LoRA weights for {module_name} in checkpoint {checkpoint_path}")
-
-            child.lora_A.data.copy_(
-                checkpoint_state[lora_a_key].to(device=child.lora_A.device, dtype=child.lora_A.dtype)
-            )
-            child.lora_B.data.copy_(
-                checkpoint_state[lora_b_key].to(device=child.lora_B.device, dtype=child.lora_B.dtype)
-            )
-
     def denoise_samples(step_number: int, pending_sample_indices: list[int]) -> list[tuple[int, torch.Tensor, torch.Tensor]]:
-        sample_steps = DEFAULT_DISTILLED_STEPS
         scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(str(scheduler_path), local_files_only=True)
         sigmas = torch.linspace(1.0, 1 / sample_steps, sample_steps, dtype=torch.float32).tolist()
         if hasattr(scheduler.config, "use_flow_sigmas") and scheduler.config.use_flow_sigmas:
@@ -408,20 +378,28 @@ def main() -> None:
         sample_latents = []
         with torch.inference_mode():
             for sample_index in pending_sample_indices:
+                existing_output_path = sample_dir / f"{step_number:06d}_{sample_index}.png"
+                if existing_output_path.is_file():
+                    print(f"    * skipped sample {sample_index}: {existing_output_path}")
+                    continue
+
                 selected_index = selected_dataset_index_by_sample[sample_index]
                 sample_width, sample_height = sample_resolutions[sample_index]
                 print(f"    * denoise sample {sample_index} at {sample_width}x{sample_height} ...")
-                if current_encodings.prompt_embeds is not None and current_encodings.text_ids is not None:
-                    prompt_embeds_batch = current_encodings.prompt_embeds[
-                        selected_index : selected_index + 1
-                    ].to(device=device, dtype=transformer.dtype)
-                    text_ids_batch = current_encodings.text_ids[selected_index : selected_index + 1].to(device=device)
+                if dataset_mode == "prompt":
+                    text_embed = cached_dataset.trigger_embed
+                    text_id = cached_dataset.trigger_id
                 else:
-                    prompt_embeds_batch = cached_dataset.shared_prompt_embeds.to(
-                        device=device,
-                        dtype=transformer.dtype,
-                    )
-                    text_ids_batch = cached_dataset.shared_text_ids.to(device=device)
+                    text_embed = cached_dataset.text_embeds_list[selected_index]
+                    text_id = cached_dataset.text_ids_list[selected_index]
+                    if text_embed is None or text_id is None:
+                        text_embed = cached_dataset.trigger_embed
+                        text_id = cached_dataset.trigger_id
+                prompt_embeds_batch = text_embed.unsqueeze(0).to(
+                    device=device,
+                    dtype=transformer.dtype,
+                )
+                text_ids_batch = text_id.unsqueeze(0).to(device=device)
 
                 latent_height = 2 * (sample_height // (vae_scale_factor * 2))
                 latent_width = 2 * (sample_width // (vae_scale_factor * 2))
@@ -451,15 +429,17 @@ def main() -> None:
 
                 reference_latents_batch = None
                 reference_latent_ids_batch = None
-                if (
-                    current_encodings.reference_latents[selected_index] is not None
-                    and current_encodings.reference_latent_ids[selected_index] is not None
-                ):
-                    reference_latents_batch = current_encodings.reference_latents[selected_index].unsqueeze(0).to(
+                ref_latents = cached_dataset.high_ref_latents[selected_index]
+                ref_ids = cached_dataset.high_ref_latent_ids[selected_index]
+                if ref_latents is None or ref_ids is None:
+                    ref_latents = cached_dataset.base_ref_latents[selected_index]
+                    ref_ids = cached_dataset.base_ref_latent_ids[selected_index]
+                if ref_latents is not None and ref_ids is not None:
+                    reference_latents_batch = ref_latents.unsqueeze(0).to(
                         device=device,
                         dtype=latents.dtype,
                     )
-                    reference_latent_ids_batch = current_encodings.reference_latent_ids[selected_index].unsqueeze(0).to(
+                    reference_latent_ids_batch = ref_ids.unsqueeze(0).to(
                         device=device
                     )
 
@@ -491,7 +471,6 @@ def main() -> None:
                     if latents.dtype != latents_dtype:
                         latents = latents.to(latents_dtype)
 
-                torch.cuda.synchronize(device)
                 sample_latents.append((sample_index, latents.cpu(), latent_ids.cpu()))
                 del (
                     prompt_embeds_batch,
@@ -525,7 +504,6 @@ def main() -> None:
                 image.save(output_path)
                 print(f"    * saved {output_path}")
                 del latents, latent_ids, decoded, image
-        torch.cuda.synchronize(device)
         vae.to("cpu")
         torch.cuda.empty_cache()
 
@@ -536,14 +514,13 @@ def main() -> None:
     for step_number, checkpoint_path, pending_sample_indices in checkpoints_to_render:
         print(f"  * step {step_number}: {checkpoint_path}")
         step_start = time.perf_counter()
-        load_checkpoint(checkpoint_path)
+        load_lora_checkpoint(transformer, checkpoint_path)
         sample_latents = denoise_samples(step_number, pending_sample_indices)
         transformer.to("cpu")
         torch.cuda.empty_cache()
         print("    * decoding samples ...")
         decode_samples(step_number, sample_latents)
         transformer.to(device)
-        torch.cuda.synchronize(device)
         print(f"    * step sample time: {time.perf_counter() - step_start:.3f}s")
 
     del transformer

@@ -11,7 +11,7 @@ from safetensors.torch import save_file
 
 from flux2.denoiser.targets import _build_flux2_denoiser_target_tensors
 from utils.quant.model import quantize_model_tensors
-from utils.quant.name import convert_quant_name
+from utils.quant.targets import build_mixed_target_config
 
 def _build_checkpoint_files(checkpoint_dir: Path, version: str) -> list[Path]:
     if version == "4b":
@@ -37,23 +37,13 @@ def _quantize_denoiser(
     checkpoint_files = _build_checkpoint_files(checkpoint_dir, version)
     target_tensors = _build_flux2_denoiser_target_tensors(version)
 
-    high_method, low_method = convert_quant_name(method)
-
     output_path = output_model_dir / variant / f"{method.replace("-", "_")}_quant.safetensors"
 
     print(f"Applying {method} quantization for Flux2 {version} denoiser ({variant}) ...")
     quantize_start = time.perf_counter()
-    targets = {
-        high_method: target_tensors["high"],
-    }
-    if low_method == high_method:
-        targets[high_method] = target_tensors["high"] + target_tensors["low"]
-    else:
-        targets[low_method] = target_tensors["low"]
-
     state_dict = quantize_model_tensors(
         files=checkpoint_files,
-        targets=targets,
+        targets=build_mixed_target_config(method, target_tensors),
     )
     quantize_seconds = time.perf_counter() - quantize_start
     print(f"Quantized in {quantize_seconds:.3f}s")

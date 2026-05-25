@@ -9,6 +9,7 @@ from pathlib import Path
 
 import torch
 
+from gemma4.config import _GEMMA4_QUANT_METHODS
 from gemma4.loaders.text import load_gemma4_text_model
 from gemma4.models.casual import Gemma4ForCausalLM
 from gemma4.models.processor import Gemma4Processor
@@ -78,9 +79,9 @@ def parse_args():
     parser.add_argument(
         "--quant-method",
         default=None,
-        choices=("high", "aff-med-mini", "aff-high-mini"),
+        choices=_GEMMA4_QUANT_METHODS,
         help=(
-            "Quantization preset to load, e.g. 'high', 'aff-med-mini', or 'aff-high-mini'."
+            "Quantization preset to load, e.g. 'aff-med-mini' or 'sym-high-mini'."
         ),
     )
     return parser.parse_args()

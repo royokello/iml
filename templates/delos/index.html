@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Delos</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='delos/index.css') }}">
+  </head>
+  <body>
+    <main class="delos-shell">
+      <aside class="delos-sidebar">
+        <nav class="sidebar-menu" aria-label="Delos menu">
+          <a href="#">Skills</a>
+          <a href="#">Knowledge</a>
+          <a href="#">Programs</a>
+          <a href="#">Queue</a>
+          <a href="#">Tools</a>
+          <a href="#">Proposals</a>
+          <a href="#">Calender</a>
+          <a href="#">Processes</a>
+        </nav>
+        <button class="menu-button" type="button" aria-label="Open menu" aria-expanded="false"></button>
+      </aside>
+      <section class="delos-content">
+        <div class="content-bottom-box">
+          <button class="plus-button" type="button" aria-label="Add"></button>
+          <button class="up-button" type="button" aria-label="Up"></button>
+        </div>
+      </section>
+    </main>
+    <script>
+      const sidebar = document.querySelector(".delos-sidebar");
+      const menuButton = document.querySelector(".menu-button");
+
+      menuButton.addEventListener("click", () => {
+        const isOpen = sidebar.classList.toggle("is-open");
+        menuButton.setAttribute("aria-expanded", String(isOpen));
+        menuButton.setAttribute("aria-label", isOpen ? "Close menu" : "Open menu");
+      });
+    </script>
+  </body>
+</html>

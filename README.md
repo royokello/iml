@@ -122,9 +122,9 @@ Notes:
 - Features
   - Group by `width`, `height`, `longest`, or `shortest` side into size thresholds
   - Uses flat `_<size>` folders by default; add `--orientation-split` to nest `horizontal` / `vertical` folders for `longest` and `shortest`
-  - Prefixes filename with path segments outside grouping folders
+  - Moves matching `.txt` captions alongside images
 - Example
-  - `python -m image.group --input "images" --orientation shortest --sizes 256 384 512 768 --dry-run`
+  - `python -m image.group --input "images" --orientation shortest --sizes 255 383 511 767 --dry-run`
   - `python -m image.group --input "images" --orientation shortest --orientation-split --sizes 256 384 512 768 --dry-run`
 
 #### `image.collect`
@@ -162,7 +162,7 @@ Notes:
   - `python -m image.shape --input "images" --inplace --mode ratio --ratios 1x1 2x3 3x4 1x2 2x1 4x3 3x2 --length-multiple 64 --max 768`
   - `python -m image.shape --input "images" --inplace --mode ratio --ratios 1x1 2x3 3x4 1x2 2x1 4x3 3x2 --length-multiple 64 --min 512 --mid 640`
     - `--mid` will not upscale square inputs below 640x640; square inputs at or above `--min` are snapped to the nearest `--length-multiple`
-  - `python -m image.shape --input "images" --inplace --mode ratio --ratios 1x1 2x3 3x4 1x2 2x1 4x3 3x2 --length-multiple 64 --max 768 --mid 640`
+  - `python -m image.shape --inplace --mode ratio --ratios 1x1 2x3 1x2 2x1 3x2 --length-multiple 64 --min 512 --mid 512 --input "images"`
 
 #### `image.tag.main`
 - Features
@@ -253,6 +253,21 @@ Notes:
   - `--exposure-weight` (default `0.4`)
   - `--noise-weight` (default `0.3`)
   - `--artifact-weight` (default `0.55`)
+
+#### `image.similar` — Web GUI
+
+A Flask-based web interface for finding and exporting near-duplicate images using dHash and Union-Find clustering.
+
+- **Features**
+  - **Scan**: Point the GUI at a directory; images are hashed and quality-scored in the background with a live progress bar
+  - **Filter**: Adjust a similarity threshold slider (0–64, Hamming distance). Groups update in real time via debounced slider input
+  - **Visualize**: Group cards show thumbnails with lazy loading. The best-quality image per group is highlighted with a green border and star badge. Hover tooltips show filename, dimensions, and composite quality score
+  - **Save**: Each group has a "Save Group" button that copies the images (and companion `.txt` captions) to a user-specified output folder
+  - **Advanced Quality**: Collapsible section with sharpness, exposure, noise, and artifact weight sliders that influence best-image selection
+  - **Thumbnail caching**: 256px WebP thumbnails are generated on demand and cached to `{root}/image/similar/{timestamp}/thumbs/`
+- **Workflow:** Enter directory path → Scan → Adjust threshold → Find groups → Save groups to output folders
+- **Access:** `python -m image.similar.main --root /path/to/data --port 5051`
+- **No file deletion.** The GUI only copies images; it never modifies or deletes input files.
 
 #### `image.cull`
 - Features
@@ -496,12 +511,9 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Uses `model-00001-of-00004.safetensors` through `model-00004-of-00004.safetensors` for `9b`
   - `--input` must point directly at the source `text_encoder` model directory
   - Builds the target tensor list from the shared Qwen linear suffixes and the version layer count
-  - Saves `<root>/<model>/model/text_encoder/<method>_quant.safetensors`, creating that output directory if needed
+  - Saves `<iml_root>/<model>/model/text_encoder/<method>_quant.safetensors`, creating that output directory if needed
 - Examples
-  - `python -m flux2.text_encoder.quant --root "/models/flux" --version 4b --input "/models/flux/flux2_4b/model/text_encoder" --method sym-high`
-  - `python -m flux2.text_encoder.quant --root "/models/flux" --version 9b --input "/models/flux/flux2_9b/model/text_encoder" --method aff-low`
-  - `python -m flux2.text_encoder.quant --root "/models/flux" --version 9b --input "/models/flux/flux2_9b/model/text_encoder" --method aff-med`
-  - `python -m flux2.text_encoder.quant --root "/models/flux" --version 9b --input "/models/custom/text_encoder" --method aff-high`
+  - `python -m flux2.text_encoder.quant --root "/iml_root" --version 4b --input "/models/flux2_4b/text_encoder" --method sym-high-mini`
 - Useful args
   - `--root`
   - `--input`
@@ -518,10 +530,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Quantizes `8` double blocks and `24` single blocks for `9b`
   - Saves `<root>/<model>/model/transformer/<variant>/<method>_quant.safetensors`, creating that output directory if needed
 - Examples
-  - `python -m flux2.denoiser.quant --root "/models/flux" --version 4b --variant distill --method sym-high`
-  - `python -m flux2.denoiser.quant --root "/models/flux" --version 9b --variant base --method aff-low`
-  - `python -m flux2.denoiser.quant --root "/models/flux" --version 9b --variant base --method aff-med`
-  - `python -m flux2.denoiser.quant --root "/models/flux" --version 9b --variant base --input "/models/custom/transformer/base" --method aff-high`
+  - `python -m flux2.denoiser.quant --root "/iml_root" --version 4b --variant base --method sym-med-mini`
 - Useful args
   - `--root`
   - `--version`
@@ -534,13 +543,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Style training steps: `1500-2500`
   - Character training steps: `1500-3000`
   - Start at `512px`, then move higher later
-- Official AI-Toolkit example settings
-  - `batch_size: 1`
-  - `optimizer: "adamw8bit"`
-  - `quantize: true`
-  - `content_or_style: "balanced"`
-  - Dataset resolutions should be treated as buckets, not one fixed size
-- Timestep settings in official examples
+- Timestep settings
   - Default example: `timestep_type: "weighted"`
   - Graphic Impressions example: `timestep_type: "shift"`
 
@@ -644,16 +647,16 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
     - `flux2_9b_text_encoder`
     - `flux2_4b_denoiser`, `flux2_9b_denoiser`
     - `gemma4_2b`
-    - `wan22_5b_text_encoder`, `wan22_5b_text_decoder`, `wan22_5b_denoiser`
+    - `wan22_5b_text_encoder`, `wan22_5b_denoiser`
+  - Prints estimates for every supported quantization method, ordered by the main quantization method bit width
 - Examples
-  - `python -m utils.quant.estimator.main --model flux2_4b_text_encoder --source "/models/flux/flux_2_klein_4b/model/text_encoder" --method sym-high`
-  - `python -m utils.quant.estimator.main --model flux2_9b_denoiser --source "/models/flux/flux2_9b/model/transformer/base" --method aff-low`
-  - `python -m utils.quant.estimator.main --model gemma4_2b --source "/models/gemma4" --method high`
-  - `python -m utils.quant.estimator.main --model wan22_5b_text_decoder --source "/models/wan/wan22/model/text_encoder" --method aff-med`
+  - `python -m utils.quant.estimator.main --model flux2_4b_text_encoder --source "/models/flux/flux_2_klein_4b/model/text_encoder"`
+  - `python -m utils.quant.estimator.main --model flux2_9b_denoiser --source "/models/flux/flux2_9b/model/transformer/base"`
+  - `python -m utils.quant.estimator.main --model gemma4_2b --source "/models/gemma4"`
+  - `python -m utils.quant.estimator.main --model wan22_5b_text_encoder --source "/models/wan/wan22/model/text_encoder"`
 - Useful args
   - `--model`
   - `--source`
-  - `--method`
 
 #### `utils.quant.eval`
 - Features

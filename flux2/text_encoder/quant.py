@@ -8,7 +8,7 @@ from pathlib import Path
 from safetensors.torch import save_file
 
 from utils.quant.model import quantize_model_tensors
-from utils.quant.name import convert_quant_name
+from utils.quant.targets import build_mixed_target_config
 
 from flux2.text_encoder.target import _build_target_tensors
 from utils.text import replace_hyphens_with_underscores
@@ -27,9 +27,6 @@ def _quantize_text_encoder(
         f"  version={version}\n"
         f"  method={method}"
     )
-
-    # Split into high/low methods for mixed precision
-    high_method, low_method = convert_quant_name(method)
 
     # Build output filename (use underscored version of original input)
     quant_name = replace_hyphens_with_underscores(method)
@@ -58,14 +55,7 @@ def _quantize_text_encoder(
 
     # Get high/low target tensors from the shared builder
     target_tensors = _build_target_tensors()
-
-    targets = {
-        high_method: target_tensors["high"],
-    }
-    if low_method == high_method:
-        targets[high_method] = target_tensors["high"] + target_tensors["low"]
-    else:
-        targets[low_method] = target_tensors["low"]
+    targets = build_mixed_target_config(method, target_tensors)
 
     print("Targets")
     for target_method, target_names in targets.items():
@@ -129,7 +119,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--method",
         required=True,
-        help="Quantization method to apply (e.g., aff-med-max, aff-med-mini).",
+        help="Quantization method to apply (e.g., sym-high-nano, aff-med-mini).",
     )
     return parser.parse_args()
 

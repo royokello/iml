@@ -2,97 +2,172 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+from collections.abc import Mapping
 from pathlib import Path
 
-from flux2.denoiser.quant import (
-    _build_checkpoint_files as _build_flux2_denoiser_files,
+from flux2.denoiser.targets import (
+    _build_flux2_denoiser_target_tensors as _build_flux2_denoiser_targets,
 )
-from flux2.denoiser.quant import (
-    _build_target_tensors as _build_flux2_denoiser_targets,
-)
-from flux2.text_encoder.quant import (
-    _build_checkpoint_files as _build_flux2_text_encoder_files,
-)
-from flux2.text_encoder.quant import (
-    _build_target_tensors as _build_flux2_text_encoder_targets,
-)
-from gemma4.quant import (
-    _AUDIO_PREFIXES,
+from flux2.text_encoder.target import _build_target_tensors as _build_flux2_text_encoder_targets
+from gemma4.config import (
     _GEMMA4_QUANT_CONFIGS,
-    _LANGUAGE_PREFIXES,
-    _VISION_PREFIXES,
-    _build_language_targets,
+    _HIGH_LINEAR_WEIGHT_SUFFIXES,
+    _KV_PROJECTION_WEIGHT_SUFFIXES,
+    _LANGUAGE_PER_LAYER_TOKEN_EMBED_WEIGHT,
+    _LANGUAGE_TOKEN_EMBED_WEIGHT,
+    _LOW_LINEAR_WEIGHT_SUFFIXES,
+    _NUM_LANGUAGE_KV_PROJECTION_LAYERS,
+    _NUM_LANGUAGE_LAYERS,
 )
-from utils.quant.estimator.safetensors import get_safetensors_tensor_metadata
-from utils.quant.estimator.torch import get_torch_tensor_metadata
 from utils.quant.estimator.utils import estimate_quantized_safetensors_size
-from wan22.quant.denoiser import (
-    _build_checkpoint_files as _build_wan22_denoiser_files,
-)
-from wan22.quant.denoiser import (
-    _build_target_tensors as _build_wan22_denoiser_targets,
-)
-from wan22.quant.text_encoder import (
-    _CHECKPOINT_NAME as WAN22_TEXT_ENCODER_CHECKPOINT_NAME,
-)
-from wan22.quant.text_encoder import (
-    _build_target_tensors as _build_wan22_text_encoder_targets,
+from utils.quant.name import mixed_quant_methods, quant_method_sort_key
+from utils.quant.targets import build_mixed_target_config
+from wan22.quant.targets import (
+    _build_wan22_denoiser_mixed_target_tensors,
+    _build_wan22_text_encoder_mixed_target_tensors,
 )
 
-_GEMMA4_METHOD = "high"
-_DEFAULT_METHOD = "sym-high"
-
+_AUDIO_PREFIXES = (
+    "model.audio_tower.",
+    "model.embed_audio.",
+)
+_VISION_PREFIXES = (
+    "model.vision_tower.",
+    "model.embed_vision.",
+)
+_LANGUAGE_PREFIXES = (
+    "model.language_model.",
+)
+_WAN22_TEXT_ENCODER_CHECKPOINT_NAME = "t5_umt5-xxl-enc-bf16.pth"
+_WAN22_DENOISER_SHARDS = 3
 
 def _single_file(filename: str) -> Callable[[Path], list[Path]]:
     return lambda source: [source / filename]
 
 
-def _standard_targets(
-    builder: Callable[[], list[str]],
-    method: str | None,
+def _build_flux2_text_encoder_files(source: Path, version: str) -> list[Path]:
+    shard_count = 2 if version == "4b" else 4
+    return [
+        source / f"model-{index:05d}-of-{shard_count:05d}.safetensors"
+        for index in range(1, shard_count + 1)
+    ]
+
+
+def _build_flux2_denoiser_files(source: Path, version: str) -> list[Path]:
+    if version == "4b":
+        return [source / "diffusion_pytorch_model.safetensors"]
+    return [
+        source / "diffusion_pytorch_model-00001-of-00002.safetensors",
+        source / "diffusion_pytorch_model-00002-of-00002.safetensors",
+    ]
+
+
+def _build_wan22_denoiser_files(source: Path) -> list[Path]:
+    return [
+        source / f"diffusion_pytorch_model-{index:05d}-of-{_WAN22_DENOISER_SHARDS:05d}.safetensors"
+        for index in range(1, _WAN22_DENOISER_SHARDS + 1)
+    ]
+
+
+_GEMMA4_LINEAR_SUFFIXES_BY_GROUP = {
+    "high": _HIGH_LINEAR_WEIGHT_SUFFIXES,
+    "low": _LOW_LINEAR_WEIGHT_SUFFIXES,
+}
+
+
+def _build_language_targets(
+    config: Mapping[str, str | Mapping[str, str]],
 ) -> dict[str, list[str]]:
-    return {method or _DEFAULT_METHOD: builder()}
+    targets_by_method: dict[str, list[str]] = {}
+    for target, quant_method in (
+        ("token_embed", config.get("token_embed")),
+        ("per_layer_token_embed", config.get("per_layer_token_embed")),
+    ):
+        if quant_method is None:
+            continue
+        target_name = (
+            _LANGUAGE_TOKEN_EMBED_WEIGHT
+            if target == "token_embed"
+            else _LANGUAGE_PER_LAYER_TOKEN_EMBED_WEIGHT
+        )
+        targets_by_method.setdefault(quant_method, []).append(target_name)
+
+    linears = config.get("linears", {})
+    if not isinstance(linears, Mapping):
+        raise TypeError("Gemma 4 quant config 'linears' must be a mapping of target groups to quant methods.")
+
+    for target_group, quant_method in linears.items():
+        try:
+            suffixes = _GEMMA4_LINEAR_SUFFIXES_BY_GROUP[target_group]
+        except KeyError as exc:
+            raise ValueError(f"Unsupported Gemma 4 linear target group: {target_group!r}.") from exc
+        tensors = targets_by_method.setdefault(quant_method, [])
+        for layer_idx in range(_NUM_LANGUAGE_LAYERS):
+            layer_prefix = f"model.language_model.layers.{layer_idx}."
+            for suffix in suffixes:
+                if suffix in _KV_PROJECTION_WEIGHT_SUFFIXES and layer_idx >= _NUM_LANGUAGE_KV_PROJECTION_LAYERS:
+                    continue
+                tensors.append(layer_prefix + suffix)
+    return targets_by_method
 
 
-def _gemma4_targets(method: str | None) -> dict[str, list[str]]:
-    method = (method or _GEMMA4_METHOD).strip().lower()
-    if method != _GEMMA4_METHOD:
-        raise ValueError("Gemma 4 estimator only supports --method high.")
-    return _build_language_targets(_GEMMA4_QUANT_CONFIGS[method])
+def _sorted_target_configs(
+    configs: dict[str, dict[str, list[str]]],
+) -> dict[str, dict[str, list[str]]]:
+    return {method: configs[method] for method in sorted(configs, key=quant_method_sort_key)}
 
 
-def _flux2_text_targets(method: str | None) -> dict[str, list[str]]:
-    return _standard_targets(_build_flux2_text_encoder_targets, method)
+def _mixed_target_configs(
+    builder: Callable[[], dict[str, list[str]]],
+) -> dict[str, dict[str, list[str]]]:
+    target_tensors = builder()
+    configs: dict[str, dict[str, list[str]]] = {}
+    for method in mixed_quant_methods():
+        configs[method] = build_mixed_target_config(method, target_tensors)
+    return _sorted_target_configs(configs)
 
 
-def _flux2_4b_denoiser_targets(method: str | None) -> dict[str, list[str]]:
-    return _standard_targets(lambda: _build_flux2_denoiser_targets("4b"), method)
+def _gemma4_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _sorted_target_configs(
+        {
+            method: _build_language_targets(config)
+            for method, config in _GEMMA4_QUANT_CONFIGS.items()
+        }
+    )
 
 
-def _flux2_9b_denoiser_targets(method: str | None) -> dict[str, list[str]]:
-    return _standard_targets(lambda: _build_flux2_denoiser_targets("9b"), method)
+def _flux2_text_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(_build_flux2_text_encoder_targets)
 
 
-def _wan22_text_encoder_targets(method: str | None) -> dict[str, list[str]]:
-    return _standard_targets(_build_wan22_text_encoder_targets, method)
+def _flux2_4b_denoiser_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(lambda: _build_flux2_denoiser_targets("4b"))
 
 
-def _wan22_denoiser_targets(method: str | None) -> dict[str, list[str]]:
-    return _standard_targets(_build_wan22_denoiser_targets, method)
+def _flux2_9b_denoiser_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(lambda: _build_flux2_denoiser_targets("9b"))
+
+
+def _wan22_text_encoder_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(_build_wan22_text_encoder_mixed_target_tensors)
+
+
+def _wan22_denoiser_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(_build_wan22_denoiser_mixed_target_tensors)
 
 
 def _model_specs() -> dict[str, dict[str, object]]:
     flux2_4b_text = {
         "files": lambda source: _build_flux2_text_encoder_files(source, "4b"),
-        "targets": _flux2_text_targets,
+        "target_configs": _flux2_text_target_configs,
     }
     flux2_9b_text = {
         "files": lambda source: _build_flux2_text_encoder_files(source, "9b"),
-        "targets": _flux2_text_targets,
+        "target_configs": _flux2_text_target_configs,
     }
     wan22_text = {
-        "files": _single_file(WAN22_TEXT_ENCODER_CHECKPOINT_NAME),
-        "targets": _wan22_text_encoder_targets,
+        "files": _single_file(_WAN22_TEXT_ENCODER_CHECKPOINT_NAME),
+        "target_configs": _wan22_text_encoder_target_configs,
     }
 
     return {
@@ -100,22 +175,22 @@ def _model_specs() -> dict[str, dict[str, object]]:
         "flux2_9b_text_encoder": flux2_9b_text,
         "flux2_4b_denoiser": {
             "files": lambda source: _build_flux2_denoiser_files(source, "4b"),
-            "targets": _flux2_4b_denoiser_targets,
+            "target_configs": _flux2_4b_denoiser_target_configs,
         },
         "flux2_9b_denoiser": {
             "files": lambda source: _build_flux2_denoiser_files(source, "9b"),
-            "targets": _flux2_9b_denoiser_targets,
+            "target_configs": _flux2_9b_denoiser_target_configs,
         },
         "gemma4_2b": {
             "files": _single_file("model.safetensors"),
-            "targets": _gemma4_targets,
+            "target_configs": _gemma4_target_configs,
             "inclusion_prefix": _LANGUAGE_PREFIXES,
             "exclusion_prefix": _AUDIO_PREFIXES + _VISION_PREFIXES,
         },
         "wan22_5b_text_encoder": wan22_text,
         "wan22_5b_denoiser": {
             "files": _build_wan22_denoiser_files,
-            "targets": _wan22_denoiser_targets,
+            "target_configs": _wan22_denoiser_target_configs,
         },
     }
 
@@ -132,8 +207,12 @@ def _read_tensor_metadata(paths: list[Path]) -> list[tuple[str, str, tuple[int, 
     tensors: list[tuple[str, str, tuple[int, ...]]] = []
     for path in paths:
         if path.suffix == ".safetensors":
+            from utils.quant.estimator.safetensors import get_safetensors_tensor_metadata
+
             tensors.extend(get_safetensors_tensor_metadata(path))
         elif path.suffix == ".pth":
+            from utils.quant.estimator.torch import get_torch_tensor_metadata
+
             tensors.extend(get_torch_tensor_metadata(path))
         else:
             raise ValueError(f"Unsupported checkpoint file extension: {path}")
@@ -163,10 +242,6 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Folder containing the source checkpoint file or shard files.",
     )
-    parser.add_argument(
-        "--method",
-        help=f"Quantization method. Defaults to {_DEFAULT_METHOD}; Gemma 4 defaults to high.",
-    )
     return parser.parse_args()
 
 
@@ -175,8 +250,8 @@ def main() -> None:
     specs = _model_specs()
     spec = specs[args.model]
     files = spec["files"]
-    targets = spec["targets"]
-    if not callable(files) or not callable(targets):
+    target_configs = spec["target_configs"]
+    if not callable(files) or not callable(target_configs):
         raise TypeError(f"Invalid estimator spec for {args.model}")
 
     source = Path(args.source).expanduser().resolve()
@@ -191,23 +266,30 @@ def main() -> None:
             f"Directory checked: {source}"
         )
 
-    targets_by_method = targets(args.method)
-    size = estimate_quantized_safetensors_size(
-        _read_tensor_metadata(paths),
-        _methods_by_name(targets_by_method),
-        spec.get("inclusion_prefix"),
-        spec.get("exclusion_prefix"),
-    )
+    tensors = _read_tensor_metadata(paths)
+    estimates: list[tuple[str, dict[str, list[str]], int]] = []
+    for method, targets_by_method in target_configs().items():
+        size = estimate_quantized_safetensors_size(
+            tensors,
+            _methods_by_name(targets_by_method),
+            spec.get("inclusion_prefix"),
+            spec.get("exclusion_prefix"),
+        )
+        estimates.append((method, targets_by_method, size))
 
     print(f"model: {args.model}")
     print(f"source: {source}")
     print(f"files: {len(paths)}")
-    print(
-        "targets: "
-        + ", ".join(f"{len(names)} {method}" for method, names in targets_by_method.items())
-    )
-    print(f"estimated_size_bytes: {size}")
-    print(f"estimated_size: {_format_bytes(size)}")
+    print("estimates:")
+    for method, targets_by_method, size in estimates:
+        target_summary = ", ".join(
+            f"{len(names)} {target_method}"
+            for target_method, names in targets_by_method.items()
+        )
+        print(
+            f"  {method}: targets={target_summary}; "
+            f"estimated_size_bytes={size}; estimated_size={_format_bytes(size)}"
+        )
 
 
 if __name__ == "__main__":

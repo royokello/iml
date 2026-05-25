@@ -23,7 +23,7 @@ def get_dimensions(path: Path) -> tuple[int | None, int | None]:
         with Image.open(path) as im:
             return im.size
     except Exception as exc:
-        print(f"– skipped (no dims): {path} ({exc})")
+        print(f"- skipped (no dims): {path} ({exc})")
         return None, None
 
 
@@ -32,6 +32,30 @@ def size_bucket(value: int, thresholds: list[int]) -> int:
         if value < t:
             return t
     return thresholds[-1]
+
+
+def move_image_and_caption(src: Path, dst_dir: Path, *, dry_run: bool) -> bool:
+    dst = dst_dir / src.name
+    src_caption = src.with_suffix(".txt")
+    dst_caption = dst.with_suffix(".txt") if src_caption.is_file() else None
+
+    if dst.exists():
+        print(f"- duplicate, skipping: {dst}")
+        return False
+    if dst_caption is not None and dst_caption.exists():
+        print(f"- duplicate caption, skipping: {dst_caption}")
+        return False
+
+    print(f"{src} -> {dst}")
+    if dst_caption is not None:
+        print(f"{src_caption} -> {dst_caption}")
+
+    if not dry_run:
+        shutil.move(str(src), str(dst))
+        if dst_caption is not None:
+            shutil.move(str(src_caption), str(dst_caption))
+
+    return True
 
 
 def organise(
@@ -73,16 +97,7 @@ def organise(
                 dst_dir = root / f"_{size_bucket(measure, thresholds)}"
 
         dst_dir.mkdir(parents=True, exist_ok=True)
-
-        dst = dst_dir / src.name
-
-        if dst.exists():
-            print(f"– duplicate, skipping: {dst}")
-            continue
-
-        print(f"{src}  →  {dst}")
-        if not dry_run:
-            shutil.move(str(src), str(dst))
+        move_image_and_caption(src, dst_dir, dry_run=dry_run)
 
 
 def parse_args() -> argparse.Namespace:

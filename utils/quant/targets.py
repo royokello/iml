@@ -1,0 +1,23 @@
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+
+from utils.quant.name import convert_quant_name
+
+
+def build_mixed_target_config(
+    method: str,
+    target_tensors: Mapping[str, Sequence[str]],
+) -> dict[str, list[str]]:
+    high_method, low_method = convert_quant_name(method)
+    high_targets = list(target_tensors["high"])
+    low_targets = list(target_tensors["low"])
+    if high_method == low_method:
+        return {high_method: high_targets + low_targets}
+    return {
+        high_method: high_targets,
+        low_method: low_targets,
+    }
+
+
+__all__ = ["build_mixed_target_config"]
