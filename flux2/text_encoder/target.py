@@ -1,23 +1,21 @@
-# flux2/quant/text_encoder.py
+from __future__ import annotations
 
 _NUM_HIDDEN_LAYERS = 36
 
-_QWEN_LINEAR_WEIGHT_SUFFIXES = (
-    "self_attn.q_proj.weight",
-    "self_attn.k_proj.weight",
+# Suffixes that receive higher bit‑width quantisation
+_TEXT_ENCODER_HIGH_SUFFIXES = (
     "self_attn.v_proj.weight",
     "self_attn.o_proj.weight",
-    "mlp.gate_proj.weight",
-    "mlp.up_proj.weight",
     "mlp.down_proj.weight",
 )
 
-# Suffixes that receive higher bit‑width quantisation
-_HIGH_SUFFIXES = {
-    "self_attn.v_proj.weight",
-    "self_attn.o_proj.weight",
-    "mlp.down_proj.weight",
-}
+# Suffixes that receive lower bit‑width quantisation
+_TEXT_ENCODER_LOW_SUFFIXES = (
+    "self_attn.q_proj.weight",
+    "self_attn.k_proj.weight",
+    "mlp.gate_proj.weight",
+    "mlp.up_proj.weight",
+)
 
 
 def _build_target_tensors() -> dict[str, list[str]]:
@@ -31,11 +29,9 @@ def _build_target_tensors() -> dict[str, list[str]]:
 
     for layer_idx in range(_NUM_HIDDEN_LAYERS):
         layer_prefix = f"model.layers.{layer_idx}."
-        for suffix in _QWEN_LINEAR_WEIGHT_SUFFIXES:
-            full_name = layer_prefix + suffix
-            if suffix in _HIGH_SUFFIXES:
-                high.append(full_name)
-            else:
-                low.append(full_name)
+        for suffix in _TEXT_ENCODER_HIGH_SUFFIXES:
+            high.append(layer_prefix + suffix)
+        for suffix in _TEXT_ENCODER_LOW_SUFFIXES:
+            low.append(layer_prefix + suffix)
 
     return {"high": high, "low": low}

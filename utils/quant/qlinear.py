@@ -7,6 +7,7 @@ from utils.quant.cuda.affine_med import dequantize_from_affine_med as dequantize
 from utils.quant.cuda.symmetric_high import dequantize_from_symmetric_high as dequantize_from_symmetric_high_cuda
 from utils.quant.cuda.symmetric_low import dequantize_from_symmetric_low as dequantize_from_symmetric_low_cuda
 from utils.quant.cuda.symmetric_med import dequantize_from_symmetric_med as dequantize_from_symmetric_med_cuda
+from utils.quant.fro.affine import _unpack_signed_values, _unpack_unsigned_values, _packed_words_for_values as _affine_packed_words_for_values, _select_super_block_size as _select_affine_super_block_size
 from utils.quant.to.affine import AFFINE_MODES, HALF_SUPER_BLOCK_SIZE as AFFINE_HALF_SUPER_BLOCK_SIZE, SUPER_BLOCK_SIZE as AFFINE_SUPER_BLOCK_SIZE, quantize_to_affine
 from utils.quant.to.intermediate import quantize_to_intermediate
 from utils.quant.to.symmetric import HIGH_BLOCK_SIZE as SYMMETRIC_HIGH_BLOCK_SIZE, SUB_BLOCK_SIZE as SYMMETRIC_SUB_BLOCK_SIZE, SUPER_BLOCK_SIZE as SYMMETRIC_SUPER_BLOCK_SIZE, quantize_to_symmetric
@@ -110,6 +111,8 @@ class QuantizedLinear(nn.Module):
         else:
             self.register_buffer("bias", linear.bias.detach().clone())
 
+        self._bsums_mins: torch.Tensor | None = None
+
     @classmethod
     def from_prequantized(cls, linear: nn.Linear, method: str) -> "QuantizedLinear":
         module = cls.__new__(cls)
@@ -203,21 +206,61 @@ class QuantizedLinear(nn.Module):
         if linear.bias is None:
             module.bias = None
         else:
-            bias = torch.empty(linear.bias.shape, device=linear.bias.device, dtype=linear.bias.dtype)
+            bias = torch.empty(linear.bias.shape, device=linear.weight.device, dtype=linear.weight.dtype)
             module.register_buffer("bias", bias)
 
+        module._bsums_mins = None
         return module
 
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
+    def forward(self, input: torch.Tensor, bsums: torch.Tensor | None = None) -> torch.Tensor:
         if torch.is_grad_enabled() and input.requires_grad:
             return QuantizedLinearFrozenFn.apply(input, self)
         
-        return self._normal_forward_body(input)
+        return self._normal_forward_body(input, bsums=bsums)
 
-    def _normal_forward_body(self, input: torch.Tensor) -> torch.Tensor:
+    def _normal_forward_body(self, input: torch.Tensor, bsums: torch.Tensor | None = None) -> torch.Tensor:
         weight = _dequantize_quantized_linear_weight(self).to(dtype=input.dtype)
         bias = None if self.bias is None else self.bias.to(dtype=input.dtype)
-        return F.linear(input, weight, bias)
+        output = F.linear(input, weight, bias)
+
+        if bsums is not None and quant_method_family(self.method) != "symmetric" and self.sub_mins is not None:
+            # bsums correction for affine quantized weights
+            output = output + self._apply_bsums_correction(bsums).to(dtype=output.dtype, device=output.device)
+
+        return output
+
+    def _apply_bsums_correction(self, bsums: torch.Tensor) -> torch.Tensor:
+        """Compute bsums × sub_mins correction for affine weights.
+
+        Builds a [num_sub_blocks, out_features] matrix from unpacked per-weight mins,
+        cached on first call. Returns [batch, out_features] correction.
+        """
+        if self._bsums_mins is not None:
+            mins = self._bsums_mins
+        else:
+            mode = quant_method_mode(self.method)
+            out_features = self.out_features
+            in_features = self.in_features
+            sub_block_size = int(AFFINE_MODES[mode]["sub_block_size"])
+            meta_bits = int(AFFINE_MODES[mode]["meta_bits"])
+            super_block_size = _select_affine_super_block_size(in_features, sub_block_size)
+            sub_blocks_per_super = super_block_size // sub_block_size
+            blocks_per_row = in_features // super_block_size
+            num_super_blocks = out_features * blocks_per_row
+
+            unpacked_mins = _unpack_signed_values(
+                self.sub_mins.contiguous(),
+                sub_blocks_per_super,
+                bits=meta_bits,
+            ).to(device=self.sub_mins.device)  # [num_super_blocks, sub_blocks_per_super]
+            real_mins = unpacked_mins.to(torch.float32) * self.super_mins.to(torch.float32).view(-1, 1)
+            # Reshape to [blocks_per_row, out_features, sub_blocks_per_super]:
+            rm = real_mins.view(out_features, blocks_per_row, sub_blocks_per_super).transpose(0, 1).contiguous()
+            self._bsums_mins = rm.reshape(-1, out_features).clone()  # [num_sub_blocks, out_features]
+            mins = self._bsums_mins
+
+        # bsums: [batch, num_sub_blocks] → correction: [batch, out_features]
+        return bsums.to(torch.float32) @ mins.T.to(torch.float32)
 
 def _quantized_2d_shape(
     shape: torch.Size,

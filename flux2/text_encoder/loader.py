@@ -101,8 +101,10 @@ def _load_flux2_text_encoder(
     if quant_method is not None:
         quantized_state_path = model_dir / f"{quant_method_key}_quant.safetensors"
         if not quantized_state_path.is_file():
-            print(f"    saved quantized checkpoint not found in {model_dir}; quantizing on the fly")
-            quantized_state_path = None
+            raise FileNotFoundError(
+                f"Quantized checkpoint not found: {quantized_state_path}. "
+                "Run the text encoder quantizer first."
+            )
         else:
             print(f"    using saved quantized checkpoint: {quantized_state_path.name}")
 
@@ -130,11 +132,6 @@ def _load_flux2_text_encoder(
                 "model.safetensors.index.json, or model-*.safetensors"
             )
         _materialize_meta_tensors(model)
-
-        # Quantise on the fly if requested
-        if quant_method is not None:
-            replace_targeted_linear_modules(model, method=high_method, target_linear_names=high_linear)
-            replace_targeted_linear_modules(model, method=low_method, target_linear_names=low_linear)
     else:
         # Load pre‑quantised checkpoint
         checkpoint_keys = _list_checkpoint_keys(quantized_state_path)

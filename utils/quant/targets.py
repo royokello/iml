@@ -10,8 +10,9 @@ def build_mixed_target_config(
     target_tensors: Mapping[str, Sequence[str]],
 ) -> dict[str, list[str]]:
     high_method, low_method = convert_quant_name(method)
-    high_targets = list(target_tensors["high"])
-    low_targets = list(target_tensors["low"])
+    high_targets = list(target_tensors.get("high", []))
+    low_targets = list(target_tensors.get("low", []))
+
     if high_method == low_method:
         return {high_method: high_targets + low_targets}
     return {

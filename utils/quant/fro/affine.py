@@ -94,7 +94,8 @@ def dequantize_from_affine(
     super_mins: torch.Tensor,
     original_shape: tuple[int, ...] | torch.Size,
     mode: str = "low",
-) -> torch.Tensor:
+    bsums: torch.Tensor | None = None,
+) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     """
     Dequantize affine linear weights produced by quantize_to_affine.
 
@@ -187,4 +188,25 @@ def dequantize_from_affine(
 
     dequantized_blocks = q * real_scales.unsqueeze(-1) + real_mins.unsqueeze(-1)
     dequantized_rows = dequantized_blocks.reshape(expected_num_blocks, super_block_size)
+
+    if bsums is not None:
+        # bsums: [batch, sub_blocks_total] — one bsum per sub-block position
+        # real_mins: [expected_num_blocks, sub_blocks_per_super]
+        # For each output i, for each super-block sb, for each sub:
+        #   correction += bsums[sb * sub_blocks_per_super + sub] * real_mins[sb + i * blocks_per_row, sub]
+        # Reshape to: correction = bsums @ real_mins_mtx
+        # real_mins_mtx: [sub_blocks_total, out_features]
+        sub_blocks_total = expected_num_blocks * sub_blocks_per_super
+        real_mins_flat = real_mins.reshape(expected_num_blocks, sub_blocks_per_super)
+        # Reshape to [out_features, blocks_per_row, sub_blocks_per_super]:
+        out_features = row_count
+        rm = real_mins_flat.view(out_features, -1, sub_blocks_per_super).transpose(0, 1).contiguous()
+        # rm: [blocks_per_row, out_features, sub_blocks_per_super]
+        mins_matrix = rm.reshape(-1, out_features)  # [sub_blocks_total, out_features]
+        correction = bsums.to(torch.float32) @ mins_matrix.to(torch.float32).T  # [batch, out_features]
+        return (
+            dequantized_rows.view(row_count, row_size).contiguous().to(torch.float16),
+            correction.to(torch.float16),
+        )
+
     return dequantized_rows.view(row_count, row_size).contiguous().to(torch.float16)

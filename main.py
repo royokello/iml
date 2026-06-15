@@ -1,17 +1,13 @@
 import argparse
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
 
 from flask import Flask, jsonify, render_template, request, send_file
-from routes.compress import register as register_compress
 from routes.fp16 import register as register_fp16
-from routes.grid_animate import register as register_grid_animate
-from routes.grid_generate import register_grid_generate
+
 from routes.inspect import register as register_inspect
-from routes.quality import register as register_quality
 from routes.sdxl_generate import register as register_sdxl_generate
 
 app = Flask(__name__)
@@ -49,45 +45,12 @@ def _strip_outer_quotes(value: str) -> str:
     return cleaned
 
 
-def _grid_output_dir() -> Path:
-    return _ensure_root_configured() / "outputs" / "grids"
-
-
-def _animation_output_dir() -> Path:
-    return _ensure_root_configured() / "animations"
-
-
 def _sdxl_output_dir() -> Path:
     return _ensure_root_configured() / "sdxl" / "outputs"
 
 
-def _parse_pair(value: str, label: str) -> tuple[int, int]:
-    if not value:
-        raise ValueError(f"{label} is required.")
-
-    cleaned = value.lower().replace(":", "x")
-    parts = [part.strip() for part in cleaned.split("x") if part.strip()]
-    if len(parts) != 2:
-        raise ValueError(f"{label} must look like 2x2.")
-
-    try:
-        first = int(parts[0])
-        second = int(parts[1])
-    except ValueError as exc:
-        raise ValueError(f"{label} must contain integers.") from exc
-
-    if first <= 0 or second <= 0:
-        raise ValueError(f"{label} must use positive numbers.")
-
-    return first, second
-
-
-register_compress(app, _ensure_root_configured)
 register_fp16(app, _resolve_path, _resolve_dir)
-register_grid_animate(app, _strip_outer_quotes, _animation_output_dir)
-register_grid_generate(app, _strip_outer_quotes, _parse_pair, _grid_output_dir)
 register_inspect(app, _resolve_path)
-register_quality(app, _ensure_root_configured, _strip_outer_quotes)
 register_sdxl_generate(app, _ensure_root_configured, _sdxl_output_dir)
 # register_similar is called inside main() after ROOT_DIR is set
 
@@ -223,83 +186,6 @@ def api_meta():
         "image_index": i,
         "folder_count": len(folder["images"])
     })
-
-
-@app.route("/api/grid-image")
-def api_grid_image():
-    run_dir = request.args.get("run", "").strip()
-    filename = request.args.get("file", "").strip()
-    if not run_dir or not filename:
-        return jsonify({"error": "Missing run or file name"}), 400
-
-    try:
-        datetime.strptime(run_dir, "%Y-%m-%d-%H-%M-%S")
-    except ValueError:
-        return jsonify({"error": "Invalid run name"}), 400
-
-    if Path(filename).name != filename:
-        return jsonify({"error": "Invalid file name"}), 400
-
-    try:
-        image_path = _grid_output_dir() / run_dir / filename
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 500
-    if not image_path.is_file():
-        return jsonify({"error": "File not found"}), 404
-
-    return send_file(image_path, mimetype="image/png")
-
-
-@app.route("/api/grid-video")
-def api_grid_video():
-    run_dir = request.args.get("run", "").strip()
-    filename = request.args.get("file", "").strip()
-    if not run_dir or not filename:
-        return jsonify({"error": "Missing run or file name"}), 400
-
-    try:
-        datetime.strptime(run_dir, "%Y-%m-%d-%H-%M-%S")
-    except ValueError:
-        return jsonify({"error": "Invalid run name"}), 400
-
-    if Path(filename).name != filename or not filename.lower().endswith(".mp4"):
-        return jsonify({"error": "Invalid file name"}), 400
-
-    try:
-        video_path = _grid_output_dir() / run_dir / filename
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 500
-
-    if not video_path.is_file():
-        return jsonify({"error": "File not found"}), 404
-
-    return send_file(video_path, mimetype="video/mp4")
-
-
-@app.route("/api/animation-video")
-def api_animation_video():
-    filename = request.args.get("file", "").strip()
-    if not filename:
-        return jsonify({"error": "Missing file name"}), 400
-
-    if Path(filename).name != filename:
-        return jsonify({"error": "Invalid file name"}), 400
-
-    try:
-        video_path = _animation_output_dir() / filename
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 500
-
-    if not video_path.is_file():
-        return jsonify({"error": "File not found"}), 404
-
-    mimetype_map = {
-        ".mp4": "video/mp4",
-        ".avi": "video/x-msvideo",
-        ".webm": "video/webm",
-        ".gif": "image/gif",
-    }
-    return send_file(video_path, mimetype=mimetype_map.get(video_path.suffix.lower(), "video/mp4"))
 
 
 @app.route("/api/sdxl-image")

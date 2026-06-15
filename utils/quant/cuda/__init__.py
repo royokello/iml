@@ -5,6 +5,11 @@ from .symmetric_high import dequantize_from_symmetric_high
 from .symmetric_low import dequantize_from_symmetric_low
 from .symmetric_med import dequantize_from_symmetric_med
 
+try:
+    from .fused import fused_matmul  # noqa: F401
+except ImportError:
+    pass
+
 __all__ = [
     "dequantize_from_affine_high",
     "dequantize_from_affine_low",

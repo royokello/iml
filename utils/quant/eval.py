@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 import torch
+import torch.nn.functional as F
 
 from utils.quant.cuda.affine_high import dequantize_from_affine_high as dequantize_from_affine_high_cuda
 from utils.quant.cuda.affine_low import dequantize_from_affine_low as dequantize_from_affine_low_cuda
@@ -15,20 +16,23 @@ from utils.quant.cuda.affine_med import dequantize_from_affine_med as dequantize
 from utils.quant.cuda.symmetric_high import dequantize_from_symmetric_high as dequantize_from_symmetric_high_cuda
 from utils.quant.cuda.symmetric_low import dequantize_from_symmetric_low as dequantize_from_symmetric_low_cuda
 from utils.quant.cuda.symmetric_med import dequantize_from_symmetric_med as dequantize_from_symmetric_med_cuda
+from utils.quant.cuda.intermediate import dequantize_from_intermediate as dequantize_from_intermediate_cuda
 from utils.quant.to.affine import quantize_to_affine
 from utils.quant.to.symmetric import quantize_to_symmetric
+from utils.quant.to.intermediate import quantize_to_intermediate
 
-dequantize_from_affine = importlib.import_module("utils.quant.from.affine").dequantize_from_affine
-dequantize_from_symmetric = importlib.import_module("utils.quant.from.symmetric").dequantize_from_symmetric
+dequantize_from_affine = importlib.import_module("utils.quant.fro.affine").dequantize_from_affine
+dequantize_from_symmetric = importlib.import_module("utils.quant.fro.symmetric").dequantize_from_symmetric
+dequantize_from_intermediate_fro = importlib.import_module("utils.quant.fro.intermediate").dequantize_from_intermediate
 
 LINEAR_SHAPES = (
     (6144, 128),
     (6144, 15360),
-    # (6144, 6144),
-    # (36864, 6144),
-    # (6144, 18432),
-    # (55296, 6144),
-    # (6144, 24576),
+    (6144, 6144),
+    (36864, 6144),
+    (6144, 18432),
+    (55296, 6144),
+    (6144, 24576),
 )
 
 METHODS = (
@@ -38,12 +42,17 @@ METHODS = (
     "affine_med_cuda_dequant",
     "affine_high_dequant",
     "affine_high_cuda_dequant",
+    "affine_low_bsums_dequant",
+    "affine_med_bsums_dequant",
+    "affine_high_bsums_dequant",
     "symmetric_low_dequant",
     "symmetric_low_cuda_dequant",
     "symmetric_med_dequant",
     "symmetric_med_cuda_dequant",
     "symmetric_high_dequant",
     "symmetric_high_cuda_dequant",
+    "symmetric_max_dequant",
+    "symmetric_max_cuda_dequant",
 )
 
 DEVICE = torch.device("cuda")
@@ -77,6 +86,8 @@ class QuantizedCase:
     sub_mins: torch.Tensor | None = None
     super_scales: torch.Tensor | None = None
     super_mins: torch.Tensor | None = None
+    bsums: torch.Tensor | None = None
+    input_tensor: torch.Tensor | None = None
 
 
 def _shape_label(shape: tuple[int, int]) -> str:
@@ -126,6 +137,46 @@ def _prepare_affine_case(
     )
 
 
+def _prepare_affine_bsums_case(
+    shape: tuple[int, int],
+    *,
+    device: torch.device,
+    mode: str,
+) -> QuantizedCase:
+    in_features = shape[1]
+    out_features = shape[0]
+    dense_weight_cpu = _build_dense_weight(shape, seed=_case_seed(shape))
+    dense_weight = dense_weight_cpu.to(device=device)
+    qweight, sub_scales, sub_mins, super_scales, super_mins = quantize_to_affine(dense_weight, mode=mode)
+
+    # Generate random activation and quantize to sym-max for bsums
+    batch_size = 1
+    act_generator = torch.Generator(device="cpu")
+    act_generator.manual_seed(SEED + 555)
+    input_tensor = torch.randn((batch_size, in_features), generator=act_generator, dtype=OUTPUT_DTYPE).to(device=device)
+    # Reference: F.linear(input, original_weight)
+    reference = F.linear(input_tensor, dense_weight)
+    # Get bsums from sym-max quantization
+    q_act, bsums, act_scales = quantize_to_intermediate(input_tensor)
+    # bsums: [num_super_blocks, sub_blocks_per_super]
+    # Flatten to [num_sub_blocks] for the correction matmul
+    bsums_flat = bsums.reshape(-1)
+
+    return QuantizedCase(
+        method=f"affine_{mode}_bsums_dequant",
+        shape=shape,
+        output_shape=shape,
+        reference=reference,
+        tensor=qweight,
+        sub_scales=sub_scales,
+        sub_mins=sub_mins,
+        super_scales=super_scales,
+        super_mins=super_mins,
+        bsums=bsums_flat,
+        input_tensor=input_tensor,
+    )
+
+
 def _prepare_symmetric_case(
     shape: tuple[int, int],
     *,
@@ -147,6 +198,26 @@ def _prepare_symmetric_case(
     )
 
 
+def _prepare_symmetric_max_case(
+    shape: tuple[int, int],
+    *,
+    device: torch.device,
+    use_kernel: bool,
+) -> QuantizedCase:
+    dense_weight_cpu = _build_dense_weight(shape, seed=_case_seed(shape))
+    dense_weight = dense_weight_cpu.to(device=device)
+    qweight, bsums, super_scales = quantize_to_intermediate(dense_weight)
+    return QuantizedCase(
+        method=f"symmetric_max_{'cuda_' if use_kernel else ''}dequant",
+        shape=shape,
+        output_shape=shape,
+        reference=dense_weight,
+        tensor=qweight,
+        sub_scales=None,
+        super_scales=super_scales,
+    )
+
+
 def _prepare_quantized_case(
     shape: tuple[int, int],
     *,
@@ -157,18 +228,28 @@ def _prepare_quantized_case(
         return _prepare_affine_case(shape, device=device, mode="high", use_kernel=True)
     if method == "affine_high_dequant":
         return _prepare_affine_case(shape, device=device, mode="high", use_kernel=False)
+    if method == "affine_high_bsums_dequant":
+        return _prepare_affine_bsums_case(shape, device=device, mode="high")
     if method == "affine_med_cuda_dequant":
         return _prepare_affine_case(shape, device=device, mode="med", use_kernel=True)
     if method == "affine_med_dequant":
         return _prepare_affine_case(shape, device=device, mode="med", use_kernel=False)
+    if method == "affine_med_bsums_dequant":
+        return _prepare_affine_bsums_case(shape, device=device, mode="med")
     if method == "affine_low_cuda_dequant":
         return _prepare_affine_case(shape, device=device, mode="low", use_kernel=True)
     if method == "affine_low_dequant":
         return _prepare_affine_case(shape, device=device, mode="low", use_kernel=False)
+    if method == "affine_low_bsums_dequant":
+        return _prepare_affine_bsums_case(shape, device=device, mode="low")
     if method == "symmetric_high_cuda_dequant":
         return _prepare_symmetric_case(shape, device=device, mode="high", use_kernel=True)
     if method == "symmetric_high_dequant":
         return _prepare_symmetric_case(shape, device=device, mode="high", use_kernel=False)
+    if method == "symmetric_max_cuda_dequant":
+        return _prepare_symmetric_max_case(shape, device=device, use_kernel=True)
+    if method == "symmetric_max_dequant":
+        return _prepare_symmetric_max_case(shape, device=device, use_kernel=False)
     if method == "symmetric_med_cuda_dequant":
         return _prepare_symmetric_case(shape, device=device, mode="med", use_kernel=True)
     if method == "symmetric_med_dequant":
@@ -188,6 +269,9 @@ def _run_method(quantized_case: QuantizedCase) -> torch.Tensor:
         "affine_med_dequant",
         "affine_low_cuda_dequant",
         "affine_low_dequant",
+        "affine_high_bsums_dequant",
+        "affine_med_bsums_dequant",
+        "affine_low_bsums_dequant",
     }:
         if (
             quantized_case.sub_scales is None
@@ -218,6 +302,20 @@ def _run_method(quantized_case: QuantizedCase) -> torch.Tensor:
                 quantized_case.super_mins,
                 quantized_case.output_shape,
             )
+        if "_bsums_" in quantized_case.method:
+            if quantized_case.bsums is None or quantized_case.input_tensor is None:
+                raise ValueError(f"{quantized_case.method} case is missing bsums or input_tensor.")
+            weight, correction = dequantize_from_affine(
+                quantized_case.tensor,
+                quantized_case.sub_scales,
+                quantized_case.sub_mins,
+                quantized_case.super_scales,
+                quantized_case.super_mins,
+                quantized_case.output_shape,
+                mode=mode,
+                bsums=quantized_case.bsums,
+            )
+            return F.linear(quantized_case.input_tensor, weight) + correction
         return dequantize_from_affine(
             quantized_case.tensor,
             quantized_case.sub_scales,
@@ -278,6 +376,22 @@ def _run_method(quantized_case: QuantizedCase) -> torch.Tensor:
             **({} if use_kernel else {"mode": mode}),
         )
 
+    if quantized_case.method in {"symmetric_max_cuda_dequant", "symmetric_max_dequant"}:
+        if quantized_case.super_scales is None:
+            raise ValueError(f"{quantized_case.method} case is missing super_scales.")
+        use_kernel = "_cuda_" in quantized_case.method
+        if use_kernel:
+            return dequantize_from_intermediate_cuda(
+                quantized_case.tensor,
+                quantized_case.super_scales,
+                quantized_case.output_shape,
+            )
+        return dequantize_from_intermediate_fro(
+            quantized_case.tensor,
+            quantized_case.super_scales,
+            quantized_case.output_shape,
+        )
+
     raise ValueError(f"Unsupported method: {quantized_case.method}")
 
 
@@ -291,6 +405,8 @@ def _input_bytes(quantized_case: QuantizedCase) -> int:
         total += quantized_case.super_scales.numel() * quantized_case.super_scales.element_size()
     if quantized_case.super_mins is not None:
         total += quantized_case.super_mins.numel() * quantized_case.super_mins.element_size()
+    if quantized_case.bsums is not None:
+        total += quantized_case.bsums.numel() * quantized_case.bsums.element_size()
     return total
 
 

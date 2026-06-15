@@ -59,7 +59,16 @@ _LINEAR_SUFFIXES_BY_GROUP = {
 def _build_language_targets(
     config: Mapping[str, str | Mapping[str, str]],
 ) -> dict[str, list[str]]:
-    targets_by_method: dict[str, list[str]] = {}
+    methods: set[str] = set()
+    for val in (config.get("token_embed"), config.get("per_layer_token_embed")):
+        if val is not None:
+            methods.add(val)
+    linears = config.get("linears", {})
+    if not isinstance(linears, Mapping):
+        raise TypeError("Gemma 4 quant config 'linears' must be a mapping of target groups to quant methods.")
+    methods.update(linears.values())
+    targets_by_method: dict[str, list[str]] = {m: [] for m in methods}
+
     for target, quant_method in (
         ("token_embed", config.get("token_embed")),
         ("per_layer_token_embed", config.get("per_layer_token_embed")),
@@ -71,18 +80,14 @@ def _build_language_targets(
             if target == "token_embed"
             else _LANGUAGE_PER_LAYER_TOKEN_EMBED_WEIGHT
         )
-        targets_by_method.setdefault(quant_method, []).append(target_name)
-
-    linears = config.get("linears", {})
-    if not isinstance(linears, Mapping):
-        raise TypeError("Gemma 4 quant config 'linears' must be a mapping of target groups to quant methods.")
+        targets_by_method[quant_method].append(target_name)
 
     for target_group, quant_method in linears.items():
         try:
             suffixes = _LINEAR_SUFFIXES_BY_GROUP[target_group]
         except KeyError as exc:
             raise ValueError(f"Unsupported Gemma 4 linear target group: {target_group!r}.") from exc
-        tensors = targets_by_method.setdefault(quant_method, [])
+        tensors = targets_by_method[quant_method]
         for layer_idx in range(_NUM_LANGUAGE_LAYERS):
             layer_prefix = f"model.language_model.layers.{layer_idx}."
             for suffix in suffixes:
@@ -265,7 +270,7 @@ def parse_args() -> argparse.Namespace:
         "--input",
         help=(
             "Source model.safetensors file. "
-            "Defaults to <root>/gemma4/model.safetensors."
+            "Defaults to <root>/gemma4_2b/model.safetensors."
         ),
     )
     parser.add_argument(

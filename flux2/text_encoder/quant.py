@@ -30,7 +30,7 @@ def _quantize_text_encoder(
 
     # Build output filename (use underscored version of original input)
     quant_name = replace_hyphens_with_underscores(method)
-    output_dir = Path(root) / f"flux2_{version}" / "model" / "text_encoder"
+    output_dir = Path(root) / "flux2" / version / "model" / "text_encoder"
     model_dir = Path(input_dirpath)
 
     if not model_dir.is_dir():

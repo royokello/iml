@@ -32,7 +32,8 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
    - `pip install -r requirements.txt`
 
 7. Run the root directory creator.
-   - This script is not available yet. Until it exists, create the model/tool roots manually, for example:
+   - `python -c "from utils.startup import prepare_directories; prepare_directories('/models', '/tools')"`
+   - This creates the expected model/tool directory structure. Create the roots manually if you prefer:
      - `/models/flux`
      - `/models/gemma4`
      - `/tools/ffmpeg`
@@ -60,7 +61,7 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
 
 Notes:
 - Some modules expect CUDA, including `video.loop` and YOLO inference/training.
-- FFmpeg/FFprobe binaries are required by `video.group`, `video.loop`, and `video.quality`.
+- FFmpeg/FFprobe binaries are required by `video.group` and `video.loop`.
 - If you run into PyTorch GPU memory-caching issues on Windows, run `set PYTORCH_NO_CUDA_MEMORY_CACHING=1`.
 
 ## Usage
@@ -93,28 +94,31 @@ Notes:
   - Moves files into `_<orientation>/_<short-side>` buckets and prefixes non-group path to filename
   - Dry-run support
 - Example
-  - `python -m video.group --root "videos" --ffprobe "C:\\tools\\ffprobe.exe" --sizes 256 384 512 768 1024 --dry-run`
+  - `python -m video.group --root "videos" --ffprobe "/tools/ffprobe" --sizes 256 384 512 768 1024 --dry-run`
 
 #### `video.loop`
 - Features
   - GPU-decoded thumbnails via FFmpeg (`scale_cuda`), SSIM-based loop detection, batched exports
   - Exports lossless H.264 `.mkv` loops at target `--fps` and `--out-res`
 - Example
-  - `python -m video.loop --input "videos" --output "loops" --lengths 33 49 --fps 30 --in-res 64 --out-res 768 --ffmpeg "C:\\tools\\ffmpeg.exe"`
+  - `python -m video.loop --input "videos" --output "loops" --lengths 33 49 --fps 30 --in-res 64 --out-res 768 --ffmpeg "/tools/ffmpeg"`
 
-#### `video.quality`
+#### `video.grid.generate`
 - Features
-  - Compares all videos in a folder to the largest file as reference
-  - Produces CSVs and a bitrate vs. quality plot; tries VMAF first, falls back to SSIM/PSNR
-- Example
-  - `python -m video.quality --input "videos" --ffmpeg-dir "C:\\tools\\ffmpeg" -v`
-
-#### `video.grid`
-- Features
-  - Web UI at `/grids` for building image grids from a source video
-  - `Frame interval` mode samples frames at a fixed seconds interval and emits as many full grids as possible
-  - `Segment midpoints` mode divides the full video into exactly `rows * cols` segments and picks the middle frame from each segment to build one grid
+  - CLI tool to build image grids from a source video
+  - `interval` mode samples frames at a fixed seconds interval and emits as many full grids as possible
+  - `segment_midpoints` mode divides the full video into exactly `rows * cols` segments and picks the middle frame from each segment to build one grid
   - Center-crops each frame to the requested cell ratio before resizing into the grid
+  - Output: `<dir>/000001.png ...` + `config.json`
+- Example
+  - `python -m video.grid.generate -i "video.mp4" -o "grids" --ffmpeg "/tools/ffmpeg" --rows 3 --cols 3 --selection-mode interval --frame-interval 30`
+
+#### `video.grid.animate`
+- Features
+  - Splits a grid image into cells and creates a cell-by-cell animation
+  - Supports GIF and MP4 output
+- Example
+  - `python -m video.grid.animate -i "grids/000001.png" -o "animation.gif" --ffmpeg "/tools/ffmpeg" --length 5 --fps 12 --format gif`
 
 ### Image
 
@@ -181,12 +185,12 @@ Notes:
   - Scales images down before upload only when their longest side exceeds `--max-res` (`768` by default)
   - Skips images that already have a matching `.txt` caption
   - Example
-    - `python -m image.caption --input "images" --trigger "trxxr" --class woman`
-    - `python -m image.caption --input "images" --trigger "trxxr" --class man`
-    - `python -m image.caption --input "images" --trigger "objxx" --class object`
-    - `python -m image.caption --input "images" --trigger "mystyle" --class style`
+    - `python -m image.caption --input "images" --trigger "trxxr" --prompt-file "prompt_woman.txt"`
+    - `python -m image.caption --input "images" --trigger "trxxr" --prompt-file "prompt_man.txt"`
+    - `python -m image.caption --input "images" --trigger "objxx" --prompt-file "prompt_object.txt"`
+    - `python -m image.caption --input "images" --trigger "mystyle" --prompt-file "prompt_style.txt"`
   - Useful args
-    - `--trigger`, `--class`, `--max-res`, `--max-tokens`, `--server-url`, `--model`, `--print-response`
+    - `--trigger`, `--prompt-file`, `--max-res`, `--max-tokens`, `--server-url`, `--model`, `--print-response`, `--reset`
 
 #### `image.tag.extract`
 - Features
@@ -275,17 +279,17 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
   - Inference supports `--mode copy|link|inplace` for kept-image output handling; logs and metrics saved
 - Typical flow (stages live under project root)
   1) Label keep/cull (first step)
-     - `python -m image.cull.label.main --project "C:\\proj" --stage 1` then open `http://localhost:5050`
+     - `python -m image.cull.label.main --project "/proj" --stage 1` then open `http://localhost:5050`
      - Writes `stage_<N>_cull_labels.csv` under the project root (resumes if present)
   2) Train
-     - `python -m image.cull.train --project "C:\\proj" --stage 1 --batch-size 32`
+     - `python -m image.cull.train --project "/proj" --stage 1 --batch-size 32`
   3) Random cull preview sample (optional)
-     - `python -m image.cull.sample --project "C:\\proj" --stage 1 --count 1000` (runs the stage cull model on a random sample and hard-links predicted keeps to `stage_<N>_cull_samples`)
+     - `python -m image.cull.sample --project "/proj" --stage 1 --count 1000` (runs the stage cull model on a random sample and hard-links predicted keeps to `stage_<N>_cull_samples`)
   4) Predict
-     - `python -m image.cull.main --project "C:\\proj" --stage 1`
-     - Link instead of copy: `python -m image.cull.main --project "C:\\proj" --stage 1 --mode link`
-     - In-place cull (move keeps, delete culls): `python -m image.cull.main --project "C:\\proj" --stage 1 --mode inplace`
-     - Resume from numeric filename (inclusive): `python -m image.cull.main --project "C:\\proj" --resume 14487`
+     - `python -m image.cull.main --project "/proj" --stage 1`
+     - Link instead of copy: `python -m image.cull.main --project "/proj" --stage 1 --mode link`
+     - In-place cull (move keeps, delete culls): `python -m image.cull.main --project "/proj" --stage 1 --mode inplace`
+     - Resume from numeric filename (inclusive): `python -m image.cull.main --project "/proj" --resume 14487`
      - `--mode` defaults to `copy`
      - `--resume` compares the numeric filename stem (e.g., `014486.png` -> `14486`) and handles discontinuities
      - With `--resume` and no `--stage`, source stage is inferred as `latest - 1` (resume into the latest stage)
@@ -297,7 +301,7 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
   - Writes `stage_<N>_rank_labels.csv` under the project root (resumes if present)
   - If `--stage` omitted, uses the latest `stage_<N>` found
 - Example
-  - `python -m image.rank.label.main --project "C:\\proj" --stage 1` then open `http://localhost:5000`
+  - `python -m image.rank.label.main --project "/proj" --stage 1` then open `http://localhost:5000`
 
 #### `image.crop`
 - Features
@@ -306,17 +310,17 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
   - Output crops are zero-padded (default width 6, starting at `000001.png` via `--filename-width`)
 - Typical flow
   1) Label boxes (first step)
-     - `python -m image.crop.label.main --project "C:\\proj" --stage 1` then open `http://localhost:5051`
-     - Custom port: `python -m image.crop.label.main --project "C:\\proj" --stage 1 --port 5001`
+     - `python -m image.crop.label.main --project "/proj" --stage 1` then open `http://localhost:5051`
+     - Custom port: `python -m image.crop.label.main --project "/proj" --stage 1 --port 5001`
      - Writes `stage_<N>_crop_labels.csv` under the project root (resumes if present)
   2) Prepare YOLO dataset from labels CSV
-      - `python -m image.crop.prepare.main --model yolo --project "C:\\proj" --stage 1 --val_split 0.2`
+      - `python -m image.crop.prepare.main --model yolo --project "/proj" --stage 1 --val_split 0.2`
       - Add `--balance` only if you explicitly want to downsample every class to the smallest class count
   3) Train a detector (Ultralytics)
-     - `python -m image.crop.train --project "C:\\proj" --stage 1 --variant yolo11n --epochs 100 --batch 16`
+     - `python -m image.crop.train --project "/proj" --stage 1 --variant yolo11n --epochs 100 --batch 16`
   4) Run cropper using the trained weights
-     - Native crop size (no resize): `python -m image.crop.main --project "C:\\proj" --stage 1 --classes 0 1 2 3 4`
-     - Resize long side: `python -m image.crop.main --project "C:\\proj" --stage 1 --resolution 768 --classes 0 1 2 3 4`
+     - Native crop size (no resize): `python -m image.crop.main --project "/proj" --stage 1 --classes 0 1 2 3 4`
+     - Resize long side: `python -m image.crop.main --project "/proj" --stage 1 --resolution 768 --classes 0 1 2 3 4`
 
 
 ### Gemma 4
@@ -324,13 +328,13 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
 #### `gemma4.quant`
 - Features
   - Quantizes the Gemma 4 language component by default
-  - Loads `<root>/gemma4/model.safetensors` by default
+  - Loads `<root>/gemma4_2b/model.safetensors` by default
   - `--input` can point directly at a source `model.safetensors` file and bypass the default input path
   - Applies a hardcoded mixed quantization preset to the language component
-  - Writes `<root>/gemma4/language_<method>_quant.safetensors`, creating the output directory if needed
+  - Writes `<root>/gemma4_2b/language_<method>_quant.safetensors`, creating the output directory if needed
   - Add `--media` to also extract media tensors:
-    - Saves audio tensors as fp16 to `<root>/gemma4/audio.safetensors`
-    - Saves vision tensors as fp16 to `<root>/gemma4/vision.safetensors`
+    - Saves audio tensors as fp16 to `<root>/gemma4_2b/audio.safetensors`
+    - Saves vision tensors as fp16 to `<root>/gemma4_2b/vision.safetensors`
   - Uses `sym-high` quantization for:
     - `model.language_model.embed_tokens_per_layer.weight`
   - Uses `sym-med` quantization for:
@@ -359,7 +363,7 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
   - `python -m gemma4.quant --root "/models"`
   - `python -m gemma4.quant --root "/models" --method aff-med-mini`
   - `python -m gemma4.quant --root "/models" --method aff-high-mini`
-  - `python -m gemma4.quant --root "/models" --input "/models/custom/gemma4/model.safetensors"`
+  - `python -m gemma4.quant --root "/models" --input "/models/custom/gemma4_2b/model.safetensors"`
   - `python -m gemma4.quant --root "/models" --media`
 - Useful args
   - `--root`
@@ -374,7 +378,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 #### `flux2.gen`
 - Features
   - Unified Flux 2 generation entrypoint for `4b` and `9b`
-  - Uses `--version` to select `<root>/flux_2_klein_4b` or `<root>/flux2_9b`
+  - Uses `--version` to select `<root>/flux2/4b` or `<root>/flux2/9b`
   - Generates a single image from a prompt and saves it to the selected model output folder
   - Requires local Flux 2 assets under the selected model's `model` directory:
     - `tokenizer`
@@ -421,17 +425,17 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - `--loras`
   - `--max-length`
 
-#### `flux2.train`
+#### `flux2.train.main`
 - Current scope
   - Unified Flux 2 training entrypoint
-  - Uses `--version` to select `<root>/flux_2_klein_4b/model` or `<root>/flux2_9b/model`
+  - Uses `--version` to select `<root>/flux2_4b/model` or `<root>/flux2_9b/model`
   - Loads the tokenizer and text encoder from the selected model directory
   - Encodes captions from a local image-caption dataset into `prompt_embeds` and `text_ids`
   - Keeps text encodings on CPU while the text encoder is active, then frees the text encoder and moves the encodings to VRAM
   - Loads the base denoiser checkpoint from the selected model's `model/transformer/base` directory
   - Uses `--project` as the dataset directory and training run directory
-  - Writes LoRA checkpoints to `<project>/models/epoch_<n>.safetensors`
-  - Writes training losses to `<project>/logs/steps.csv`
+  - Writes LoRA checkpoints to `<project>/models/<step>.safetensors`
+  - Writes training losses to `<project>/models/steps.csv`
   - Uses text encoder quantization method from the CLI
   - Uses denoiser quantization method from the CLI
   - Prints encoded text memory size in MB
@@ -439,14 +443,21 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - `--root`
   - `--version`
   - `--project`
-  - `--steps`
+  - `--steps` (default: `1024`)
   - `--resume`
-  - `--checkpoint`
-  - `--text-quant-method` (default: `sym-high`)
-  - `--denoiser-quant-method` (default: `sym-med`)
+  - `--model` (LoRA init checkpoint file, optional)
+  - `--text-quant` (default: `aff-high-mini`)
+  - `--denoiser-quant` (default: `aff-high-mini`)
   - `--trigger`
+  - `--cache-text` (pre-encode captions to CPU)
+  - `--cache-images` (pre-encode image latents to disk)
+  - `--rank` (default: `32`)
+  - `--alpha` (default: `32`)
+  - `--target_res` (default: `384`)
+  - `--ref_res` (default: `384`)
+  - `--lr` (default: `1e-4`)
 - Example
-  - `python -m flux2.train --root "/models/flux" --version 4b --project "/data/flux_dataset"`
+  - `python -m flux2.train.main --root "/models/flux" --version 4b --project "/data/flux_dataset" --trigger "TOK"`
 
 #### `flux2.sample`
 - Features
@@ -476,8 +487,9 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
     - `transformer/distill`
   - CUDA-only runtime
 - Output naming
-  - Files are written as `<project>/samples/000012_3.png`
-  - Example: `000012_3.png` is sample `3` rendered from step checkpoint `models/12.safetensors`
+  - Files are written as `<project>/samples/<step>_<width>x<height>.png` for single samples, or `<step>_<index>_<width>x<height>.png` for multi-samples
+  - Example: `000012_768x768.png` is rendered from step checkpoint `models/12.safetensors` at 768x768 resolution
+  - Example: `000012_3_768x768.png` is sample `3` from the same checkpoint
 - Examples
   - Render one evenly-selected dataset sample for every checkpoint from epoch 1 onward:
     - `python -m flux2.sample --root "/models/flux" --version 4b --project "/data/flux_dataset"`
@@ -501,6 +513,8 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - `--trigger`
   - `--force-size`
   - `--width`, `--height`
+  - `--target-res`, `--ref-res`
+  - `--steps`, `--distill`
   - `--text-quant-method`
   - `--denoiser-quant-method`
 
@@ -525,7 +539,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Quantizes the Flux 2 denoiser for `4b` or `9b`
   - Uses `diffusion_pytorch_model.safetensors` for `4b`
   - Uses `diffusion_pytorch_model-00001-of-00002.safetensors` and `diffusion_pytorch_model-00002-of-00002.safetensors` for `9b`
-  - `--input` can point directly at a source transformer checkpoint directory and bypass the `<root>/<model>/model/transformer/<variant>` input default
+  - `--input` is required; point directly at a source transformer checkpoint directory
   - Quantizes `5` double blocks and `20` single blocks for `4b`
   - Quantizes `8` double blocks and `24` single blocks for `9b`
   - Saves `<root>/<model>/model/transformer/<variant>/<method>_quant.safetensors`, creating that output directory if needed
@@ -550,19 +564,19 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
 #### Flux 2 Dataset
 - Current expected format
   - `--project` is the training run folder
-  - Training images must be under `<project>/dataset`
+  - Training images must be under `<project>/images`
   - Supported image extensions: `.png`, `.jpg`, `.jpeg`, `.webp`
   - Captioned mode: each image has a `.txt` caption with the same basename
   - Captionless mode: no image has a `.txt` caption and `--trigger "<text>"` is required
 - Example
   - Captioned project layout
-  - `dataset/000001.png`
-  - `dataset/000001.txt`
-  - `dataset/000002.jpg`
-  - `dataset/000002.txt`
+  - `images/000001.png`
+  - `images/000001.txt`
+  - `images/000002.jpg`
+  - `images/000002.txt`
   - Captionless project layout
-  - `dataset/000001.png`
-  - `dataset/000002.jpg`
+  - `images/000001.png`
+  - `images/000002.jpg`
   - `models/`
   - `logs/`
 - Notes

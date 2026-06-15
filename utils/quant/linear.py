@@ -54,7 +54,11 @@ class QuantizedLinear(nn.Module):
             self.register_buffer("bias", linear.bias.detach().clone())
 
     @classmethod
-    def from_prequantized(cls, linear: nn.Linear, method: str) -> "QuantizedLinear":
+    def from_prequantized(
+        cls,
+        linear: nn.Linear,
+        method: str,
+    ) -> "QuantizedLinear":
         module = cls.__new__(cls)
         nn.Module.__init__(module)
         module.in_features = linear.in_features
@@ -152,6 +156,9 @@ class QuantizedLinear(nn.Module):
         return module
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return self._dequant_forward(input)
+
+    def _dequant_forward(self, input: torch.Tensor) -> torch.Tensor:
         if quant_method_family(self.method) == "symmetric":
             mode = quant_method_mode(self.method)
             if mode == "high":
@@ -193,7 +200,6 @@ class QuantizedLinear(nn.Module):
         bias = None if self.bias is None else self.bias.to(dtype=input.dtype)
         return F.linear(input, weight, bias)
 
-
 def _quantized_2d_shape(
     shape: torch.Size,
     *,
@@ -216,6 +222,9 @@ def _packed_words_for_values(value_count: int, bits: int) -> int:
 
 
 def _select_affine_super_block_size(row_size: int, sub_block_size: int) -> int:
+    # Avoid circular import — these are the same constants as in to/affine.py
+    AFFINE_SUPER_BLOCK_SIZE = 256
+    AFFINE_HALF_SUPER_BLOCK_SIZE = 128
     for super_block_size in (AFFINE_SUPER_BLOCK_SIZE, AFFINE_HALF_SUPER_BLOCK_SIZE):
         if row_size % super_block_size == 0:
             return super_block_size
@@ -232,3 +241,8 @@ def _affine_quantized_2d_shape(shape: torch.Size, *, mode: str) -> tuple[int, in
     super_block_size = _select_affine_super_block_size(in_features, sub_block_size)
     blocks_per_row = in_features // super_block_size
     return out_features * blocks_per_row, super_block_size, sub_block_size
+
+
+__all__ = [
+    "QuantizedLinear",
+]

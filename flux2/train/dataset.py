@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, Tuple
 import time
 from PIL import Image
 from diffusers import AutoencoderKLFlux2
@@ -11,7 +11,7 @@ import torch
 from transformers import Qwen2TokenizerFast
 from safetensors.torch import load_file, save_file
 
-from flux2.gen import _encode_prompt_embeddings, _load_vae_scale_factor
+from flux2.gen import _encode_prompt_embeddings, _load_vae_scale_factor, _pack_latents, _patchify_latents, _prepare_latent_ids, _retrieve_latents
 from flux2.text_encoder.loader import _load_flux2_text_encoder as load_flux2_text_encoder
 from flux2.train.images import prepare_image_latent
 
@@ -27,138 +27,6 @@ def _list_image_files(directory: Path) -> list[Path]:
         (path for path in directory.iterdir() if _is_supported_image(path)),
         key=lambda path: path.name,
     )
-
-
-def _load_single_dataset(dataset_dir: Path) -> dict[str, list[str | Path | None] | list[list[Path] | None]]:
-    if not dataset_dir.is_dir():
-        raise FileNotFoundError(f"Dataset directory not found: {dataset_dir}")
-
-    target_images = _list_image_files(dataset_dir)
-    if not target_images:
-        raise FileNotFoundError(f"No supported target images found in dataset: {dataset_dir}")
-
-    stems_seen: set[str] = set()
-    duplicate_stems: list[str] = []
-    for image_path in target_images:
-        if image_path.stem in stems_seen:
-            duplicate_stems.append(image_path.stem)
-        stems_seen.add(image_path.stem)
-    if duplicate_stems:
-        duplicate_text = ", ".join(sorted(set(duplicate_stems)))
-        raise ValueError(f"Dataset contains duplicate target image stems: {duplicate_text}")
-
-    text_prompts: list[str | None] = []
-    reference_images: list[list[Path] | None] = []
-    for target_image in target_images:
-        prompt_path = target_image.with_suffix(".txt")
-        if prompt_path.is_file():
-            text_prompts.append(prompt_path.read_text(encoding="utf-8").strip())
-        else:
-            text_prompts.append(None)
-
-        references_dir = dataset_dir / target_image.stem
-        if references_dir.is_dir():
-            reference_images.append(_list_image_files(references_dir))
-        else:
-            reference_images.append(None)
-
-    if not (len(target_images) == len(text_prompts) == len(reference_images)):
-        raise ValueError("Dataset loader returned misaligned target, prompt, and reference lists.")
-
-    return {
-        "text_prompts": text_prompts,
-        "target_images": target_images,
-        "reference_images": reference_images,
-    }
-
-
-def _select_dataset_indices(
-    dataset: dict[str, list[str | Path | None] | list[list[Path] | None]],
-    indices: Sequence[int] | None,
-) -> dict[str, list[str | Path | None] | list[list[Path] | None]]:
-    if indices is None:
-        return dataset
-
-    dataset_size = len(dataset["target_images"])
-    invalid_indices = [
-        sample_index for sample_index in indices if sample_index < 0 or sample_index >= dataset_size
-    ]
-    if invalid_indices:
-        invalid_text = ", ".join(str(sample_index) for sample_index in invalid_indices)
-        raise ValueError(f"Dataset indices out of range for {dataset_size} images: {invalid_text}")
-
-    return {
-        "text_prompts": [dataset["text_prompts"][sample_index] for sample_index in indices],
-        "target_images": [dataset["target_images"][sample_index] for sample_index in indices],
-        "reference_images": [dataset["reference_images"][sample_index] for sample_index in indices],
-    }
-
-
-def _load_imgs_and_caps(
-    dataset: dict[str, list[str | Path | None] | list[list[Path] | None]],
-    *,
-    collect_ratios: bool = False,
-    load_target_image: bool = True,
-) -> tuple[list[Image.Image | None], list[str], list[list[Image.Image]], list[str], list[Path], list[float]]:
-    images: list[Image.Image | None] = []
-    captions: list[str] = []
-    references: list[list[Image.Image]] = []
-    sample_ids: list[str] = []
-    sample_paths: list[Path] = []
-    ratios: list[float] = []
-
-    for image_path, caption, reference_paths in zip(
-        dataset["target_images"],
-        dataset["text_prompts"],
-        dataset["reference_images"],
-    ):
-        with Image.open(image_path) as image:
-            if collect_ratios:
-                width, height = image.size
-                ratios.append(width / height)
-            if load_target_image:
-                images.append(image.convert("RGB"))
-            else:
-                images.append(None)
-
-        captions.append(caption or "")
-        sample_ids.append(image_path.stem)
-        sample_paths.append(image_path)
-
-        sample_references: list[Image.Image] = []
-        if reference_paths is not None:
-            for reference_path in reference_paths:
-                with Image.open(reference_path) as reference_image:
-                    sample_references.append(reference_image.convert("RGB"))
-        references.append(sample_references)
-
-    return images, captions, references, sample_ids, sample_paths, ratios
-
-
-def _encode_text(
-    text: str,
-    tokenizer,
-    text_encoder,
-    text_embeds_list,
-    text_ids_list,
-    cache_path: Path | None = None,
-):
-    prompt_embeds, text_ids = _encode_prompt_embeddings(
-        torch,
-        tokenizer,
-        text_encoder,
-        prompt=text,
-        device="cuda",
-        max_length=512,
-    )
-    embed = prompt_embeds.squeeze(0).cpu().contiguous()
-    text_id = text_ids.squeeze(0).cpu().contiguous()
-    text_embeds_list.append(embed)
-    text_ids_list.append(text_id)
-
-    if cache_path is not None:
-        save_file({"embed": embed, "id": text_id}, str(cache_path))
-
 
 def _encode_images(
     sample_ids: list[str],
@@ -315,68 +183,224 @@ def _encode_ref_images(
 
 @dataclass
 class Flux2Dataset:
-    text_embeds_list: list[torch.Tensor | None]
-    text_ids_list: list[torch.Tensor | None]
-    base_target_latents: list[torch.Tensor | None]
-    base_target_latent_ids: list[torch.Tensor | None]
-    high_target_latents: list[torch.Tensor | None]
-    high_target_latent_ids: list[torch.Tensor | None]
-    base_ref_latents: list[torch.Tensor | None]
-    base_ref_latent_ids: list[torch.Tensor | None]
-    high_ref_latents: list[torch.Tensor | None]
-    high_ref_latent_ids: list[torch.Tensor | None]
-    target_image_ratios: list[float]
-    ratios: list[float]
-    trigger_embed: torch.Tensor | None = None
-    trigger_id: torch.Tensor | None = None
-
+    trigger: Tuple[torch.Tensor] | None
+    captions: list[Tuple[torch.Tensor] | None]
+    target_image: list[Tuple[torch.Tensor] | None]
+    reference_images: list[Tuple[torch.Tensor] | None]
+    target_ratios: list[float]
+    
     def __init__(
         self,
         model_rootpath,
         text_quant_method,
         dataset_dirpath,
-        trigger,
+        trigger_str,
+        target_resolution,
+        reference_resolution,
         indices: Sequence[int] | None = None,
         cache_text: bool = False,
         cache_images: bool = False,
-        ratios: bool = False,
-        load_target_image: bool = True,
-        load_reference_image: bool = True,
+        load_captions: bool = True,
+        load_target_images: bool = True,
+        load_reference_images: bool = True,
+        load_target_ratios: bool = False,
     ):
         print("Loading dataset ...")
-        print(f" * Dataset DirPath: {dataset_dirpath / 'base'}")
-        print(f" * Trigger: {trigger}")
+        print(f" * Dataset DirPath: {dataset_dirpath}")
+        print(f" * Trigger: {trigger_str}")
         print(f" * Flux2 Directory: {model_rootpath}")
         print(f" * Text Endoder Quant: {text_quant_method}")
         print(f" * Cache Text: {cache_text}")
         print(f" * Cache Images: {cache_images}")
-        print(f" * Collect Ratios: {ratios}")
-        print(f" * Load Target Image: {load_target_image}")
-        print(f" * Load Reference Image: {load_reference_image}")
+        print(f" * Load Captions: {load_captions}")
+        print(f" * Load Target Images: {load_target_images}")
+        print(f" * Load Reference Images: {load_reference_images}")
+        print(f" * Load Target Ratios: {load_target_ratios}")
 
-        load_start = time.perf_counter()
-        base_dir = dataset_dirpath / "base"
-        self._dataset_dir = Path(dataset_dirpath)
-        dataset = _select_dataset_indices(_load_single_dataset(base_dir), indices)
-        image_count = len(dataset["target_images"])
-        caption_count = sum(caption is not None for caption in dataset["text_prompts"])
-        if trigger is None or trigger.strip() == "":
-            raise ValueError("Trigger is required.")
+        torch.cuda.empty_cache()
 
-        tgts, caps, references, sample_ids, _, target_image_ratios = _load_imgs_and_caps(
-            dataset,
-            collect_ratios=ratios,
-            load_target_image=load_target_image,
-        )
-        print(f"Loaded images and captions in {time.perf_counter() - load_start:.3f}s")
+        vae_load_start = time.perf_counter()
+        vae_path = model_rootpath / "vae"
+        vae_scale_factor = _load_vae_scale_factor(vae_path)
+        vae = AutoencoderKLFlux2.from_pretrained(str(vae_path), local_files_only=True)
+        vae = vae.to("cuda", dtype=torch.float16)
+        print(f"VAE loaded in {time.perf_counter() - vae_load_start:.3f}s")
 
-        text_items = list(zip(sample_ids, caps))
-        text_embeds_list = []
-        text_ids_list = []
-        text_cache_dir = base_dir
+        image_processor = Flux2ImageProcessor(vae_scale_factor=vae_scale_factor * 2)
+
+        target_latents = []
+        target_ratios: list[float] = []
+        captions = []
+        text_embeddings = []
+        all_ref_latents: list = []
+
+        i = 0
+
+        for target_filepath in dataset_dirpath.iterdir():
+            if target_filepath.is_file() and target_filepath.suffix.lower() in IMAGE_SUFFIXES:
+                if indices is not None and i not in indices:
+                    i += 1
+                    continue
+
+                print(f" * [{i + 1}]")
+
+                # --- Process refs first ---
+                refs_dirpath = dataset_dirpath / f"{target_filepath.stem}"
+                sample_refs: list[tuple[torch.Tensor, torch.Tensor]] = []
+                has_good_ref = False
+
+                if refs_dirpath.exists():
+                    for ref_filepath in sorted(refs_dirpath.iterdir()):
+                        if not (ref_filepath.is_file() and ref_filepath.suffix.lower() in IMAGE_SUFFIXES):
+                            continue
+
+                        ref_cache_path = ref_filepath.parent / f"{ref_filepath.stem}.safetensors"
+
+                        # Check short side against reference_resolution
+                        with Image.open(ref_filepath) as ref_img:
+                            rw, rh = ref_img.size
+                        if min(rw, rh) < reference_resolution:
+                            continue
+
+                        has_good_ref = True
+
+                        if ref_cache_path.is_file():
+                            ref_tensors = load_file(str(ref_cache_path), device="cpu")
+                            ref_latent = (ref_tensors["latent"], ref_tensors["id"])
+                            sample_refs.append(ref_latent)
+                            print(f"   * ref ({ref_filepath.name}) loaded cache")
+                        else:
+                            ref_start = time.perf_counter()
+                            with Image.open(ref_filepath) as ref_image:
+                                ref_image_rgb = ref_image.convert("RGB")
+
+                            w, h = ref_image_rgb.size
+                            scale = reference_resolution / min(w, h)
+                            new_w = max(16, round(w * scale / 16) * 16)
+                            new_h = max(16, round(h * scale / 16) * 16)
+                            new_size = (new_w, new_h)
+                            ref_image_resized = ref_image_rgb.resize(new_size, Image.LANCZOS)
+                            ref_loading_time = time.perf_counter() - ref_start
+
+                            ref_encoding_start = time.perf_counter()
+                            image_tensor = image_processor.preprocess(ref_image_resized)
+                            image_tensor = image_tensor.to(device="cuda", dtype=torch.float16)
+
+                            with torch.inference_mode():
+                                latent = vae.encode(image_tensor)
+                                latent = _retrieve_latents(latent)
+                            latent = _patchify_latents(latent)
+
+                            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latent.device, latent.dtype)
+                            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
+                                latent.device, latent.dtype
+                            )
+                            latent = (latent - latents_bn_mean) / latents_bn_std
+
+                            ref_latent = (
+                                _pack_latents(latent).squeeze(0).cpu(),
+                                _prepare_latent_ids(torch, latent).squeeze(0).cpu()
+                            )
+
+                            ref_encoding_time = time.perf_counter() - ref_encoding_start
+                            print(f"   * ref encoded in load={ref_loading_time:.3f}, enc={ref_encoding_time:.3f}, total={ref_loading_time + ref_encoding_time:.3f}s at {new_size}")
+
+                            sample_refs.append(ref_latent)
+
+                            del image_tensor
+                            del latent
+                            del latents_bn_mean
+                            del latents_bn_std
+
+                # Skip if refs exist but none met resolution threshold
+                if refs_dirpath.exists() and not has_good_ref:
+                    print(f"   * skipped: no ref meets reference_resolution ({reference_resolution})")
+                    i += 1
+                    continue
+
+                # --- Target ---
+                target_cache_filepath = dataset_dirpath / f"{target_filepath.stem}.image.safetensors"
+
+                if target_cache_filepath.exists():
+                    if load_target_ratios:
+                        with Image.open(target_filepath) as img:
+                            w, h = img.size
+                        target_ratios.append(max(w, h) / min(w, h))
+
+                else:
+                    target_start = time.perf_counter()
+                    with Image.open(target_filepath) as target_image:
+                        target_image_rgb = target_image.convert("RGB")
+
+                    w, h = target_image_rgb.size
+                    if load_target_ratios:
+                        target_ratios.append(max(w, h) / min(w, h))
+                    scale = target_resolution / min(w, h)
+                    new_w = max(16, round(w * scale / 16) * 16)
+                    new_h = max(16, round(h * scale / 16) * 16)
+                    new_size = (new_w, new_h)
+                    target_image_resized = target_image_rgb.resize(new_size, Image.LANCZOS)
+                    target_loading_time = time.perf_counter() - target_start
+
+                    target_encoding_start = time.perf_counter()
+                    image_tensor = image_processor.preprocess(target_image_resized)
+                    image_tensor = image_tensor.to(device="cuda", dtype=torch.float16)
+
+                    with torch.inference_mode():
+                        latent = vae.encode(image_tensor)
+                        latent = _retrieve_latents(latent)
+                    latent = _patchify_latents(latent)
+
+                    latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latent.device, latent.dtype)
+                    latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
+                        latent.device, latent.dtype
+                    )
+                    latent = (latent - latents_bn_mean) / latents_bn_std
+
+                    target_latent = (
+                        _pack_latents(latent).squeeze(0).cpu(),
+                        _prepare_latent_ids(torch, latent).squeeze(0).cpu()
+                    )
+
+                    target_latents.append(target_latent)
+                    target_encoding_time = time.perf_counter() - target_encoding_start
+                    print(f" * * target encoded in load={target_loading_time:.3f}, enc={target_encoding_time:.3f}, total={target_loading_time + target_encoding_time:.3f}s at {new_size}")
+
+                    del image_tensor
+                    del latent
+                    del latents_bn_mean
+                    del latents_bn_std
+
+                # Append refs
+                if sample_refs:
+                    concat_latent = torch.cat([r[0] for r in sample_refs], dim=0)
+                    concat_ids = torch.cat([r[1] for r in sample_refs], dim=0)
+                    all_ref_latents.append((concat_latent.contiguous(), concat_ids.contiguous()))
+                else:
+                    all_ref_latents.append(None)
+
+                # Text
+                text_cache_filepath = dataset_dirpath / f"{target_filepath.stem}.text.safetensors"
+
+                if text_cache_filepath.exists():
+                    pass
+
+                else:
+                    caption_cache_filepath = dataset_dirpath / f"{target_filepath.stem}.txt"
+                    if caption_cache_filepath.is_file():
+                        captions.append(caption_cache_filepath.read_text(encoding="utf-8").strip())
+                    else:
+                        captions.append(None)
+
+                    text_embeddings.append(None)
+
+                i += 1
+
+        del vae
+        del image_processor
 
         print("Encoding text ...")
-
+        
         tokenizer_path = model_rootpath / "tokenizer"
         text_encoder_path = model_rootpath / "text_encoder"
         text_encoder_load_start = time.perf_counter()
@@ -389,118 +413,42 @@ class Flux2Dataset:
         print(f"Text Encoder loaded in {time.perf_counter() - text_encoder_load_start:.3f}s")
 
         encode_start = time.perf_counter()
-        _encode_text(trigger, tokenizer, text_encoder, text_embeds_list, text_ids_list)
-        self.trigger_embed = text_embeds_list[0]
-        self.trigger_id = text_ids_list[0]
-        text_embeds_list.clear()
-        text_ids_list.clear()
-        print(f" * trigger encoded in {time.perf_counter() - encode_start:.3f}s")
+        prompt_embeds, text_ids = _encode_prompt_embeddings(
+            torch,
+            tokenizer,
+            text_encoder,
+            prompt=trigger_str,
+            device="cuda",
+            max_length=512,
+        )
+        embed = prompt_embeds.squeeze(0).cpu().contiguous()
+        text_id = text_ids.squeeze(0).cpu().contiguous()
+        self.trigger_embedding = (embed, text_id)
+        print(f" Trigger encoded in {time.perf_counter() - encode_start:.3f}s")
 
-        for sample_index, (sample_id, text) in enumerate(text_items):
-            if not text:
-                text_embeds_list.append(None)
-                text_ids_list.append(None)
-                continue
-
-            cache_path = text_cache_dir / f"{sample_id}.text.safetensors"
-            if cache_path.is_file():
-                tensors = load_file(str(cache_path), device="cpu")
-                text_embeds_list.append(tensors["embed"])
-                text_ids_list.append(tensors["id"])
-                print(f" * [{sample_index + 1}/{len(text_items)}] loaded text cache: {sample_id}")
+        for i, caption in enumerate(captions):
+            if caption is None:
+                print(f" * [{i + 1}/{len(captions)}] is None")
                 continue
 
             encode_start = time.perf_counter()
-            _encode_text(
-                text,
+            prompt_embeds, text_ids = _encode_prompt_embeddings(
+                torch,
                 tokenizer,
                 text_encoder,
-                text_embeds_list,
-                text_ids_list,
-                cache_path=cache_path if cache_text else None,
+                prompt=caption,
+                device="cuda",
+                max_length=512,
             )
-            print(f" * [{sample_index + 1}/{len(text_items)}] encoded: {sample_id} in {time.perf_counter() - encode_start:.3f}s")
+            embed = prompt_embeds.squeeze(0).cpu().contiguous()
+            text_id = text_ids.squeeze(0).cpu().contiguous()
+            text_embeddings[i] = (embed, text_id)
+            print(f" * [{i + 1}/{len(captions)}] encoded in {time.perf_counter() - encode_start:.3f}s")
 
         del tokenizer
         del text_encoder
 
-        base_target_latents = []
-        base_target_latent_ids = []
-        high_target_latents = []
-        high_target_latent_ids = []
-        base_ref_latents = []
-        base_ref_latent_ids = []
-        high_ref_latents = []
-        high_ref_latent_ids = []
-
-        if load_target_image or load_reference_image:
-            torch.cuda.empty_cache()
-
-            vae_load_start = time.perf_counter()
-            vae_path = model_rootpath / "vae"
-            vae_scale_factor = _load_vae_scale_factor(vae_path)
-            vae = AutoencoderKLFlux2.from_pretrained(str(vae_path), local_files_only=True)
-            vae = vae.to("cuda", dtype=torch.float16)
-            print(f"VAE loaded in {time.perf_counter() - vae_load_start:.3f}s")
-
-            image_processor = Flux2ImageProcessor(vae_scale_factor=vae_scale_factor * 2)
-
-            print("Encoding base target images ...")
-            base_target_latents, base_target_latent_ids = _encode_images(
-                sample_ids, base_dir, vae, image_processor, vae_scale_factor,
-                cache_images=cache_images,
-                load_targets=load_target_image,
-            )
-
-            print("Encoding high target images ...")
-            high_target_latents, high_target_latent_ids = _encode_images(
-                sample_ids, self._dataset_dir / "high", vae, image_processor, vae_scale_factor,
-                cache_images=cache_images,
-                load_targets=load_target_image,
-            )
-
-            print("Encoding base reference images ...")
-            base_ref_latents, base_ref_latent_ids = _encode_ref_images(
-                sample_ids, base_dir, vae, image_processor, vae_scale_factor,
-                cache_images=cache_images,
-                load_refs=load_reference_image,
-            )
-
-            print("Encoding high reference images ...")
-            high_ref_latents, high_ref_latent_ids = _encode_ref_images(
-                sample_ids, self._dataset_dir / "high", vae, image_processor, vae_scale_factor,
-                cache_images=cache_images,
-                load_refs=load_reference_image,
-            )
-
-            del vae
-            del image_processor
-        else:
-            print("Skipping image encoding ...")
-            for _ in range(len(tgts)):
-                base_target_latents.append(None)
-                base_target_latent_ids.append(None)
-                high_target_latents.append(None)
-                high_target_latent_ids.append(None)
-                base_ref_latents.append(None)
-                base_ref_latent_ids.append(None)
-                high_ref_latents.append(None)
-                high_ref_latent_ids.append(None)
-
-        self.text_embeds_list = text_embeds_list
-        self.text_ids_list = text_ids_list
-        self.base_target_latents = base_target_latents
-        self.base_target_latent_ids = base_target_latent_ids
-        self.high_target_latents = high_target_latents
-        self.high_target_latent_ids = high_target_latent_ids
-        self.base_ref_latents = base_ref_latents
-        self.base_ref_latent_ids = base_ref_latent_ids
-        self.high_ref_latents = high_ref_latents
-        self.high_ref_latent_ids = high_ref_latent_ids
-        self.target_image_ratios = target_image_ratios
-        self.ratios = target_image_ratios
-
-        high_tgt_count = sum(1 for h in high_target_latents if h is not None)
-        high_ref_count = sum(1 for h in high_ref_latents if h is not None)
-        if high_tgt_count or high_ref_count:
-            print(f" * high encodings: {high_tgt_count} targets, {high_ref_count} refs")
+        self.text_embeddings = text_embeddings
+        self.target_latents = target_latents
+        self.target_ratios = target_ratios
+        self.ref_latents = all_ref_latents

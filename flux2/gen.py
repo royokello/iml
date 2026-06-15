@@ -18,8 +18,8 @@ DEFAULT_DISTILLED_GUIDANCE_SCALE = 1.0
 DEFAULT_BASE_GUIDANCE_SCALE = 4.0
 DEFAULT_TEXT_ENCODER_OUT_LAYERS = (9, 18, 27)
 _MODEL_DIRS = {
-    "4b": "flux2_4b",
-    "9b": "flux2_9b",
+    "4b": "flux2/4b",
+    "9b": "flux2/9b",
 }
 
 
@@ -364,6 +364,7 @@ def generate_image(
     text_quant_method: str | None = None,
     denoiser_quant_method: str | None = None,
     loras: dict[str, float] | None = None,
+    negative_prompt: str | None = None,
     max_length: int = 512,
 ) -> None:
     from flux2.denoiser.loader import _load_flux2_denoiser as load_flux2_denoiser
@@ -380,7 +381,7 @@ def generate_image(
         raise RuntimeError("CUDA is not available in this environment.")
 
     resolved_version = version.strip().lower()
-    model_root = Path(root) / f"flux2_{resolved_version}" / "model"
+    model_root = Path(root) / _resolve_version_dir(version) / "model"
     tokenizer_path = model_root / "tokenizer"
     text_encoder_path = model_root / "text_encoder"
     vae_path = model_root / "vae"
@@ -429,11 +430,12 @@ def generate_image(
     negative_prompt_embeds = None
     negative_text_ids = None
     if is_base:
+        neg_text = negative_prompt if negative_prompt else ""
         negative_prompt_embeds, negative_text_ids = _encode_prompt_embeddings(
             torch,
             tokenizer,
             text_encoder,
-            prompt="",
+            prompt=neg_text,
             device=device,
             max_length=max_length,
         )
@@ -658,10 +660,28 @@ def generate_image(
 
     print("7. Saving")
     saving_start = time.perf_counter()
-    output_dir = Path(root) / f"flux2_{version}" / "outputs"
+    output_dir = Path(root) / _resolve_version_dir(version) / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}.png"
-    image.save(output_path)
+
+    from PIL.PngImagePlugin import PngInfo
+
+    gen_metadata = {
+        "seed": seed,
+        "steps": num_inference_steps,
+        "model_version": version,
+        "variant": "distill" if not base else "base",
+        "scheduler": "FlowMatchEulerDiscreteScheduler",
+        "text_encoder_quant": text_quant_method or "half_precision",
+        "denoiser_quant": denoiser_quant_method or "half_precision",
+        "prompt": prompt,
+        "negative": negative_prompt,
+        "cfg": guidance_scale,
+        "loras": {Path(k).name: v for k, v in loras.items()} if loras else None,
+    }
+    pnginfo = PngInfo()
+    pnginfo.add_text("flux2", json.dumps(gen_metadata))
+    image.save(output_path, pnginfo=pnginfo)
     saving_seconds = time.perf_counter() - saving_start
     print(f"  * saved to {output_path}")
     print(f"  * done in {saving_seconds:.3f}s")
@@ -672,7 +692,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         required=True,
-        help="Root folder that contains flux_2_klein_4b/model or flux2_9b/model.",
+        help="Root folder that contains flux2/4b/model or flux2/9b/model.",
     )
     parser.add_argument(
         "--version",

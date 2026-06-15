@@ -10,3 +10,4 @@ matplotlib
 huggingface_hub
 tensorflow
 numpy
+scikit-image

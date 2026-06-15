@@ -29,17 +29,35 @@ def _quantize_denoiser(
     method: str,
     variant: str,
 ) -> Path:
-    output_model_dir = Path(root) / f"flux2_{version}" / "model" / "transformer"
+    output_model_dir = Path(root) / "flux2" / version / "model" / "transformer"
     checkpoint_dir = Path(input_root)
     if not checkpoint_dir.is_dir():
         raise FileNotFoundError(f"Transformer checkpoint directory not found: {checkpoint_dir}")
 
     checkpoint_files = _build_checkpoint_files(checkpoint_dir, version)
+    print(
+        "Quantize denoiser args:\n"
+        f"  root={root}\n"
+        f"  input={input_root}\n"
+        f"  version={version}\n"
+        f"  method={method}\n"
+        f"  variant={variant}"
+    )
+    print("Checkpoint")
+    for checkpoint in checkpoint_files:
+        print(f" * {checkpoint}")
+
     target_tensors = _build_flux2_denoiser_target_tensors(version)
+    targets = build_mixed_target_config(method, target_tensors)
 
-    output_path = output_model_dir / variant / f"{method.replace("-", "_")}_quant.safetensors"
+    print("Targets")
+    for target_method, target_names in targets.items():
+        print(f" * {target_method}: {len(target_names)} tensors")
 
-    print(f"Applying {method} quantization for Flux2 {version} denoiser ({variant}) ...")
+    quant_name = method.replace("-", "_")
+    output_path = output_model_dir / variant / f"{quant_name}_quant.safetensors"
+
+    print(f"Applying {method} mixed‑precision quantization for Flux2 {version} denoiser ({variant}) ...")
     quantize_start = time.perf_counter()
     state_dict = quantize_model_tensors(
         files=checkpoint_files,

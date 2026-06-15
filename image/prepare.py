@@ -8,7 +8,8 @@ Base thresholds are the gatekeeper — a group must pass base to be included.
 If it also passes high thresholds, a copy at higher resolution goes into
 high/ with the same number.
 
-Captions are copied as-is. Original filenames are preserved.
+Captions and pre-computed text encodings ({stem}.text.safetensors) are
+copied as-is into base/. Original filenames are preserved.
 
 Usage:
     py -m image.prepare -i /path/to/input -o /path/to/output
@@ -71,6 +72,10 @@ def parse_args() -> argparse.Namespace:
         help="Print actions without executing.",
     )
     p.add_argument(
+        "--require-ref", action="store_true",
+        help="Require ref images (subdir) at resolution — skip groups with no ref.",
+    )
+    p.add_argument(
         "--verbose", action="store_true",
         help="Print every action (default: only summary).",
     )
@@ -83,11 +88,14 @@ def log(msg: str, *, verbose: bool = False) -> None:
 
 
 def detect_groups(root: Path) -> dict[str, dict[str, Path | None]]:
-    """Return {stem: {image, caption, subdir}} for each image-anchored group."""
+    """Return {stem: {image, caption, subdir, text_encoding}} per image group."""
     all_entries = sorted(
         [e for e in root.iterdir() if not e.name.startswith(".")],
         key=lambda p: p.name,
     )
+    group_template: dict[str, Path | None] = {
+        "image": None, "caption": None, "subdir": None, "text_encoding": None,
+    }
     groups: dict[str, dict[str, Path | None]] = {}
     for entry in all_entries:
         if not entry.is_file():
@@ -95,9 +103,18 @@ def detect_groups(root: Path) -> dict[str, dict[str, Path | None]]:
         stem = entry.stem
         suffix = entry.suffix.lower()
         if suffix in IMAGE_EXTS:
-            groups.setdefault(stem, {"image": None, "caption": None, "subdir": None})["image"] = entry
+            groups.setdefault(stem, dict(group_template))["image"] = entry
         elif suffix == ".txt":
-            groups.setdefault(stem, {"image": None, "caption": None, "subdir": None})["caption"] = entry
+            groups.setdefault(stem, dict(group_template))["caption"] = entry
+    # Detect text encoding: {stem}.text.safetensors
+    for entry in all_entries:
+        if not (entry.is_file() and entry.suffix.lower() == ".safetensors"):
+            continue
+        parts = entry.name.split(".")
+        if len(parts) >= 3 and parts[-2] == "text":
+            stem = ".".join(parts[:-2])
+            if stem in groups:
+                groups[stem]["text_encoding"] = entry
     for entry in all_entries:
         if entry.is_dir():
             stem = entry.name
@@ -178,6 +195,8 @@ def check_group(
     base_ref_chain: list[int],
     high_target_chain: list[int],
     high_ref_chain: list[int],
+    *,
+    require_ref: bool = False,
 ) -> tuple[int | None, int | None, int | None, int | None]:
     """Return (base_target, base_ref, high_target, high_ref).
 
@@ -185,10 +204,13 @@ def check_group(
     If high_target is not None, the group also qualifies for a high/ copy.
 
     When subdir_max_short is None (no ref images), ref chain checks are
-    waived — the group passes base and high on target alone.
+    waived — the group passes base and high on target alone — UNLESS
+    require_ref is True, in which case the group is skipped entirely.
 
     Returns (None, None, None, None) to skip entirely.
     """
+    if require_ref and subdir_max_short is None:
+        return None, None, None, None
     base_t = resolve_chain(anchor_side, base_target_chain)
     if base_t is None:
         return None, None, None, None
@@ -315,6 +337,7 @@ def main() -> None:
             anchor_side, subdir_max,
             args.base_target_res, args.base_ref_res,
             args.high_target_res, args.high_ref_res,
+            require_ref=args.require_ref,
         )
         if base_t is None:
             log(f"  SKIP group '{stem}' (anchor={anchor_side}, subdir_max={subdir_max} below thresholds)", verbose=verbose)
@@ -347,15 +370,27 @@ def main() -> None:
                         f_dst.write(f_src.read())
                 log(f"  {dst_cap.name} (caption)", verbose=verbose)
 
+        # Copy pre-computed text encoding if available
+        src_enc = g["text_encoding"]
+        if src_enc is not None:
+            dst_enc = base_dir / f"{output_stem}.text.safetensors"
+            if not dry_run:
+                dst_enc.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src_enc, dst_enc)
+            log(f"  {dst_enc.name} (text encoding)", verbose=verbose)
+
         # Also copy to high if it qualifies
         if high_t is not None:
-            s, r = copy_group(
-                g, high_dir, output_stem, high_t, high_r,
-                dry_run=dry_run, verbose=verbose,
-            )
-            counts["high"]["groups"] += 1
-            counts["high"]["ref"] += r
-            counts["high"]["skip_ref"] += s
+            if args.require_ref and high_r is None:
+                log(f"  SKIP {output_stem} high/ (ref below high ref res)", verbose=verbose)
+            else:
+                s, r = copy_group(
+                    g, high_dir, output_stem, high_t, high_r,
+                    dry_run=dry_run, verbose=verbose,
+                )
+                counts["high"]["groups"] += 1
+                counts["high"]["ref"] += r
+                counts["high"]["skip_ref"] += s
 
     # Summary
     print()

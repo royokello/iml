@@ -12,48 +12,10 @@ DEFAULT_SAMPLE_SEED = 19930625
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
-def _positive_int(value: str) -> int:
-    parsed = int(value)
-    if parsed <= 0:
-        raise argparse.ArgumentTypeError("Value must be a positive integer.")
-    return parsed
-
-
 def _parse_sample_indices(value: str | None) -> list[int] | None:
     if value is None:
         return None
     return [int(index.strip()) for index in value.split(",") if index.strip()]
-
-
-def _resolve_sample_indices(
-    *,
-    dataset_size: int,
-    samples: int,
-    sample_indices: str | None,
-) -> list[int]:
-    parsed_indices = _parse_sample_indices(sample_indices)
-    if parsed_indices is not None:
-        resolved_indices = parsed_indices
-    elif samples == 0:
-        resolved_indices = []
-    elif samples < 0:
-        raise ValueError("--samples must be zero or greater.")
-    elif samples == 1:
-        resolved_indices = [1]
-    else:
-        resolved_indices = [
-            1 + round(index * (dataset_size - 1) / (samples - 1))
-            for index in range(samples)
-        ]
-
-    invalid_indices = [
-        sample_index for sample_index in resolved_indices if sample_index < 1 or sample_index > dataset_size
-    ]
-    if invalid_indices:
-        invalid_text = ", ".join(str(sample_index) for sample_index in invalid_indices)
-        raise ValueError(f"Sample indices out of range for {dataset_size} images: {invalid_text}")
-
-    return resolved_indices
 
 
 def _list_step_checkpoints(checkpoints_dir: Path) -> list[tuple[int, Path]]:
@@ -71,22 +33,6 @@ def _list_step_checkpoints(checkpoints_dir: Path) -> list[tuple[int, Path]]:
     if not checkpoints:
         raise FileNotFoundError(f"No step checkpoints found in {checkpoints_dir}")
     return checkpoints
-
-
-def _is_supported_image(path: Path) -> bool:
-    return path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
-
-
-def _list_image_files(directory: Path) -> list[Path]:
-    if not directory.is_dir():
-        raise FileNotFoundError(f"Dataset directory not found: {directory}")
-    image_paths = sorted(
-        (path for path in directory.iterdir() if _is_supported_image(path)),
-        key=lambda path: path.name,
-    )
-    if not image_paths:
-        raise FileNotFoundError(f"No supported images found in dataset: {directory}")
-    return image_paths
 
 
 def _resolution_from_ratio(*, ratio: float, short_side: int) -> tuple[int, int]:
@@ -119,33 +65,40 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--width",
-        type=_positive_int,
+        type=int,
         default=512,
         help="Prompt-only sample width.",
     )
     parser.add_argument(
         "--height",
-        type=_positive_int,
+        type=int,
         default=512,
         help="Prompt-only sample height.",
     )
     parser.add_argument(
-        "--force-size",
-        "--force_size",
-        dest="force_size",
-        type=_positive_int,
-        help="Dataset-backed override for the shortest image side. Keeps each sample's aspect ratio.",
+        "--target-res",
+        dest="target_res",
+        type=int,
+        default=512,
+        help="Short side for generation output. Combined with each sample's aspect ratio to determine output dimensions.",
+    )
+    parser.add_argument(
+        "--ref-res",
+        dest="ref_res",
+        type=int,
+        default=512,
+        help="Resolution for reference image encoding.",
     )
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument(
         "--start",
-        type=_positive_int,
+        type=int,
         default=1,
         help="First step checkpoint number to render samples for.",
     )
     parser.add_argument(
         "--steps",
-        type=_positive_int,
+        type=int,
         default=16,
         help="Base-model denoising steps per sample. Distilled mode uses its default step count.",
     )
@@ -185,14 +138,20 @@ def main() -> None:
     sample_dir = project_path / "samples"
     sample_dir.mkdir(parents=True, exist_ok=True)
 
-    def next_sample_output_path(step_number: int, sample_index: int) -> Path:
-        output_path = sample_dir / f"{step_number:06d}_{sample_index}.png"
+    def next_sample_output_path(step_number: int, sample_index: int | None, sample_width: int, sample_height: int) -> Path:
+        if single_sample:
+            output_path = sample_dir / f"{step_number:06d}_{sample_width}x{sample_height}.png"
+        else:
+            output_path = sample_dir / f"{step_number:06d}_{sample_index}_{sample_width}x{sample_height}.png"
         if not output_path.is_file():
             return output_path
 
         duplicate_index = 2
         while True:
-            duplicate_path = sample_dir / f"{step_number:06d}_{sample_index}_{duplicate_index}.png"
+            if single_sample:
+                duplicate_path = sample_dir / f"{step_number:06d}_{sample_width}x{sample_height}_{duplicate_index}.png"
+            else:
+                duplicate_path = sample_dir / f"{step_number:06d}_{sample_index}_{sample_width}x{sample_height}_{duplicate_index}.png"
             if not duplicate_path.is_file():
                 return duplicate_path
             duplicate_index += 1
@@ -203,8 +162,6 @@ def main() -> None:
         raise ValueError("--prompt must not be empty.")
     if normalized_prompt is not None and args.trigger is not None:
         raise ValueError("--trigger is only used with captionless datasets.")
-    if normalized_prompt is not None and args.force_size is not None and args.sample_indices is None:
-        raise ValueError("--force-size requires --sample-indices when used with --prompt.")
 
     sample_resolutions: dict[int, tuple[int, int]] = {}
 
@@ -212,45 +169,39 @@ def main() -> None:
     from flux2.train.dataset import Flux2Dataset
 
     dataset_dir = project_path / "images"
-    target_images = _list_image_files(dataset_dir / "base")
-
-    sample_indices = _resolve_sample_indices(
-        dataset_size=len(target_images),
-        samples=1 if normalized_prompt is not None else args.samples,
-        sample_indices=args.sample_indices,
-    )
-    if not sample_indices:
-        print("  * no samples requested")
-        return
 
     dataset_load_start = time.perf_counter()
-    selected_dataset_indices = [sample_index - 1 for sample_index in sample_indices]
+    parsed_indices = _parse_sample_indices(args.sample_indices)
+    normalized_trigger = normalized_prompt if normalized_prompt is not None else args.trigger
+    cached_dataset = Flux2Dataset(
+        model_rootpath=model_root,
+        text_quant_method=args.text_quant_method,
+        dataset_dirpath=dataset_dir,
+        trigger_str=normalized_trigger,
+        target_resolution=args.target_res,
+        reference_resolution=args.ref_res,
+        indices=None if parsed_indices is None else [i - 1 for i in parsed_indices],
+        load_target_images=False,
+        load_target_ratios=True,
+    )
+
+    dataset_size = len(cached_dataset.target_ratios)
+    if dataset_size == 0:
+        print("  * no samples loaded")
+        return
+
+    sample_indices = parsed_indices if parsed_indices is not None else list(range(1, dataset_size + 1))
+
     selected_dataset_index_by_sample = {
         sample_index: selected_index for selected_index, sample_index in enumerate(sample_indices)
     }
-    normalized_trigger = normalized_prompt if normalized_prompt is not None else args.trigger
-    cached_dataset = Flux2Dataset(
-        model_root,
-        args.text_quant_method,
-        dataset_dir,
-        normalized_trigger,
-        indices=selected_dataset_indices,
-        ratios=True,
-        load_target_image=False,
-    )
 
     if normalized_prompt is not None:
         dataset_mode = "prompt"
     else:
         dataset_mode = "captioned"
 
-    if len(cached_dataset.ratios) != len(sample_indices):
-        raise ValueError(
-            "Collected image ratio count does not match selected sample count: "
-            f"{len(cached_dataset.ratios)} != {len(sample_indices)}"
-        )
-
-    short_side = args.force_size or 512
+    short_side = args.target_res
     for sample_index in sample_indices:
         selected_index = selected_dataset_index_by_sample[sample_index]
         if normalized_prompt is not None and args.sample_indices is None:
@@ -258,18 +209,18 @@ def main() -> None:
             sample_height = args.height
         else:
             sample_width, sample_height = _resolution_from_ratio(
-                ratio=cached_dataset.ratios[selected_index],
+                ratio=cached_dataset.target_ratios[selected_index],
                 short_side=short_side,
             )
         sample_resolutions[sample_index] = (sample_width, sample_height)
 
+    single_sample = args.sample_indices is None
+
     print(f"  * dataset mode: {dataset_mode}")
-    print(f"  * images: {len(target_images)}")
+    print(f"  * images: {dataset_size}")
     print(f"  * selected samples: {', '.join(str(sample_index) for sample_index in sample_indices)}")
     if normalized_trigger is not None:
         print(f"  * trigger: {normalized_trigger!r}")
-    if args.force_size is not None:
-        print(f"  * forced short side: {args.force_size}")
     if normalized_prompt is not None:
         print(f"  * requested image size: {args.width}x{args.height}")
     print(f"  * short side for ratio samples: {short_side}")
@@ -291,7 +242,26 @@ def main() -> None:
 
     from flux2.denoiser.loader import _load_flux2_denoiser as load_flux2_denoiser
     from flux2.lora import inject_trainable_lora_modules
-    from flux2.lora.config import FLUX2_LORA_ALPHA, FLUX2_LORA_RANK, FLUX2_LORA_TARGETS
+    from flux2.lora.config import FLUX2_LORA_TARGETS
+    from safetensors import safe_open
+
+    # Read rank/alpha from the first checkpoint so modules are created at the
+    # right size regardless of what the config defaults say.
+    if not checkpoints:
+        raise FileNotFoundError("No checkpoints to load metadata from.")
+    first_cp_meta: dict[str, str] | None = None
+    for _step_num, cp_path in checkpoints:
+        try:
+            with safe_open(str(cp_path), framework="pt") as f:
+                first_cp_meta = f.metadata()
+        except Exception:
+            continue
+        break
+    if first_cp_meta is None:
+        raise RuntimeError("Could not read safetensors metadata from any checkpoint.")
+    lora_rank = int(first_cp_meta["rank"])
+    lora_alpha = int(first_cp_meta["alpha"])
+    print(f"  * lora rank/alpha from checkpoint: r={lora_rank}, a={lora_alpha}")
     from flux2.lora.loader import load_checkpoint as load_lora_checkpoint
     from flux2.train.images import normalize_image_latent_resolution
     from flux2.gen import (
@@ -361,8 +331,8 @@ def main() -> None:
     lora_module_names = inject_trainable_lora_modules(
         transformer,
         target_linear_names=FLUX2_LORA_TARGETS,
-        rank=FLUX2_LORA_RANK,
-        alpha=FLUX2_LORA_ALPHA,
+        rank=lora_rank,
+        alpha=lora_alpha,
     )
     transformer.eval()
     num_channels_latents = _load_transformer_in_channels(transformer_path) // 4
@@ -378,7 +348,11 @@ def main() -> None:
         sample_latents = []
         with torch.inference_mode():
             for sample_index in pending_sample_indices:
-                existing_output_path = sample_dir / f"{step_number:06d}_{sample_index}.png"
+                sample_width, sample_height = sample_resolutions[sample_index]
+                if single_sample:
+                    existing_output_path = sample_dir / f"{step_number:06d}_{sample_width}x{sample_height}.png"
+                else:
+                    existing_output_path = sample_dir / f"{step_number:06d}_{sample_index}_{sample_width}x{sample_height}.png"
                 if existing_output_path.is_file():
                     print(f"    * skipped sample {sample_index}: {existing_output_path}")
                     continue
@@ -387,14 +361,13 @@ def main() -> None:
                 sample_width, sample_height = sample_resolutions[sample_index]
                 print(f"    * denoise sample {sample_index} at {sample_width}x{sample_height} ...")
                 if dataset_mode == "prompt":
-                    text_embed = cached_dataset.trigger_embed
-                    text_id = cached_dataset.trigger_id
+                    text_embed, text_id = cached_dataset.trigger_embedding
                 else:
-                    text_embed = cached_dataset.text_embeds_list[selected_index]
-                    text_id = cached_dataset.text_ids_list[selected_index]
-                    if text_embed is None or text_id is None:
-                        text_embed = cached_dataset.trigger_embed
-                        text_id = cached_dataset.trigger_id
+                    text_item = cached_dataset.text_embeddings[selected_index]
+                    if text_item is not None:
+                        text_embed, text_id = text_item
+                    else:
+                        text_embed, text_id = cached_dataset.trigger_embedding
                 prompt_embeds_batch = text_embed.unsqueeze(0).to(
                     device=device,
                     dtype=transformer.dtype,
@@ -429,19 +402,14 @@ def main() -> None:
 
                 reference_latents_batch = None
                 reference_latent_ids_batch = None
-                ref_latents = cached_dataset.high_ref_latents[selected_index]
-                ref_ids = cached_dataset.high_ref_latent_ids[selected_index]
-                if ref_latents is None or ref_ids is None:
-                    ref_latents = cached_dataset.base_ref_latents[selected_index]
-                    ref_ids = cached_dataset.base_ref_latent_ids[selected_index]
-                if ref_latents is not None and ref_ids is not None:
-                    reference_latents_batch = ref_latents.unsqueeze(0).to(
-                        device=device,
-                        dtype=latents.dtype,
-                    )
-                    reference_latent_ids_batch = ref_ids.unsqueeze(0).to(
-                        device=device
-                    )
+                # ref_item = cached_dataset.reference_images[selected_index]
+                # if ref_item is not None:
+                #     ref_latents = ref_item[0]
+                #     reference_latents_batch = ref_latents.unsqueeze(0).to(
+                #         device=device,
+                #         dtype=latents.dtype,
+                #     )
+                #     reference_latent_ids_batch = None
 
                 for timestep_value in timesteps:
                     timestep = timestep_value.expand(latents.shape[0]).to(latents.dtype)
@@ -488,7 +456,8 @@ def main() -> None:
         vae.to(device, dtype=torch.float16)
         with torch.inference_mode():
             for sample_index, latents_cpu, latent_ids_cpu in sample_latents:
-                output_path = next_sample_output_path(step_number, sample_index)
+                sample_width, sample_height = sample_resolutions[sample_index]
+                output_path = next_sample_output_path(step_number, sample_index, sample_width, sample_height)
                 latents = latents_cpu.to(device=device)
                 latent_ids = latent_ids_cpu.to(device=device)
                 latents = _unpack_latents_with_ids(torch, latents, latent_ids)
