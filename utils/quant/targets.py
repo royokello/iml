@@ -12,13 +12,17 @@ def build_mixed_target_config(
     high_method, low_method = convert_quant_name(method)
     high_targets = list(target_tensors.get("high", []))
     low_targets = list(target_tensors.get("low", []))
+    fp32_targets = list(target_tensors.get("fp32", []))
 
+    config: dict[str, list[str]] = {}
     if high_method == low_method:
-        return {high_method: high_targets + low_targets}
-    return {
-        high_method: high_targets,
-        low_method: low_targets,
-    }
+        config[high_method] = high_targets + low_targets
+    else:
+        config[high_method] = high_targets
+        config[low_method] = low_targets
+    if fp32_targets:
+        config["fp32"] = fp32_targets
+    return config
 
 
 __all__ = ["build_mixed_target_config"]

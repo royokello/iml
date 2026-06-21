@@ -30,6 +30,9 @@ def _build_quantized_or_fp16_tensors(
     target_method: str | None,
 ) -> dict[str, torch.Tensor]:
     if target_method is not None:
+        if target_method == "fp32":
+            return {name: tensor.to(dtype=torch.float32)}
+
         metadata_base_name = name.removesuffix(".weight")
         sub_scales_name = f"{metadata_base_name}.sub_scales"
         super_scales_name = f"{metadata_base_name}.super_scales"
@@ -90,7 +93,8 @@ def _quantize_safetensors_file(
 
             tensor = handle.get_tensor(name)
             method = methods_by_name.get(name)
-            print(f"{i}/{total}: {name} {tuple(tensor.shape)} at {method}")
+            label = method or ("fp16" if tensor.dtype in {torch.float32, torch.bfloat16} else "pass")
+            print(f"{i}/{total}: {name} {tuple(tensor.shape)} at {label}")
             result.update(
                 _build_quantized_or_fp16_tensors(
                     name=name,
@@ -130,7 +134,8 @@ def _quantize_state_dict(
             continue
 
         method = methods_by_name.get(name)
-        print(f"{i}/{total}: {name} {tuple(tensor.shape)} at {method}")
+        label = method or ("fp16" if tensor.dtype in {torch.float32, torch.bfloat16} else "pass")
+        print(f"{i}/{total}: {name} {tuple(tensor.shape)} at {label}")
         result.update(
             _build_quantized_or_fp16_tensors(
                 name=name,
