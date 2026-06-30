@@ -5,7 +5,7 @@ Author: Roy Okello, Stelar Labs
 IML is a toolkit for image, video, and diffusion model workflows. It includes:
 - Image preprocessing (group, shape), dataset curation (cull), and YOLO-based cropping (crop)
 - Video frame extraction, grouping, loop detection, and quality analysis
-- Flux 2
+- Flux 2 and Ideogram 4
 
 ## Contents
 
