@@ -150,8 +150,7 @@ def _load_flux2_denoiser(
     variant: str = "distill",
     version: str = "4b",
     *,
-    cpu_residency: bool = False,
-    pin_memory: bool = False,
+    offloading: bool = False,
     stream_load: bool | None = None,
 ) -> Flux2Transformer2DModel:
     variant = variant.strip().lower()
@@ -188,10 +187,10 @@ def _load_flux2_denoiser(
     if not checkpoint_dir.is_dir():
         raise FileNotFoundError(f"Denoiser checkpoint directory not found: {checkpoint_dir}")
 
-    build_device = "cpu" if cpu_residency else "meta"
+    build_device = "cpu" if offloading else "meta"
     model = _build_model_from_config(model_dir, device=build_device)
     if stream_load is None:
-        stream_load = cpu_residency
+        stream_load = offloading
 
     # ---- Quantised checkpoint path ----
     quantized_checkpoint_path = None
@@ -213,7 +212,7 @@ def _load_flux2_denoiser(
         )
         if checkpoint_path.is_file():
             if stream_load:
-                incompatible = stream_local_single_checkpoint(model, checkpoint_path, pin_memory=pin_memory)
+                incompatible = stream_local_single_checkpoint(model, checkpoint_path, offloading=offloading)
             else:
                 incompatible = load_local_single_checkpoint(model, checkpoint_path)
             if incompatible.get("unexpected_keys"):
@@ -228,7 +227,7 @@ def _load_flux2_denoiser(
                     checkpoint_dir,
                     index_filename=None,
                     shard_pattern="diffusion_pytorch_model-*.safetensors",
-                    pin_memory=pin_memory,
+                    offloading=offloading,
                 )
             else:
                 load_local_sharded_checkpoint(
@@ -239,7 +238,7 @@ def _load_flux2_denoiser(
                 )
         else:
             raise FileNotFoundError(f"Denoiser checkpoint not found: {checkpoint_path}")
-        if not cpu_residency:
+        if not offloading:
             _materialize_meta_tensors(model)
     else:
         # Load a pre‑quantised checkpoint
@@ -263,14 +262,14 @@ def _load_flux2_denoiser(
         )
 
         if stream_load:
-            incompatible = stream_local_single_checkpoint(model, quantized_checkpoint_path, pin_memory=pin_memory)
+            incompatible = stream_local_single_checkpoint(model, quantized_checkpoint_path, offloading=offloading)
         else:
             incompatible = load_local_single_checkpoint(model, quantized_checkpoint_path)
         if incompatible.get("unexpected_keys"):
             raise RuntimeError(
                 "Unexpected keys in denoiser checkpoint: " + ", ".join(sorted(incompatible["unexpected_keys"]))
             )
-        if not cpu_residency:
+        if not offloading:
             _materialize_meta_tensors(model)
 
     # ---- Quantise on the fly if no pre‑quantised file was found ----
@@ -288,7 +287,7 @@ def _load_flux2_denoiser(
 
     # ---- Finalise dtype ----
     if quant_method is None:
-        if cpu_residency:
+        if offloading:
             _cast_float_tensors_except_quantized_linear(model, torch.float16)
         else:
             model = model.to(dtype=torch.float16)

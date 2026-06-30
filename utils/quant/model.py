@@ -32,6 +32,8 @@ def _build_quantized_or_fp16_tensors(
     if target_method is not None:
         if target_method == "fp32":
             return {name: tensor.to(dtype=torch.float32)}
+        if target_method == "fp16":
+            return {name: tensor.to(dtype=torch.float16)}
 
         metadata_base_name = name.removesuffix(".weight")
         sub_scales_name = f"{metadata_base_name}.sub_scales"

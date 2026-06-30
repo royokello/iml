@@ -166,9 +166,6 @@ def quantize_to_symmetric(
             "Symmetric quantization expects a 2D linear weight tensor "
             f"with shape (out_features, in_features), got {tuple(tensor.shape)}."
         )
-    if not torch.cuda.is_available():
-        raise RuntimeError("Symmetric quantization requires CUDA to process weight chunks.")
-
     row_size = int(tensor.shape[1])
     match mode:
         case "high":

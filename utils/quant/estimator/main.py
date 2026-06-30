@@ -9,6 +9,8 @@ from flux2.denoiser.targets import (
     _build_flux2_denoiser_target_tensors as _build_flux2_denoiser_targets,
 )
 from flux2.text_encoder.target import _build_target_tensors as _build_flux2_text_encoder_targets
+from ideogram.text_encoder.target import _build_ideogram_text_encoder_targets
+from ideogram.denoiser.targets import _build_ideogram_denoiser_target_tensors
 from gemma4.config import (
     _GEMMA4_QUANT_CONFIGS,
     _HIGH_LINEAR_WEIGHT_SUFFIXES,
@@ -60,6 +62,14 @@ def _build_flux2_denoiser_files(source: Path, version: str) -> list[Path]:
         source / "diffusion_pytorch_model-00001-of-00002.safetensors",
         source / "diffusion_pytorch_model-00002-of-00002.safetensors",
     ]
+
+
+def _build_ideogram_text_encoder_files(source: Path) -> list[Path]:
+    return [source / "model.safetensors"]
+
+
+def _build_ideogram_denoiser_files(source: Path) -> list[Path]:
+    return [source / "diffusion_pytorch_model.safetensors"]
 
 
 def _build_wan22_denoiser_files(source: Path) -> list[Path]:
@@ -161,6 +171,14 @@ def _wan22_denoiser_target_configs() -> dict[str, dict[str, list[str]]]:
     return _mixed_target_configs(_build_wan22_denoiser_mixed_target_tensors)
 
 
+def _ideogram_text_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(_build_ideogram_text_encoder_targets)
+
+
+def _ideogram_denoiser_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(_build_ideogram_denoiser_target_tensors)
+
+
 def _model_specs() -> dict[str, dict[str, object]]:
     flux2_4b_text = {
         "files": lambda source: _build_flux2_text_encoder_files(source, "4b"),
@@ -176,6 +194,14 @@ def _model_specs() -> dict[str, dict[str, object]]:
     }
 
     return {
+        "ideogram_text_encoder": {
+            "files": _build_ideogram_text_encoder_files,
+            "target_configs": _ideogram_text_target_configs,
+        },
+        "ideogram_denoiser": {
+            "files": _build_ideogram_denoiser_files,
+            "target_configs": _ideogram_denoiser_target_configs,
+        },
         "flux2_4b_text_encoder": flux2_4b_text,
         "flux2_9b_text_encoder": flux2_9b_text,
         "flux2_4b_denoiser": {

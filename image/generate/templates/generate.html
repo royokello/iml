@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>IML Generate</title>
+  <link rel="stylesheet" href="/static/styles/generate.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&display=swap" rel="stylesheet" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+
+<body>
+  <div class="app" id="app">
+
+    <!-- Left Pane -->
+    <aside class="pane pane-left">
+      <div class="pane-scroll">
+        <h1 class="logo">IML</h1>
+
+        <section class="section">
+          <h3 class="section-title">Model</h3>
+          <select id="model-select" class="input">
+            <option value="flux-4b">Flux 2 4B</option>
+            <option value="flux-9b">Flux 2 9B</option>
+            <option value="ideogram">Ideogram</option>
+          </select>
+        </section>
+
+        <section class="section" id="variant-section">
+          <h3 class="section-title">Variant</h3>
+          <div class="toggle-row">
+            <button id="variant-distill" class="btn-variant active" data-variant="distill">Distill</button>
+            <button id="variant-base" class="btn-variant" data-variant="base">Base</button>
+          </div>
+        </section>
+
+        <section class="section">
+          <h3 class="section-title">Quantization</h3>
+          <div class="field">
+            <label for="text-quant">Text Encoder</label>
+            <select id="text-quant" class="input"><option value="">Loading...</option></select>
+          </div>
+          <div class="field">
+            <label for="denoiser-quant">Denoiser</label>
+            <select id="denoiser-quant" class="input"><option value="">Loading...</option></select>
+          </div>
+        </section>
+
+        <section class="section">
+          <h3 class="section-title">Image Settings</h3>
+
+          <div class="field">
+            <label for="width">Width</label>
+            <input id="width" type="number" class="input" min="64" max="4096" step="64" value="1024" />
+          </div>
+          <div class="field">
+            <label for="height">Height</label>
+            <input id="height" type="number" class="input" min="64" max="4096" step="64" value="1024" />
+          </div>
+          <div class="field">
+            <label for="ratio">Aspect Ratio</label>
+            <select id="ratio" class="input">
+              <option value="1">1:1</option>
+              <option value="0.75">3:4</option>
+              <option value="1.3333">4:3</option>
+              <option value="0.5625">9:16</option>
+              <option value="1.7778">16:9</option>
+              <option value="2.3333">21:9</option>
+              <option value="">Custom</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="steps">Steps</label>
+            <input id="steps" type="number" class="input" min="1" max="200" value="4" />
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="guidance">Guidance</label>
+              <input id="guidance" type="number" class="input" step="0.1" min="1" max="30" value="1.0" />
+            </div>
+            <div class="field">
+              <label for="seed">Seed</label>
+              <input id="seed" type="number" class="input" value="19930625" />
+            </div>
+          </div>
+        </section>
+
+        <section class="section ref-section" id="ref-section">
+          <h3 class="section-title">Reference Images</h3>
+          <div class="field">
+            <label for="ref-size">Max Size</label>
+            <input id="ref-size" type="number" class="input" min="64" max="2048" value="512" />
+          </div>
+          <button id="add-ref" class="btn btn-secondary">+ Add Reference Image</button>
+          <div id="ref-list" class="ref-list"></div>
+          <input id="ref-picker" type="file" accept="image/*" multiple style="display:none" />
+        </section>
+
+        <section class="section">
+          <h3 class="section-title">Memory</h3>
+          <div class="field">
+            <label>Offloading</label>
+            <div class="radio-group">
+              <label class="radio-label">
+                <input type="radio" name="offloading" id="off-on" value="on" />
+                On (swap blocks, pin memory)
+              </label>
+              <label class="radio-label">
+                <input type="radio" name="offloading" id="off-off" value="off" checked />
+                Off (full GPU)
+              </label>
+            </div>
+          </div>
+        </section>
+      </div>
+    </aside>
+
+    <!-- Center Pane -->
+    <section class="pane pane-center">
+      <div class="pane-scroll">
+        <h2 class="pane-title pane-title-main">generate</h2>
+
+        <div class="mode-toggle">
+          <button id="mode-text" class="btn-mode active" data-mode="text">Text</button>
+          <button id="mode-json" class="btn-mode" data-mode="json">JSON</button>
+        </div>
+
+        <!-- Text mode -->
+        <div id="form-text" class="form-mode">
+          <div class="field">
+            <textarea id="text-prompt" class="input textarea-lg" placeholder="Describe the image you want to generate..."></textarea>
+          </div>
+        </div>
+
+        <!-- JSON mode -->
+        <div id="form-json" class="form-mode" style="display:none">
+          <div id="json-fields"></div>
+        </div>
+
+        <div class="field">
+          <label for="prompt-mode-prompt">Current Prompt</label>
+          <textarea id="prompt-display" class="input" rows="2" readonly placeholder="Prompt will appear here..."></textarea>
+        </div>
+
+        <div class="progress-area" id="progress-area" style="display:none">
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="progress-fill"></div>
+          </div>
+          <p class="progress-text" id="progress-text">Queued...</p>
+        </div>
+
+        <button id="run-btn" class="btn btn-primary btn-run">Run</button>
+
+        <div id="result-area" class="result-area" style="display:none">
+          <h3 class="section-title">Result</h3>
+          <div id="result-gallery" class="result-gallery"></div>
+        </div>
+
+        <div id="error-area" class="error-area" style="display:none"></div>
+      </div>
+    </section>
+
+    <!-- Right Pane -->
+    <aside class="pane pane-right">
+      <div class="pane-scroll">
+        <h2 class="pane-title">History</h2>
+        <div id="history-list" class="history-list">
+          <p class="muted">No history yet.</p>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+
+
+  <script src="/static/scripts/generate.js"></script>
+</body>
+
+</html>

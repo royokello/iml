@@ -240,15 +240,12 @@ class Flux2Transformer2DModel(
 
         self.gradient_checkpointing = False
         self._offload_device: torch.device | None = None
-        self._offload_non_blocking: bool = True
 
     _skip_keys = ["kv_cache"]
 
     def enable_block_offload(
         self,
         device: torch.device,
-        *,
-        non_blocking: bool = True,
     ) -> None:
         """Stream transformer blocks to `device` one at a time during forward.
 
@@ -259,7 +256,6 @@ class Flux2Transformer2DModel(
         from the loader before enabling.
         """
         self._offload_device = device
-        self._offload_non_blocking = bool(non_blocking)
 
     @apply_lora_scale("joint_attention_kwargs")
     def forward(
@@ -388,7 +384,7 @@ class Flux2Transformer2DModel(
                 kv_attn_kwargs["kv_cache"] = kv_cache.get_double(index_block)
 
             if self._offload_device is not None:
-                block.to(self._offload_device, non_blocking=self._offload_non_blocking)
+                block.to(self._offload_device, non_blocking=True)
 
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(
@@ -411,7 +407,7 @@ class Flux2Transformer2DModel(
                 )
 
             if self._offload_device is not None:
-                block.to("cpu", non_blocking=self._offload_non_blocking)
+                block.to("cpu", non_blocking=True)
 
         # Concatenate text and image streams for single-block inference
         hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
@@ -435,7 +431,7 @@ class Flux2Transformer2DModel(
                 kv_attn_kwargs_single["kv_cache"] = kv_cache.get_single(index_block)
 
             if self._offload_device is not None:
-                block.to(self._offload_device, non_blocking=self._offload_non_blocking)
+                block.to(self._offload_device, non_blocking=True)
 
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 hidden_states = self._gradient_checkpointing_func(
@@ -456,7 +452,7 @@ class Flux2Transformer2DModel(
                 )
 
             if self._offload_device is not None:
-                block.to("cpu", non_blocking=self._offload_non_blocking)
+                block.to("cpu", non_blocking=True)
 
         # Remove text tokens (and ref tokens in extract mode) from concatenated stream
         if kv_cache_mode == "extract" and num_ref_tokens > 0:

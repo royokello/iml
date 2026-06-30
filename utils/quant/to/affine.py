@@ -156,9 +156,6 @@ def quantize_to_affine(
             "Affine quantization expects a 2D linear weight tensor "
             f"with shape (out_features, in_features), got {tuple(tensor.shape)}."
         )
-    if not torch.cuda.is_available():
-        raise RuntimeError("Affine quantization requires CUDA to process weight chunks.")
-
     work_device = torch.device("cuda")
 
     config = AFFINE_MODES[mode]

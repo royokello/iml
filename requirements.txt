@@ -5,9 +5,10 @@ pillow
 transformers
 scikit-learn
 ultralytics
-diffusers
+diffusers==0.38.0
 matplotlib
-huggingface_hub
+huggingface_hub==1.21.0
 tensorflow
 numpy
 scikit-image
+einops==0.8.2

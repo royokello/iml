@@ -1,0 +1,12 @@
+{
+  "model": "ideogram",
+  "fields": [
+    { "key": "high_level_description", "label": "High Level Description", "type": "textarea", "suggestions": [] },
+    { "key": "style_description.aesthetics", "label": "Aesthetics", "type": "text", "suggestions": ["moody", "cinematic", "desaturated", "vibrant", "retro", "minimalist", "surreal", "ethereal", "grunge", "pastel"] },
+    { "key": "style_description.lighting", "label": "Lighting", "type": "text", "suggestions": ["dramatic", "soft", "neon", "golden hour", "studio", "backlit", "rim", "ambient", "hard", "natural"] },
+    { "key": "style_description.medium", "label": "Medium", "type": "text", "suggestions": ["photograph", "illustration", "3d_render", "painting", "graphic_design", "sketch", "digital_art"] },
+    { "key": "style_description.art_style", "label": "Art Style", "type": "text", "suggestions": ["Watercolor", "Pop Art", "Oil Painting", "Graffiti", "Line Art", "Retro", "Fantasy", "Neon", "Sketch", "Impressionist", "Ukiyo-e", "Baroque"] },
+    { "key": "style_description.color_palette", "label": "Color Palette", "type": "text", "suggestions": ["warm tones", "cool tones", "monochrome", "pastel", "neon", "earth tones", "high contrast", "muted"] },
+    { "key": "compositional_deconstruction.background", "label": "Background", "type": "text", "suggestions": [] }
+  ]
+}

@@ -13,6 +13,7 @@ def build_mixed_target_config(
     high_targets = list(target_tensors.get("high", []))
     low_targets = list(target_tensors.get("low", []))
     fp32_targets = list(target_tensors.get("fp32", []))
+    fp16_targets = list(target_tensors.get("fp16", []))
 
     config: dict[str, list[str]] = {}
     if high_method == low_method:
@@ -22,6 +23,8 @@ def build_mixed_target_config(
         config[low_method] = low_targets
     if fp32_targets:
         config["fp32"] = fp32_targets
+    if fp16_targets:
+        config["fp16"] = fp16_targets
     return config
 
 

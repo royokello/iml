@@ -10,6 +10,7 @@ _SAFETENSORS_HEADER_LEN_BYTES = 8
 
 _DTYPE_BITS = {
     "I8": 8,
+    "F8_E4M3": 8,
     "F16": 16,
     "BF16": 16,
     "I32": 32,
@@ -188,9 +189,11 @@ def _estimate_output_tensors(
     shape: tuple[int, ...],
     method: str | None,
 ) -> list[tuple[str, str, tuple[int, ...]]]:
-    if method is None:
-        output_dtype = "F16" if dtype in _FP16_CAST_DTYPES else dtype
-        return [(name, output_dtype, shape)]
+    if method == "fp16":
+        return [(name, "F16", shape)]
+
+    if method == "fp32":
+        return [(name, "F32", shape)]
 
     family = quant_method_family(method)
     mode = quant_method_mode(method)
@@ -232,10 +235,19 @@ def estimate_quantized_safetensors_size(
             continue
         if exclusion_prefix is not None and name.startswith(exclusion_prefix):
             continue
+
+        # weight_scale tensors from pre-quantized (F8_E4M3) checkpoints
+        # are consumed during dequantization, not present in output.
+        if name.endswith(".weight_scale"):
+            continue
+
+        # F8_E4M3 weights are dequantized to fp32 before re-quantization.
+        source_dtype = "F32" if dtype == "F8_E4M3" else dtype
+
         output_tensors.extend(
             _estimate_output_tensors(
                 name,
-                dtype,
+                source_dtype,
                 shape,
                 methods_by_name.get(name),
             )

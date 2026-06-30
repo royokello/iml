@@ -366,9 +366,8 @@ def generate_image(
     loras: dict[str, float] | None = None,
     negative_prompt: str | None = None,
     max_length: int = 512,
-    block_offload: bool = False,
-    pin_memory: bool = False,
-) -> None:
+    offloading: bool = False,
+) -> list[Image.Image]:
     from flux2.denoiser.loader import (
         _load_flux2_denoiser as load_flux2_denoiser,
         move_resident_layers_to,
@@ -400,10 +399,12 @@ def generate_image(
         guidance_scale=guidance_scale,
     )
     transformer_variant = _resolve_transformer_variant(base=is_base)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if seed is not None:
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
     latent_generator = torch.Generator(device=device)
-    latent_generator.manual_seed(seed)
+    if seed is not None:
+        latent_generator.manual_seed(seed)
 
     print("  * loading tokenizer ...")
     tokenizer = Qwen2TokenizerFast.from_pretrained(str(tokenizer_path))
@@ -562,24 +563,21 @@ def generate_image(
     print("  * loading transformer ...")
     print(f"    variant: {transformer_variant}")
     print(f"    quantization: {denoiser_quant_method or 'none'}")
-    print(f"    block offload: {block_offload}")
-    print(f"    pin memory: {pin_memory}")
+    print(f"    offloading: {offloading}")
     torch.cuda.empty_cache()
     transformer = load_flux2_denoiser(
         str(transformer_path),
         quant_method=denoiser_quant_method,
         variant=transformer_variant,
         version=resolved_version,
-        cpu_residency=block_offload,
-        pin_memory=pin_memory,
+        offloading=offloading,
     )
     if loras:
         print("  * applying loras ...")
         apply_lora(transformer, loras)
-    if block_offload:
-        if pin_memory:
-            pinned = pin_module_parameters(transformer)
-            print(f"    pinned {pinned} cpu tensors for faster block swaps")
+    if offloading:
+        pinned = pin_module_parameters(transformer)
+        print(f"    pinned {pinned} cpu tensors for faster block swaps")
         move_resident_layers_to(transformer, device)
         transformer.enable_block_offload(device)
     else:
@@ -675,33 +673,7 @@ def generate_image(
     vae_seconds = time.perf_counter() - vae_start
     print(f"  * done in {vae_seconds:.3f}s")
 
-    print("7. Saving")
-    saving_start = time.perf_counter()
-    output_dir = Path(root) / _resolve_version_dir(version) / "outputs"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / f"{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}.png"
-
-    from PIL.PngImagePlugin import PngInfo
-
-    gen_metadata = {
-        "seed": seed,
-        "steps": num_inference_steps,
-        "model_version": version,
-        "variant": "distill" if not base else "base",
-        "scheduler": "FlowMatchEulerDiscreteScheduler",
-        "text_encoder_quant": text_quant_method or "half_precision",
-        "denoiser_quant": denoiser_quant_method or "half_precision",
-        "prompt": prompt,
-        "negative": negative_prompt,
-        "cfg": guidance_scale,
-        "loras": {Path(k).name: v for k, v in loras.items()} if loras else None,
-    }
-    pnginfo = PngInfo()
-    pnginfo.add_text("flux2", json.dumps(gen_metadata))
-    image.save(output_path, pnginfo=pnginfo)
-    saving_seconds = time.perf_counter() - saving_start
-    print(f"  * saved to {output_path}")
-    print(f"  * done in {saving_seconds:.3f}s")
+    return [image]
 
 
 def parse_args() -> argparse.Namespace:
@@ -786,43 +758,22 @@ def parse_args() -> argparse.Namespace:
         help="Maximum tokenizer sequence length.",
     )
     parser.add_argument(
-        "--block-offload",
-        dest="block_offload",
+        "--offload",
         action="store_true",
         help=(
-            "Keep denoiser weights on CPU and stream transformer blocks to GPU one at a time. "
+            "Enable block offloading with pinned host memory. Keeps denoiser weights on CPU and "
+            "streams transformer blocks to GPU one at a time. Reserves ~model-size pinned RAM. "
             "Use this to run large models (e.g. 9B) on small VRAM. Off by default."
         ),
     )
-    parser.add_argument(
-        "--no-block-offload",
-        dest="block_offload",
-        action="store_false",
-        help="Disable sequential block offload (default behaviour: load the full denoiser to GPU).",
-    )
-    parser.set_defaults(block_offload=False)
-    parser.add_argument(
-        "--pin-memory",
-        dest="pin_memory",
-        action="store_true",
-        help=(
-            "Pin the CPU-side denoiser weights to host-pinned memory for faster block swaps. "
-            "Requires --block-offload. Reserves ~model-size pinned RAM."
-        ),
-    )
-    parser.add_argument(
-        "--no-pin-memory",
-        dest="pin_memory",
-        action="store_false",
-        help="Disable pinned host memory for denoiser weights (default).",
-    )
-    parser.set_defaults(pin_memory=False)
     return parser.parse_args()
 
 
 def main() -> None:
+    from PIL.PngImagePlugin import PngInfo
+
     args = parse_args()
-    generate_image(
+    images = generate_image(
         args.root,
         version=args.version,
         image=args.images,
@@ -838,9 +789,27 @@ def main() -> None:
         denoiser_quant_method=None if args.denoiser_quant_method == "none" else args.denoiser_quant_method,
         loras=_parse_loras_arg(args.loras),
         max_length=args.max_length,
-        block_offload=args.block_offload,
-        pin_memory=args.pin_memory,
+        offloading=args.offload,
     )
+    output_dir = Path(args.root) / _resolve_version_dir(args.version) / "outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}.png"
+    gen_metadata = {
+        "seed": args.seed,
+        "steps": args.steps,
+        "model_version": args.version,
+        "variant": "distill" if not args.base else "base",
+        "scheduler": "FlowMatchEulerDiscreteScheduler",
+        "text_encoder_quant": args.text_quant_method or "half_precision",
+        "denoiser_quant": args.denoiser_quant_method or "half_precision",
+        "prompt": args.prompt,
+        "negative": "",
+        "cfg": args.guidance_scale,
+    }
+    pnginfo = PngInfo()
+    pnginfo.add_text("flux2", json.dumps(gen_metadata))
+    images[0].save(output_path, pnginfo=pnginfo)
+    print(f"Saved {output_path}")
 
 
 if __name__ == "__main__":

@@ -7,6 +7,51 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
 - Video frame extraction, grouping, loop detection, and quality analysis
 - Flux 2
 
+## Contents
+
+- [Installation](#installation)
+- [Usage](#usage)
+  - [Image](#image)
+    - [`image.group`](#imagegroup)
+    - [`image.collect`](#imagecollect)
+    - [`image.dataset`](#imagedataset)
+    - [`image.shape`](#imageshape)
+    - [`image.tag.main`](#imagetagmain)
+    - [`image.caption`](#imagecaption)
+    - [`image.tag.extract`](#imagetagextract)
+    - [`image.tag.add`](#imagetagadd)
+    - [`image.tag.replace`](#imagetagreplace)
+    - [`image.tag.group`](#imagetaggroup)
+    - [`image.dedup`](#imagededup)
+    - [`image.generate` — Web GUI](#imagegenerate--web-gui)
+    - [`image.similar` — Web GUI](#imagesimilar--web-gui)
+    - [`image.cull`](#imagecull)
+    - [`image.rank`](#imagerank)
+    - [`image.crop`](#imagecrop)
+  - [Video](#video)
+    - [`video.extract`](#videoextract)
+    - [`video.group`](#videogroup)
+    - [`video.loop`](#videoloop)
+    - [`video.grid.generate`](#videogridgenerate)
+    - [`video.grid.animate`](#videogridanimate)
+  - [Flux 2](#flux-2)
+    - [`flux2.gen`](#flux2gen)
+    - [`flux2.train.main`](#flux2trainmain)
+    - [`flux2.sample`](#flux2sample)
+    - [`flux2.text_encoder.quant`](#flux2text_encoderquant)
+    - [`flux2.denoiser.quant`](#flux2denoiserquant)
+    - [Flux 2 Fine-Tuning Guidance](#flux-2-fine-tuning-guidance)
+    - [Flux 2 Dataset](#flux-2-dataset)
+    - [Flux 2 Dataset Guidance](#flux-2-dataset-guidance)
+  - [Ideogram 4](#ideogram-4)
+    - [`ideogram.gen`](#ideogramgen)
+    - [`ideogram.text_encoder.quant`](#ideogramtext_encoderquant)
+    - [`ideogram.denoiser.quant`](#ideogramdenoiserquant)
+  - [Utils](#utils)
+    - [`utils.quant.estimator.main`](#utilsquantestimatormain)
+    - [`utils.quant.eval`](#utilsquanteval)
+- [References](#references)
+
 ## Installation
 
 1. Install Python 3.10+.
@@ -65,60 +110,6 @@ Notes:
 - If you run into PyTorch GPU memory-caching issues on Windows, run `set PYTORCH_NO_CUDA_MEMORY_CACHING=1`.
 
 ## Usage
-
-### Video
-
-#### `video.extract`
-- Features
-  - Evenly-spaced frames per time unit, random sampling, or full extraction with `--all`
-  - `--all` overrides `--frames`, `--time`, and `--random`
-  - Optional `--buffer` compares the marked frame with nearby frames and saves the best-scoring result
-  - `--buffer 0` saves the exact marked frame; `--all` ignores `--buffer`
-  - Zero-padded output names via `--filename-width` (default `000001.png` style)
-  - Optional short-side resize while preserving aspect ratio (omit `--resolution` to keep original frame size)
-  - Collated output or per-video subfolders
-  - Standalone selector app via `python -m video.extract.select --root "/tools"` for previewing interval marks, optionally limiting work to time spans like `1:00 - 1:10`, `32:40 - 40:00`, or `00:15:30 - 00:18:00`, and saving best nearby native-res frames
-  - The selector resolves FFmpeg from `<root>/ffmpeg/bin/ffmpeg.exe`
-  - Preview images are generated efficiently with FFmpeg into `<output>/preview`, and that folder is cleared before each new preview build
-- Examples
-  - `python -m video.extract --input "videos" --output "frames" --frames 2 --time second --resolution 768`
-  - `python -m video.extract --input "videos" --output "frames_best" --frames 2 --time second --buffer 3 --resolution 768`
-  - `python -m video.extract --input "videos" --output "frames_all" --frames 50 --random --collate --resolution 512`
-  - `python -m video.extract --input "videos" --output "frames_native" --frames 2 --time second`
-  - `python -m video.extract --input "videos" --output "all_frames" --all --collate`
-  - `python -m video.extract.select --root "/tools" --port 5052`
-
-#### `video.group`
-- Features
-  - Uses `ffprobe` to read width/height
-  - Moves files into `_<orientation>/_<short-side>` buckets and prefixes non-group path to filename
-  - Dry-run support
-- Example
-  - `python -m video.group --root "videos" --ffprobe "/tools/ffprobe" --sizes 256 384 512 768 1024 --dry-run`
-
-#### `video.loop`
-- Features
-  - GPU-decoded thumbnails via FFmpeg (`scale_cuda`), SSIM-based loop detection, batched exports
-  - Exports lossless H.264 `.mkv` loops at target `--fps` and `--out-res`
-- Example
-  - `python -m video.loop --input "videos" --output "loops" --lengths 33 49 --fps 30 --in-res 64 --out-res 768 --ffmpeg "/tools/ffmpeg"`
-
-#### `video.grid.generate`
-- Features
-  - CLI tool to build image grids from a source video
-  - `interval` mode samples frames at a fixed seconds interval and emits as many full grids as possible
-  - `segment_midpoints` mode divides the full video into exactly `rows * cols` segments and picks the middle frame from each segment to build one grid
-  - Center-crops each frame to the requested cell ratio before resizing into the grid
-  - Output: `<dir>/000001.png ...` + `config.json`
-- Example
-  - `python -m video.grid.generate -i "video.mp4" -o "grids" --ffmpeg "/tools/ffmpeg" --rows 3 --cols 3 --selection-mode interval --frame-interval 30`
-
-#### `video.grid.animate`
-- Features
-  - Splits a grid image into cells and creates a cell-by-cell animation
-  - Supports GIF and MP4 output
-- Example
-  - `python -m video.grid.animate -i "grids/000001.png" -o "animation.gif" --ffmpeg "/tools/ffmpeg" --length 5 --fps 12 --format gif`
 
 ### Image
 
@@ -258,6 +249,19 @@ Notes:
   - `--noise-weight` (default `0.3`)
   - `--artifact-weight` (default `0.55`)
 
+#### `image.generate` — Web GUI
+
+A Flask-based web interface for generating images, supporting Flux 2 (4b/9b, distilled/base) and Ideogram models.
+
+- **Features**
+  - Prompt-based generation with configurable width, height, steps, guidance scale, and seed
+  - Image-conditioned generation via reference image upload
+  - Quantization method selection for text encoder and denoiser
+  - Async job queue with live status tracking
+  - Job history panel showing past generations with embedded metadata in PNG outputs
+  - Model config schemas loaded dynamically from `static/config/`
+- **Access:** `python -m image.generate --root /path/to/data` then open `http://localhost:5053`
+
 #### `image.similar` — Web GUI
 
 A Flask-based web interface for finding and exporting near-duplicate images using dHash and Union-Find clustering.
@@ -322,54 +326,60 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
      - Native crop size (no resize): `python -m image.crop.main --project "/proj" --stage 1 --classes 0 1 2 3 4`
      - Resize long side: `python -m image.crop.main --project "/proj" --stage 1 --resolution 768 --classes 0 1 2 3 4`
 
+### Video
 
-### Gemma 4
-
-#### `gemma4.quant`
+#### `video.extract`
 - Features
-  - Quantizes the Gemma 4 language component by default
-  - Loads `<root>/gemma4_2b/model.safetensors` by default
-  - `--input` can point directly at a source `model.safetensors` file and bypass the default input path
-  - Applies a hardcoded mixed quantization preset to the language component
-  - Writes `<root>/gemma4_2b/language_<method>_quant.safetensors`, creating the output directory if needed
-  - Add `--media` to also extract media tensors:
-    - Saves audio tensors as fp16 to `<root>/gemma4_2b/audio.safetensors`
-    - Saves vision tensors as fp16 to `<root>/gemma4_2b/vision.safetensors`
-  - Uses `sym-high` quantization for:
-    - `model.language_model.embed_tokens_per_layer.weight`
-  - Uses `sym-med` quantization for:
-    - `model.language_model.embed_tokens.weight`
-    - `self_attn.q_proj.weight`, `self_attn.k_proj.weight`, `self_attn.v_proj.weight`, `self_attn.o_proj.weight`
-    - `mlp.gate_proj.weight`, `mlp.up_proj.weight`, `mlp.down_proj.weight`
-  - The `aff-med-mini` method uses `aff-med` quantization for:
-    - `model.language_model.embed_tokens_per_layer.weight`
-    - `self_attn.o_proj.weight`, `self_attn.v_proj.weight`
-    - `mlp.down_proj.weight`
-  - The `aff-med-mini` method uses `sym-low` quantization for:
-    - `model.language_model.embed_tokens.weight`
-    - `self_attn.k_proj.weight`, `self_attn.q_proj.weight`
-    - `mlp.gate_proj.weight`, `mlp.up_proj.weight`
-  - The `aff-high-mini` method uses `aff-high` quantization for:
-    - `model.language_model.embed_tokens_per_layer.weight`
-    - `self_attn.o_proj.weight`, `self_attn.v_proj.weight`
-    - `mlp.down_proj.weight`
-  - The `aff-high-mini` method uses `aff-med` quantization for:
-    - `model.language_model.embed_tokens.weight`
-    - `self_attn.k_proj.weight`, `self_attn.q_proj.weight`
-    - `mlp.gate_proj.weight`, `mlp.up_proj.weight`
-  - Keeps non-target language tensors in the language output, converting `float32` and `bfloat16` tensors to `float16`
-  - Drops audio and vision tensors before processing the shared model quantization result for the language output
+  - Evenly-spaced frames per time unit, random sampling, or full extraction with `--all`
+  - `--all` overrides `--frames`, `--time`, and `--random`
+  - Optional `--buffer` compares the marked frame with nearby frames and saves the best-scoring result
+  - `--buffer 0` saves the exact marked frame; `--all` ignores `--buffer`
+  - Zero-padded output names via `--filename-width` (default `000001.png` style)
+  - Optional short-side resize while preserving aspect ratio (omit `--resolution` to keep original frame size)
+  - Collated output or per-video subfolders
+  - Standalone selector app via `python -m video.extract.select --root "/tools"` for previewing interval marks, optionally limiting work to time spans like `1:00 - 1:10`, `32:40 - 40:00`, or `00:15:30 - 00:18:00`, and saving best nearby native-res frames
+  - The selector resolves FFmpeg from `<root>/ffmpeg/bin/ffmpeg.exe`
+  - Preview images are generated efficiently with FFmpeg into `<output>/preview`, and that folder is cleared before each new preview build
 - Examples
-  - `python -m gemma4.quant --root "/models"`
-  - `python -m gemma4.quant --root "/models" --method aff-med-mini`
-  - `python -m gemma4.quant --root "/models" --method aff-high-mini`
-  - `python -m gemma4.quant --root "/models" --input "/models/custom/gemma4_2b/model.safetensors"`
-  - `python -m gemma4.quant --root "/models" --media`
-- Useful args
-  - `--root`
-  - `--input`
-  - `--method`
-  - `--media`
+  - `python -m video.extract --input "videos" --output "frames" --frames 2 --time second --resolution 768`
+  - `python -m video.extract --input "videos" --output "frames_best" --frames 2 --time second --buffer 3 --resolution 768`
+  - `python -m video.extract --input "videos" --output "frames_all" --frames 50 --random --collate --resolution 512`
+  - `python -m video.extract --input "videos" --output "frames_native" --frames 2 --time second`
+  - `python -m video.extract --input "videos" --output "all_frames" --all --collate`
+  - `python -m video.extract.select --root "/tools" --port 5052`
+
+#### `video.group`
+- Features
+  - Uses `ffprobe` to read width/height
+  - Moves files into `_<orientation>/_<short-side>` buckets and prefixes non-group path to filename
+  - Dry-run support
+- Example
+  - `python -m video.group --root "videos" --ffprobe "/tools/ffprobe" --sizes 256 384 512 768 1024 --dry-run`
+
+#### `video.loop`
+- Features
+  - GPU-decoded thumbnails via FFmpeg (`scale_cuda`), SSIM-based loop detection, batched exports
+  - Exports lossless H.264 `.mkv` loops at target `--fps` and `--out-res`
+- Example
+  - `python -m video.loop --input "videos" --output "loops" --lengths 33 49 --fps 30 --in-res 64 --out-res 768 --ffmpeg "/tools/ffmpeg"`
+
+#### `video.grid.generate`
+- Features
+  - CLI tool to build image grids from a source video
+  - `interval` mode samples frames at a fixed seconds interval and emits as many full grids as possible
+  - `segment_midpoints` mode divides the full video into exactly `rows * cols` segments and picks the middle frame from each segment to build one grid
+  - Center-crops each frame to the requested cell ratio before resizing into the grid
+  - Output: `<dir>/000001.png ...` + `config.json`
+- Example
+  - `python -m video.grid.generate -i "video.mp4" -o "grids" --ffmpeg "/tools/ffmpeg" --rows 3 --cols 3 --selection-mode interval --frame-interval 30`
+
+#### `video.grid.animate`
+- Features
+  - Splits a grid image into cells and creates a cell-by-cell animation
+  - Supports GIF and MP4 output
+- Example
+  - `python -m video.grid.animate -i "grids/000001.png" -o "animation.gif" --ffmpeg "/tools/ffmpeg" --length 5 --fps 12 --format gif`
+
 
 ### Flux 2
 
@@ -598,53 +608,50 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Vary pose, camera angle, framing, background, and lighting across the dataset
   - Keep the identity consistent across images so the captions map to one character rather than a mixed concept
 
-### Wan 2.2 TI2V 5b
+### Ideogram 4
 
-#### `wan22.quant.text_encoder`
+#### `ideogram.gen`
 - Features
-  - Quantizes the Wan 2.2 TI2V 5B T5 text encoder linear weights with one of the shared quantization methods: `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
-  - Loads the base checkpoint from `<root>/wan22/model/text_encoder/t5_umt5-xxl-enc-bf16.pth` by default
-  - `--input` can point directly at a source `text_encoder` model directory and bypass the `<root>/wan22/model/text_encoder` input default
-  - Targets all `24` T5 blocks for attention and feed-forward linear weights:
-    - `attn.q.weight`, `attn.k.weight`, `attn.v.weight`, `attn.o.weight`
-    - `ffn.gate.0.weight`, `ffn.fc1.weight`, `ffn.fc2.weight`
-  - Writes `<root>/wan22/model/text_encoder/<method>_quant.safetensors`, creating that output directory if needed
-  - Stores safetensors metadata with `component=text_encoder` and `method=<method>`
-  - Keeps non-target tensors in the output checkpoint, converting `float32` and `bfloat16` tensors to `float16`
+  - CLI text-to-image generation using local Ideogram 4 weights (F8 checkpoint + custom quantization)
+  - Qwen3-VL text encoder captures hidden states from specific activation layers and stacks them into text features
+  - Asymmetric CFG with conditional/unconditional transformer pair
+  - Configurable width, height, steps, guidance scale, and seed
+  - Quantization method selection for text encoder and denoiser
+  - Block offloading support to reduce peak GPU memory
+  - Dimensions must be divisible by `patch_size * ae_scale_factor` (default 16)
 - Examples
-  - `python -m wan22.quant.text_encoder --root "/models/wan" --method sym-high`
-  - `python -m wan22.quant.text_encoder --root "/models/wan" --method aff-low`
-  - `python -m wan22.quant.text_encoder --root "/models/wan" --method aff-med`
-  - `python -m wan22.quant.text_encoder --root "/models/wan" --input "/models/custom/text_encoder" --method aff-high`
+  - `python -m ideogram.gen --root "/models" --prompt "A cat holding a sign" --output "cat.png"`
+  - `python -m ideogram.gen --root "/models" --prompt "cinematic portrait" --width 768 --height 768 --steps 64 --guidance-scale 5.0`
+  - `python -m ideogram.gen --root "/models" --prompt "futuristic city" --text-quant-method sym-high --denoiser-quant-method sym-med`
 - Useful args
-  - `--root`
-  - `--input`
-  - `--method`
+  - `--root`, `--prompt`, `--output`
+  - `--width`, `--height`, `--steps`, `--guidance-scale`, `--seed`
+  - `--text-quant-method`, `--denoiser-quant-method`
+  - `--offload`
 
-#### `wan22.quant.denoiser`
+#### `ideogram.text_encoder.quant`
 - Features
-  - Quantizes the Wan 2.2 TI2V 5B denoiser linear weights with one of the shared quantization methods: `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
-  - Loads the base sharded denoiser checkpoint from `<root>/wan22/model/denoiser` by default:
-    - `diffusion_pytorch_model-00001-of-00003.safetensors`
-    - `diffusion_pytorch_model-00002-of-00003.safetensors`
-    - `diffusion_pytorch_model-00003-of-00003.safetensors`
-  - `--input` can point directly at a source `denoiser` model directory and bypass the `<root>/wan22/model/denoiser` input default
-  - Targets all `30` denoiser blocks for self-attention, cross-attention, and feed-forward linear weights:
-    - `self_attn.q.weight`, `self_attn.k.weight`, `self_attn.v.weight`, `self_attn.o.weight`
-    - `cross_attn.q.weight`, `cross_attn.k.weight`, `cross_attn.v.weight`, `cross_attn.o.weight`
-    - `ffn.0.weight`, `ffn.2.weight`
-  - Writes `<root>/wan22/model/denoiser/<method>_quant.safetensors`, creating that output directory if needed
-  - Stores safetensors metadata with `component=denoiser` and `method=<method>`
-  - Keeps non-target tensors in the output checkpoint, converting `float32` and `bfloat16` tensors to `float16`
+  - Quantizes the Ideogram 4 text encoder (Qwen3-VL) from its native F8 checkpoint
+  - Loads `<input>/model.safetensors`
+  - Dequantizes F8 scales back to fp32, then re-quantizes target tensors with the chosen method
+  - Strips the `language_model.` prefix in the saved output
+  - Saves `<root>/ideogram/text_encoder/<method>_quant.safetensors`
 - Examples
-  - `python -m wan22.quant.denoiser --root "/models/wan" --method sym-high`
-  - `python -m wan22.quant.denoiser --root "/models/wan" --method aff-low`
-  - `python -m wan22.quant.denoiser --root "/models/wan" --method aff-med`
-  - `python -m wan22.quant.denoiser --root "/models/wan" --input "/models/custom/denoiser" --method sym-med`
+  - `python -m ideogram.text_encoder.quant --root "/models" --input "/path/to/f8/text_encoder" --method sym-high-nano`
 - Useful args
-  - `--root`
-  - `--input`
-  - `--method`
+  - `--root`, `--input`, `--method`
+
+#### `ideogram.denoiser.quant`
+- Features
+  - Quantizes the Ideogram 4 denoiser (conditional or unconditional transformer) from its native F8 checkpoint
+  - Cond input: `<input>/transformer/diffusion_pytorch_model.safetensors`
+  - Uncond input: `<input>/unconditional_transformer/diffusion_pytorch_model.safetensors`
+  - Dequantizes F8 scales back to fp32, then re-quantizes target tensors with the chosen method
+  - Saves `<root>/ideogram/transformer/<variant>/<method>_quant.safetensors`
+- Examples
+  - `python -m ideogram.denoiser.quant --root "/models" --input "/path/to/f8/root" --variant cond --method sym-med-mini`
+- Useful args
+  - `--root`, `--input`, `--method`, `--variant` (`cond` or `uncond`)
 
 
 ### Utils

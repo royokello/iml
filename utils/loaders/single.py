@@ -66,6 +66,12 @@ def _apply_to_parameter(
         tensor = tensor.pin_memory()
     if target_device is not None:
         tensor = tensor.to(target_device, non_blocking=True)
+    if tensor.dtype != parameter.dtype:
+        print(f"    _apply_to_parameter pre-cast: param.dtype={parameter.dtype} tensor.dtype={tensor.dtype} shape={tensor.shape}")
+        tensor = tensor.to(dtype=parameter.dtype)
+        print(f"    _apply_to_parameter post-cast: tensor.dtype={tensor.dtype}")
+    if tensor.dtype != parameter.dtype:
+        print(f"    _apply_to_parameter STILL MISMATCH: param.dtype={parameter.dtype} tensor.dtype={tensor.dtype}")
     parameter.data = tensor
 
 
@@ -91,7 +97,7 @@ def stream_local_single_checkpoint(
     *,
     key_transform: Callable[[str], str] | None = None,
     target_device: torch.device | str | None = None,
-    pin_memory: bool = False,
+    offloading: bool = False,
 ) -> dict[str, list[str]]:
     """Stream tensors from a safetensors file directly into the model.
 
@@ -127,7 +133,7 @@ def stream_local_single_checkpoint(
                     named_parameters[mapped_key],
                     tensor,
                     target_device=target_device,
-                    pin_memory=pin_memory,
+                    pin_memory=offloading,
                 )
             elif mapped_key in named_buffers:
                 owner = _resolve_owner(model, mapped_key)
@@ -139,7 +145,7 @@ def stream_local_single_checkpoint(
                         named_buffers[mapped_key],
                         tensor,
                         target_device=target_device,
-                        pin_memory=pin_memory,
+                        pin_memory=offloading,
                     )
                     parent_module._buffers[local_name] = new_buffer
             else:

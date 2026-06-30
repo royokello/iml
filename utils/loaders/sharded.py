@@ -91,6 +91,7 @@ def _apply_to_parameter(
         tensor = tensor.pin_memory()
     if target_device is not None:
         tensor = tensor.to(target_device, non_blocking=True)
+    tensor = tensor.to(dtype=parameter.dtype)
     parameter.data = tensor
 
 
@@ -118,7 +119,7 @@ def stream_local_sharded_checkpoint(
     shard_pattern: str | None = None,
     key_transform: Callable[[str], str] | None = None,
     target_device: torch.device | str | None = None,
-    pin_memory: bool = False,
+    offloading: bool = False,
 ) -> dict[str, list[str]]:
     """Stream tensors from a sharded safetensors checkpoint into the model.
 
@@ -159,7 +160,7 @@ def stream_local_sharded_checkpoint(
                         named_parameters[mapped_key],
                         tensor,
                         target_device=target_device,
-                        pin_memory=pin_memory,
+                        pin_memory=offloading,
                     )
                 elif mapped_key in named_buffers:
                     owner = _resolve_owner(model, mapped_key)
@@ -171,7 +172,7 @@ def stream_local_sharded_checkpoint(
                             named_buffers[mapped_key],
                             tensor,
                             target_device=target_device,
-                            pin_memory=pin_memory,
+                            pin_memory=offloading,
                         )
                         parent_module._buffers[local_name] = new_buffer
                 else:

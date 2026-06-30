@@ -53,6 +53,8 @@ class QuantizedLinear(nn.Module):
         else:
             self.register_buffer("bias", linear.bias.detach().clone())
 
+        self.compute_dtype = torch.float16
+
     @classmethod
     def from_prequantized(
         cls,
@@ -153,6 +155,7 @@ class QuantizedLinear(nn.Module):
             bias = torch.empty(linear.bias.shape, device=linear.bias.device, dtype=linear.bias.dtype)
             module.register_buffer("bias", bias)
 
+        module.compute_dtype = torch.float16
         return module
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
