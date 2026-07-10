@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from PIL import Image
 from safetensors.torch import load_file
-from transformers import AutoConfig, AutoModel, AutoTokenizer
+from transformers import AutoTokenizer
 from transformers.masking_utils import create_causal_mask
 
 from ideogram.autoencoder import AutoEncoder, AutoEncoderParams, convert_diffusers_state_dict
@@ -101,17 +101,10 @@ def _encode_text(language_model, token_ids, position_ids, indicator) -> torch.Te
     pos_2d = position_ids[..., 0].contiguous()
 
     is_offloaded = language_model._offload_device is not None
-    print(f"  _encode_text: is_offloaded={is_offloaded}")
-    print(f"  _encode_text: entry — alloc={torch.cuda.memory_allocated()/1e9:.3f}GiB "
-          f"reserv={torch.cuda.memory_reserved()/1e9:.3f}GiB")
     if is_offloaded:
-        print(f"  _encode_text: moving non-layers to cuda ...")
         language_model._move_non_layers_to("cuda")
-        print(f"  _encode_text: done moving non-layers")
 
-    print(f"  _encode_text: embedding tokens ...")
     inputs_embeds = language_model.embed_tokens(token_ids)
-    print(f"  _encode_text: embedded {inputs_embeds.shape}")
     if is_offloaded:
         language_model.embed_tokens.to("cpu")
 
@@ -119,7 +112,6 @@ def _encode_text(language_model, token_ids, position_ids, indicator) -> torch.Te
     text_position_ids = position_ids_4d[0]
     mrope_position_ids = position_ids_4d[1:]
 
-    print(f"  _encode_text: creating causal mask ...")
     causal_mask = create_causal_mask(
         config=language_model.config,
         inputs_embeds=inputs_embeds,
@@ -127,33 +119,20 @@ def _encode_text(language_model, token_ids, position_ids, indicator) -> torch.Te
         past_key_values=None,
         position_ids=text_position_ids,
     )
-    print(f"  _encode_text: causal_mask type={type(causal_mask).__name__}")
-    if hasattr(causal_mask, 'shape'):
-        print(f"  _encode_text: causal_mask shape={causal_mask.shape}")
-    print(f"  _encode_text: computing rotary emb ...")
     position_embeddings = language_model.rotary_emb(inputs_embeds, mrope_position_ids)
-    print(f"  _encode_text: rotary emb done")
 
     if is_offloaded:
-        print(f"  _encode_text: moving tensors to cuda ...")
         inputs_embeds = inputs_embeds.to("cuda")
         if causal_mask is not None:
             causal_mask = causal_mask.to("cuda")
         cos, sin = position_embeddings
         position_embeddings = (cos.to("cuda"), sin.to("cuda"))
         attention_mask = attention_mask.to("cuda")
-        print(f"  _encode_text: done moving to cuda")
 
     tap_set = set(QWEN3_VL_ACTIVATION_LAYERS)
     captured = {}
     hidden_states = inputs_embeds
-    print(f"  _encode_text: hidden_states dtype={hidden_states.dtype} shape={hidden_states.shape}")
-    print(f"  _encode_text: before layer loop — "
-          f"alloc={torch.cuda.memory_allocated()/1e9:.3f}GiB "
-          f"reserv={torch.cuda.memory_reserved()/1e9:.3f}GiB")
-    print(f"  _encode_text: starting layer loop ({len(language_model.layers)} layers)")
-    if is_offloaded:
-        torch.cuda.reset_peak_memory_stats()
+
     with torch.inference_mode():
         for layer_idx, decoder_layer in enumerate(language_model.layers):
             if is_offloaded:
@@ -184,8 +163,6 @@ def _encode_text(language_model, token_ids, position_ids, indicator) -> torch.Te
                     del old
 
     if is_offloaded:
-        peak_gb = torch.cuda.max_memory_allocated() / 1024**3
-        print(f"  _encode_text: GPU peak {peak_gb:.3f} GiB")
         language_model._move_non_layers_to("cpu")
 
     selected = [captured[i] for i in QWEN3_VL_ACTIVATION_LAYERS]
@@ -265,12 +242,7 @@ def generate_image(
             config_path=text_encoder_dir,
             offloading=offloading,
         )
-        param_bytes = sum(p.element_size() * p.numel() for p in language_model.parameters())
-        buffer_bytes = sum(b.element_size() * b.numel() for b in language_model.buffers())
-        print(f"  model size: params={param_bytes/1024**3:.3f}GiB buffers={buffer_bytes/1024**3:.3f}GiB")
         if offloading:
-            n = pin_module_parameters(language_model)
-            print(f"  pinned {n} tensors to host memory")
             language_model.enable_block_offload("cuda")
         else:
             language_model = language_model.to("cuda")
@@ -278,15 +250,14 @@ def generate_image(
         llm_features = _encode_text(
             language_model, inputs["token_ids"], inputs["position_ids"], inputs["indicator"]
         )
-        if not offloading:
-            language_model = language_model.cpu()
+        language_model = language_model.cpu()
         del language_model
         gc.collect()
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
     except Exception:
         traceback.print_exc()
         raise
-    print(f"  llm_features shape: {tuple(llm_features.shape)}")
     print(f"  Done in {time.perf_counter() - p2:.3f}s")
 
     # ---- Phase 3: Init latent ----
@@ -305,7 +276,6 @@ def generate_image(
     schedule = get_schedule_for_resolution((height, width), known_mean=0.5, std=1.0)
     step_intervals = make_step_intervals(num_inference_steps).to("cuda")
     gw_per_step = torch.full((num_inference_steps,), guidance_scale, dtype=torch.float32, device="cuda")
-    print(f"  schedule: mean={schedule.mean:.4f}, std={schedule.std:.4f}")
     print(f"  steps={num_inference_steps}, guidance={guidance_scale}")
     print(f"  Done in {time.perf_counter() - p3:.3f}s")
 
@@ -324,8 +294,6 @@ def generate_image(
         cond_model.eval()
         uncond_model.eval()
     else:
-        n_pinned = pin_module_parameters(cond_model) + pin_module_parameters(uncond_model)
-        print(f"  pinned {n_pinned} tensors to host memory")
         cond_model.eval()
         uncond_model.eval()
 
@@ -339,12 +307,13 @@ def generate_image(
 
     with torch.inference_mode():
         for i in range(num_inference_steps - 1, -1, -1):
+            step_start = time.perf_counter()
             try:
-                t_val = float(schedule(step_intervals[i + 1].unsqueeze(0)).item())
-                s_val = float(schedule(step_intervals[i].unsqueeze(0)).item())
-                t = torch.full((1,), t_val, dtype=torch.float32, device="cuda")
+                t = schedule(step_intervals[i + 1].unsqueeze(0)).float()
+                s_val = schedule(step_intervals[i].unsqueeze(0)).item()
 
-                cond_model = cond_model.to("cuda")
+                if not offloading:
+                    cond_model = cond_model.to("cuda")
                 pos_z = torch.cat([text_z_padding, z], dim=1)
                 pos_out = cond_model(
                     llm_features=llm_features,
@@ -356,10 +325,12 @@ def generate_image(
                 )
                 pos_v = pos_out[:, max_text:].clone()
                 del pos_out
-                cond_model = cond_model.to("cpu")
+                if not offloading:
+                    cond_model = cond_model.to("cpu")
                 torch.cuda.empty_cache()
 
-                uncond_model = uncond_model.to("cuda")
+                if not offloading:
+                    uncond_model = uncond_model.to("cuda")
                 neg_out = uncond_model(
                     llm_features=neg_llm_features,
                     x=z,
@@ -370,18 +341,21 @@ def generate_image(
                 )
                 neg_v = neg_out.clone()
                 del neg_out
-                uncond_model = uncond_model.to("cpu")
+                if not offloading:
+                    uncond_model = uncond_model.to("cpu")
                 torch.cuda.empty_cache()
 
                 gw_i = gw_per_step[i]
                 v = gw_i * pos_v + (1.0 - gw_i) * neg_v
-                delta = s_val - t_val
+                delta = s_val - t.item()
                 z = z + v * delta
 
                 gc.collect()
                 torch.cuda.empty_cache()
 
-                print(f"  step {num_inference_steps - i}/{num_inference_steps}  t={t_val:.4f}  gw={float(gw_i):.2f}")
+                step_seconds = time.perf_counter() - step_start
+                print(f"  * {num_inference_steps - i}/{num_inference_steps} steps", flush=True)
+                print(f"    * done in {step_seconds:.3f}s", flush=True)
             except Exception:
                 traceback.print_exc()
                 print(f"  step {num_inference_steps - i}/{num_inference_steps} FAILED at i={i}")
@@ -390,6 +364,8 @@ def generate_image(
     cond_model = cond_model.cpu()
     uncond_model = uncond_model.cpu()
     del cond_model, uncond_model
+    gc.collect()
+    torch.cuda.synchronize()
     torch.cuda.empty_cache()
     print(f"  Done in {time.perf_counter() - p4:.3f}s")
 
@@ -403,6 +379,9 @@ def generate_image(
     ae = AutoEncoder(AutoEncoderParams())
     state_dict = convert_diffusers_state_dict(load_file(str(vae_path)))
     ae.load_state_dict(state_dict)
+    del state_dict
+    gc.collect()
+    torch.cuda.empty_cache()
     ae = ae.to("cuda").eval()
 
     images = _decode(

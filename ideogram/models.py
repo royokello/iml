@@ -111,7 +111,9 @@ class Ideogram4RMSNorm(nn.Module):
     self.eps = eps
 
   def forward(self, x: torch.Tensor) -> torch.Tensor:
-    return F.rms_norm(x, self.weight.shape, self.weight, self.eps)
+    input_dtype = x.dtype
+    x = x.to(torch.float32)
+    return F.rms_norm(x, self.weight.shape, self.weight, self.eps).to(input_dtype)
 
 
 class Ideogram4Attention(nn.Module):

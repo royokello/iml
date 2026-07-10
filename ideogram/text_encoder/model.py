@@ -59,12 +59,19 @@ class Qwen3VLTextRotaryEmbedding(nn.Module):
             )
             self.register_buffer("inv_freq", inv_freq.to(torch.float16), persistent=False)
 
+    def _check_nan(self, tensor: torch.Tensor, label: str):
+        if torch.isnan(tensor).any():
+            raise RuntimeError(
+                f"NaN in rotary embedding at {label}: "
+                f"min={tensor.min().item():.4f} max={tensor.max().item():.4f}"
+            )
+
     def forward(self, x, position_ids):
         self._ensure_inv_freq(x.device)
         if position_ids.ndim == 2:
             position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
-        inv_freq_expanded = self.inv_freq[None, None, :, None].to(dtype=x.dtype).expand(3, position_ids.shape[1], -1, 1)
-        position_ids_expanded = position_ids[:, :, None, :].to(dtype=x.dtype)
+        inv_freq_expanded = self.inv_freq[None, None, :, None].to(dtype=torch.float32).expand(3, position_ids.shape[1], -1, 1)
+        position_ids_expanded = position_ids[:, :, None, :].to(dtype=torch.float32)
         freqs = (inv_freq_expanded @ position_ids_expanded).transpose(2, 3)
         freqs = self._apply_interleaved_mrope(freqs)
         emb = torch.cat((freqs, freqs), dim=-1)
@@ -100,32 +107,60 @@ class Qwen3VLTextAttention(nn.Module):
         self.q_norm = Qwen3VLTextRMSNorm(self.head_dim, eps=rms_norm_eps)
         self.k_norm = Qwen3VLTextRMSNorm(self.head_dim, eps=rms_norm_eps)
 
+    def _check_nan(self, tensor: torch.Tensor, label: str):
+        if torch.isnan(tensor).any():
+            raise RuntimeError(
+                f"NaN in layer {self.layer_idx} attention at {label}: "
+                f"min={tensor.min().item():.4f} max={tensor.max().item():.4f} mean={tensor.mean().item():.4f}"
+            )
+
     def forward(self, hidden_states, position_embeddings, attention_mask, past_key_values=None):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
-        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
+        q_raw = self.q_proj(hidden_states)
+        self._check_nan(q_raw, "q_proj_out")
+        q_view = q_raw.view(hidden_shape)
+        q_normed = self.q_norm(q_view)
+        self._check_nan(q_normed, "q_norm_out")
+        query_states = q_normed.transpose(1, 2)
+
+        k_raw = self.k_proj(hidden_states)
+        self._check_nan(k_raw, "k_proj_out")
+        key_states = self.k_norm(k_raw.view(hidden_shape)).transpose(1, 2)
+        self._check_nan(key_states, "k_norm_out")
+
+        v_raw = self.v_proj(hidden_states)
+        self._check_nan(v_raw, "v_proj_out")
+        value_states = v_raw.view(hidden_shape).transpose(1, 2)
 
         cos, sin = position_embeddings
+        self._check_nan(cos, "cos")
+        self._check_nan(sin, "sin")
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        self._check_nan(query_states, "q_after_rope")
+        self._check_nan(key_states, "k_after_rope")
 
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        attn_weight_dtype = query_states.dtype
         attn_weights = torch.matmul(
-            query_states.to(torch.float16),
-            key_states.transpose(2, 3).to(torch.float16),
+            query_states.float(),
+            key_states.transpose(2, 3).float(),
         ) * self.scaling
         if attention_mask is not None:
             attn_weights = attn_weights + attention_mask
+        self._check_nan(attn_weights, "attn_logits")
 
         attn_weights = F.softmax(attn_weights, dim=-1, dtype=query_states.dtype)
+        self._check_nan(attn_weights, "attn_softmax")
+
         attn_output = torch.matmul(attn_weights, value_states)
+        self._check_nan(attn_output, "attn_value_matmul")
+
         attn_output = attn_output.transpose(1, 2).reshape(*input_shape, -1)
         attn_output = self.o_proj(attn_output)
+        self._check_nan(attn_output, "o_proj_out")
         return attn_output
 
 
@@ -145,25 +180,46 @@ class Qwen3VLTextMLP(nn.Module):
 class Qwen3VLTextDecoderLayer(nn.Module):
     def __init__(self, config, layer_idx: int):
         super().__init__()
+        self.layer_idx = layer_idx
         self.self_attn = Qwen3VLTextAttention(config, layer_idx=layer_idx)
         self.mlp = Qwen3VLTextMLP(config)
         self.input_layernorm = Qwen3VLTextRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = Qwen3VLTextRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
+    def _check_nan(self, hidden_states, label: str):
+        if torch.isnan(hidden_states).any():
+            raise RuntimeError(
+                f"NaN in layer {self.layer_idx} at {label}: "
+                f"min={hidden_states.min().item():.4f} "
+                f"max={hidden_states.max().item():.4f} "
+                f"mean={hidden_states.mean().item():.4f}"
+            )
+
     def forward(self, hidden_states, attention_mask=None, position_ids=None, past_key_values=None, position_embeddings=None):
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
+        self._check_nan(hidden_states, "after_input_layernorm")
+
         hidden_states = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_embeddings=position_embeddings,
         )
+        self._check_nan(hidden_states, "after_self_attn")
+
         hidden_states = residual + hidden_states
+        self._check_nan(hidden_states, "after_attn_residual")
 
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+        self._check_nan(hidden_states, "after_post_attention_layernorm")
+
         hidden_states = self.mlp(hidden_states)
+        self._check_nan(hidden_states, "after_mlp")
+
         hidden_states = residual + hidden_states
+        self._check_nan(hidden_states, "after_mlp_residual")
+
         return hidden_states
 
 

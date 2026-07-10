@@ -404,6 +404,37 @@ textarea.input {
   color: #000;
 }
 
+.preset-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 0.75rem;
+}
+
+.preset-row {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-preset {
+  flex: 1;
+  padding: 0.4rem 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 500;
+  font-size: 0.8rem;
+  text-align: center;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.btn-preset:hover {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
 .muted {
   color: var(--text-dim);
 }

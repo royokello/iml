@@ -112,9 +112,21 @@ def init_app(app, root_dir: Path) -> None:
                 return json.loads(p.read_text(encoding="utf-8"))
             return {}
 
+        shared_styles = _load_json(static / "config" / "styles.json")
+        flux_schema = _load_json(static / "config" / "flux_schema.json")
+        ideogram_schema = _load_json(static / "config" / "ideogram_schema.json")
+
+        for field in flux_schema.get("fields", []):
+            if field.get("key") == "style" and not field.get("suggestions"):
+                field["suggestions"] = shared_styles
+
+        for field in ideogram_schema.get("fields", []):
+            if field.get("key") == "style_description.art_style" and not field.get("suggestions"):
+                field["suggestions"] = shared_styles
+
         return jsonify({
-            "flux_schema": _load_json(static / "config" / "flux_schema.json"),
-            "ideogram_schema": _load_json(static / "config" / "ideogram_schema.json"),
+            "flux_schema": flux_schema,
+            "ideogram_schema": ideogram_schema,
         })
 
     @app.route("/api/quant-methods")

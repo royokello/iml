@@ -252,6 +252,14 @@
       el.ratio.value = '';
     });
 
+    document.querySelectorAll('.btn-preset').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        el.width.value = parseInt(btn.dataset.w);
+        el.height.value = parseInt(btn.dataset.h);
+        el.ratio.value = '';
+      });
+    });
+
     el.textPrompt.addEventListener('input', updatePromptDisplay);
 
     el.addRef.addEventListener('click', function () { el.refPicker.click(); });
@@ -453,7 +461,7 @@
           hideProgress();
           showError('Status polling failed: ' + err.message);
         });
-    }, 1500);
+    }, 10000);
   }
 
   // ─── Progress / Result / Error ─────────────────────────

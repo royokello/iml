@@ -2,7 +2,7 @@
   "model": "flux",
   "fields": [
     { "key": "subject", "label": "Subject", "type": "text", "suggestions": [] },
-    { "key": "style", "label": "Style", "type": "text", "suggestions": ["Watercolor", "Pop Art", "Oil Painting", "Cinematic", "Anime", "3D Render", "Pixel Art", "Minimalist", "Impressionist", "Steampunk", "Vaporwave", "Dark Fantasy"] },
+    { "key": "style", "label": "Style", "type": "text", "suggestions": [] },
     { "key": "lighting", "label": "Lighting", "type": "text", "suggestions": ["Soft natural", "Dramatic", "Studio", "Golden hour", "Neon", "Moody", "Backlit", "Rim", "Candlelight", "Overcast"] },
     { "key": "camera_angle", "label": "Camera Angle", "type": "text", "suggestions": ["Eye level", "Low angle", "Top down", "Close-up", "Wide shot", "Aerial", "Dutch angle", "Over the shoulder", "Macro"] },
     { "key": "composition", "label": "Composition", "type": "text", "suggestions": ["Centered", "Rule of thirds", "Symmetrical", "Dynamic", "Minimal", "Leading lines", "Framed", "Golden spiral"] },

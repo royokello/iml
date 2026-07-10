@@ -21,6 +21,10 @@ def convert_quant_name(name: str) -> tuple[str, str]:
     """
     order = QUANT_METHODS_BY_MAIN_BITS
 
+    # Special case: fp16 pass-through (no compression)
+    if name == "fp16":
+        return ("fp16", "fp16")
+
     # Determine suffix and base name
     if name.endswith("-mini"):
         base = name[:-5]   # remove "-mini"

@@ -1,7 +1,7 @@
 from safetensors.torch import load_file, save_file
 from pathlib import Path
 
-root = Path(r"C:\Users\roy\Documents\delos\ideogram\transformer")
+root = Path("/path/to/model")
 
 for name in ["cond/sym_med_nano_quant.safetensors", "uncond/sym_med_nano_quant.safetensors"]:
     path = root / name
