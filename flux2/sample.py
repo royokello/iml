@@ -109,8 +109,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--sample-seed", "--sample_seed", dest="sample_seed", type=int, default=DEFAULT_SAMPLE_SEED)
     parser.add_argument("--sample-indices", dest="sample_indices", type=str, default=None)
-    parser.add_argument("--text-quant-method", default="sym-high")
-    parser.add_argument("--denoiser-quant-method", default="sym-med")
+    parser.add_argument("--text-quant-method", default="sym-med-nano")
+    parser.add_argument("--denoiser-quant-method", default="sym-med-nano")
     parser.add_argument(
         "--trigger",
         type=str,
@@ -156,7 +156,7 @@ def main() -> None:
                 return duplicate_path
             duplicate_index += 1
 
-    model_root = args.root / f"flux2_{args.version}" / "model"
+    model_root = args.root / "flux2" / args.version / "model"
     normalized_prompt = None if args.prompt is None else args.prompt.strip()
     if normalized_prompt == "":
         raise ValueError("--prompt must not be empty.")
@@ -204,6 +204,8 @@ def main() -> None:
     short_side = args.target_res
     for sample_index in sample_indices:
         selected_index = selected_dataset_index_by_sample[sample_index]
+        if cached_dataset.target_ratios[selected_index] is None:
+            continue
         if normalized_prompt is not None and args.sample_indices is None:
             sample_width = args.width
             sample_height = args.height
@@ -213,6 +215,8 @@ def main() -> None:
                 short_side=short_side,
             )
         sample_resolutions[sample_index] = (sample_width, sample_height)
+
+    sample_indices = list(sample_resolutions.keys())
 
     single_sample = args.sample_indices is None
 

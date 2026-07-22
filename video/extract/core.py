@@ -353,15 +353,19 @@ def run_ffmpeg_preview_range(
     temp_dir = Path(temp_dir)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    if source_width >= source_height:
-        scale_filter = f"scale_cuda=w=-2:h={resolution}"
-    else:
-        scale_filter = f"scale_cuda=w={resolution}:h=-2"
-
-    vf = f"{scale_filter},hwdownload,format=nv12,select='not(mod(n\\,{interval_frames}))'"
     output_pattern = temp_dir / "%06d.jpg"
 
-    cmd = [
+    if source_width >= source_height:
+        cuda_scale = f"scale_cuda=w=-2:h={resolution}"
+        cpu_scale = f"scale=w=-2:h={resolution}"
+    else:
+        cuda_scale = f"scale_cuda=w={resolution}:h=-2"
+        cpu_scale = f"scale=w={resolution}:h=-2"
+
+    cuda_vf = f"{cuda_scale},hwdownload,format=nv12,select='not(mod(n\\,{interval_frames}))'"
+    cpu_vf = f"{cpu_scale},select='not(mod(n\\,{interval_frames}))'"
+
+    cmd_cuda = [
         str(ffmpeg_exe),
         "-hide_banner",
         "-loglevel",
@@ -381,7 +385,7 @@ def run_ffmpeg_preview_range(
         "0:v:0",
         "-an",
         "-vf",
-        vf,
+        cuda_vf,
         "-frames:v",
         str(expected_count),
         "-vsync",
@@ -391,10 +395,37 @@ def run_ffmpeg_preview_range(
         str(output_pattern),
     ]
 
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(cmd_cuda, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if proc.returncode != 0:
-        message = proc.stderr.strip() or proc.stdout.strip() or "Unknown ffmpeg error."
-        raise RuntimeError(message)
+        cmd_cpu = [
+            str(ffmpeg_exe),
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-ss",
+            format_seconds_timestamp(start_seconds),
+            "-i",
+            str(video_path),
+            "-t",
+            format_seconds_timestamp(duration_seconds),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-vf",
+            cpu_vf,
+            "-frames:v",
+            str(expected_count),
+            "-vsync",
+            "0",
+            "-q:v",
+            "2",
+            str(output_pattern),
+        ]
+        proc = subprocess.run(cmd_cpu, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if proc.returncode != 0:
+            message = proc.stderr.strip() or proc.stdout.strip() or "Unknown ffmpeg error."
+            raise RuntimeError(message)
 
     return sorted(temp_dir.glob("*.jpg"))
 
@@ -522,7 +553,7 @@ def decode_ffmpeg_window(
     if frame_bytes <= 0:
         raise ValueError("Invalid video dimensions for FFmpeg decode.")
 
-    cmd = [
+    cmd_cuda = [
         str(ffmpeg_exe),
         "-hide_banner",
         "-loglevel",
@@ -551,41 +582,73 @@ def decode_ffmpeg_window(
         "pipe:1",
     ]
 
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    rows: list[dict[str, Any]] = []
+    cmd_cpu = [
+        str(ffmpeg_exe),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-ss",
+        f"{start_index / fps:.6f}",
+        "-i",
+        str(video_path),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-vf",
+        "format=bgr24",
+        "-frames:v",
+        str(frame_count),
+        "-vsync",
+        "0",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgr24",
+        "pipe:1",
+    ]
+
+    def try_decode(cmd: list[str]) -> list[dict[str, Any]]:
+        nonlocal height, width
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        local_rows: list[dict[str, Any]] = []
+
+        try:
+            if proc.stdout is None:
+                raise RuntimeError("FFmpeg pipe did not open.")
+
+            for offset in range(frame_count):
+                raw = proc.stdout.read(frame_bytes)
+                if len(raw) != frame_bytes:
+                    break
+
+                frame = np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 3)).copy()
+                local_rows.append(
+                    {
+                        "index": start_index + offset,
+                        "frame": frame,
+                        "sharpness": sharpness_score(frame),
+                        "exposure_penalty": exposure_penalty(frame),
+                    }
+                )
+        finally:
+            stderr = b""
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                stderr = proc.stderr.read()
+                proc.stderr.close()
+            proc.wait()
+
+        if proc.returncode != 0:
+            message = stderr.decode("utf-8", errors="replace").strip() or "Unknown ffmpeg error."
+            raise RuntimeError(message)
+
+        return local_rows
 
     try:
-        if proc.stdout is None:
-            raise RuntimeError("FFmpeg pipe did not open.")
-
-        for offset in range(frame_count):
-            raw = proc.stdout.read(frame_bytes)
-            if len(raw) != frame_bytes:
-                break
-
-            frame = np.frombuffer(raw, dtype=np.uint8).reshape((height, width, 3)).copy()
-            rows.append(
-                {
-                    "index": start_index + offset,
-                    "frame": frame,
-                    "sharpness": sharpness_score(frame),
-                    "exposure_penalty": exposure_penalty(frame),
-                }
-            )
-    finally:
-        stderr = b""
-        if proc.stdout is not None:
-            proc.stdout.close()
-        if proc.stderr is not None:
-            stderr = proc.stderr.read()
-            proc.stderr.close()
-        proc.wait()
-
-    if proc.returncode != 0:
-        message = stderr.decode("utf-8", errors="replace").strip() or "Unknown ffmpeg error."
-        raise RuntimeError(message)
-
-    return rows
+        return try_decode(cmd_cuda)
+    except RuntimeError:
+        return try_decode(cmd_cpu)
 
 
 def save_native_frames(

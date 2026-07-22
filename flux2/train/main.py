@@ -17,7 +17,7 @@ from flux2.train.dataset import Flux2Dataset
 from safetensors.torch import load_file as safe_load_file
 from safetensors.torch import save_file
 
-CHECKPOINT_AFTER_STEPS = 64
+CHECKPOINT_AFTER_STEPS = 128
 LOSS_LOG_FLUSH_STEPS = 8
 
 from flux2.train.fork import STEP_CSV_HEADER, Step
@@ -50,6 +50,8 @@ def main(
 
     models_dirpath = project_dir / "models"
     models_dirpath.mkdir(parents=True, exist_ok=True)
+    stop_filepath = models_dirpath / "stop.txt"
+    stop_filepath.write_text("Delete this file to stop training cleanly after the current step.\n")
     logs_filepath = models_dirpath / "steps.csv"
     resume_checkpoint_path: Path | None = None
     resume_optimizer_filepath: Path | None = None
@@ -333,6 +335,17 @@ def main(
                         continue
                     other_optimizer_filepath.unlink()
 
+            if not stop_filepath.is_file():
+                flush_pending_loss_logs()
+                print("  * stop.txt deleted — saving final checkpoint ...")
+                checkpoint_filepath = models_dirpath / f"{current_step:06d}.safetensors"
+                lora_state_dict = build_lora_state_dict(transformer)
+                save_file(lora_state_dict, str(checkpoint_filepath), metadata=checkpoint_metadata)
+                optimizer_filepath = checkpoint_filepath.with_suffix(".optimizer.pt")
+                torch.save(optimizer.state_dict(), str(optimizer_filepath))
+                print(f"  * stop checkpoint saved at step {current_step}. Exiting.")
+                return
+
             del (
                 prompt_embeds_batch,
                 text_ids_batch,
@@ -371,8 +384,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=1024)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--text-quant", default="aff-high-mini")
-    parser.add_argument("--denoiser-quant", default="aff-high-mini")
+    parser.add_argument("--text-quant", default="sym-med-nano")
+    parser.add_argument("--denoiser-quant", default="sym-med-nano")
     parser.add_argument("--cache-text", action="store_true")
     parser.add_argument("--cache-images", action="store_true")
     parser.add_argument("--trigger", type=str, required=True)
@@ -381,8 +394,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--rank", type=int, default=32)
     parser.add_argument("--alpha", type=int, default=32)
-    parser.add_argument("--target_res", type=int, default=384)
-    parser.add_argument("--ref_res", type=int, default=384)
+    parser.add_argument("--target_res", type=int, default=512)
+    parser.add_argument("--ref_res", type=int, default=512)
     parser.add_argument("--lr", type=float, default=1e-4,
         help="Learning rate (default: 0.0001)")
     return parser.parse_args()
@@ -390,7 +403,7 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
     project_path = args.project
-    model_root = args.root / f"flux2_{args.version}" / "model"
+    model_root = args.root / "flux2" / args.version / "model"
 
     print("1. Run training epochs ...")
 

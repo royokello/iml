@@ -232,6 +232,7 @@ class Flux2Dataset:
         target_ratios: list[float] = []
         captions = []
         text_embeddings = []
+        text_cache_paths: list[Path] = []
         all_ref_latents: list = []
 
         i = 0
@@ -315,6 +316,13 @@ class Flux2Dataset:
                 # Skip if refs exist but none met resolution threshold
                 if refs_dirpath.exists() and not has_good_ref:
                     print(f"   * skipped: no ref meets reference_resolution ({reference_resolution})")
+                    target_latents.append(None)
+                    if load_target_ratios:
+                        target_ratios.append(None)
+                    captions.append(None)
+                    text_embeddings.append(None)
+                    text_cache_paths.append(None)
+                    all_ref_latents.append(None)
                     i += 1
                     continue
 
@@ -325,7 +333,7 @@ class Flux2Dataset:
                     if load_target_ratios:
                         with Image.open(target_filepath) as img:
                             w, h = img.size
-                        target_ratios.append(max(w, h) / min(w, h))
+                        target_ratios.append(w / h)
 
                 else:
                     target_start = time.perf_counter()
@@ -334,7 +342,7 @@ class Flux2Dataset:
 
                     w, h = target_image_rgb.size
                     if load_target_ratios:
-                        target_ratios.append(max(w, h) / min(w, h))
+                        target_ratios.append(w / h)
                     scale = target_resolution / min(w, h)
                     new_w = max(16, round(w * scale / 16) * 16)
                     new_h = max(16, round(h * scale / 16) * 16)
@@ -383,16 +391,18 @@ class Flux2Dataset:
                 text_cache_filepath = dataset_dirpath / f"{target_filepath.stem}.text.safetensors"
 
                 if text_cache_filepath.exists():
-                    pass
-
+                    tensors = load_file(str(text_cache_filepath), device="cpu")
+                    captions.append(None)
+                    text_embeddings.append((tensors["embed"], tensors["id"]))
+                    text_cache_paths.append(text_cache_filepath)
                 else:
                     caption_cache_filepath = dataset_dirpath / f"{target_filepath.stem}.txt"
                     if caption_cache_filepath.is_file():
                         captions.append(caption_cache_filepath.read_text(encoding="utf-8").strip())
                     else:
                         captions.append(None)
-
                     text_embeddings.append(None)
+                    text_cache_paths.append(text_cache_filepath)
 
                 i += 1
 
@@ -427,6 +437,9 @@ class Flux2Dataset:
         print(f" Trigger encoded in {time.perf_counter() - encode_start:.3f}s")
 
         for i, caption in enumerate(captions):
+            if text_embeddings[i] is not None:
+                print(f" * [{i + 1}/{len(captions)}] loaded from cache")
+                continue
             if caption is None:
                 print(f" * [{i + 1}/{len(captions)}] is None")
                 continue
@@ -444,6 +457,12 @@ class Flux2Dataset:
             text_id = text_ids.squeeze(0).cpu().contiguous()
             text_embeddings[i] = (embed, text_id)
             print(f" * [{i + 1}/{len(captions)}] encoded in {time.perf_counter() - encode_start:.3f}s")
+
+            if cache_text:
+                save_file(
+                    {"embed": embed.contiguous(), "id": text_id.contiguous()},
+                    str(text_cache_paths[i]),
+                )
 
         del tokenizer
         del text_encoder

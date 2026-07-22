@@ -10,6 +10,11 @@ from .kv_parallel_self_processor import Flux2KVParallelSelfAttnProcessor
 from .parallel_self_processor import Flux2ParallelSelfAttnProcessor
 
 
+class Fp32RMSNorm(torch.nn.RMSNorm):
+    def forward(self, x):
+        return super().forward(x.to(dtype=torch.float32)).to(dtype=x.dtype)
+
+
 class Flux2ParallelSelfAttention(torch.nn.Module, AttentionModuleMixin):
     """
     Flux 2 parallel self-attention for the Flux 2 single-stream transformer blocks.
@@ -61,8 +66,8 @@ class Flux2ParallelSelfAttention(torch.nn.Module, AttentionModuleMixin):
         self.mlp_act_fn = Flux2SwiGLU()
 
         # QK Norm
-        self.norm_q = torch.nn.RMSNorm(dim_head, eps=eps, elementwise_affine=elementwise_affine)
-        self.norm_k = torch.nn.RMSNorm(dim_head, eps=eps, elementwise_affine=elementwise_affine)
+        self.norm_q = Fp32RMSNorm(dim_head, eps=eps, elementwise_affine=elementwise_affine)
+        self.norm_k = Fp32RMSNorm(dim_head, eps=eps, elementwise_affine=elementwise_affine)
 
         # Fused attention output projection + MLP output projection
         self.to_out = torch.nn.Linear(self.inner_dim + self.mlp_hidden_dim, self.out_dim, bias=out_bias)

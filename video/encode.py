@@ -7,8 +7,12 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+from datetime import date
 from pathlib import Path
 from typing import List, Tuple
+
+from utils.banner import print_banner
 
 import numpy as np
 
@@ -21,15 +25,6 @@ def _run_cmd(cmd: List[str], verbose: bool = False) -> Tuple[int, str, str]:
         print(" ".join(cmd))
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return p.returncode, p.stdout, p.stderr
-
-
-def _resolve_tool(ffmpeg_path: str) -> Tuple[str, str]:
-    p = Path(ffmpeg_path)
-    if p.name.lower() == "ffmpeg.exe":
-        ffprobe = str(p.parent / "ffprobe.exe")
-    else:
-        ffprobe = str(p.parent / "ffprobe")
-    return str(p), ffprobe
 
 
 def _ffprobe_meta(ffprobe: str, path: str) -> dict:
@@ -181,6 +176,7 @@ def _find_optimal_crf(ffmpeg: str, ffprobe: str, input_path: str, resolution: in
 
         ref_samples = []
         for i, offset in enumerate(offsets):
+            print(f"  Sample {i + 1}/{len(offsets)} at {offset:.1f}s...")
             ref_path = os.path.join(tmpdir, f"ref_{i:03d}.mp4")
             _extract_reference_sample(ffmpeg, input_path, ref_path, offset, sample_length, verbose)
             ref_samples.append(ref_path)
@@ -219,24 +215,61 @@ def _find_optimal_crf(ffmpeg: str, ffprobe: str, input_path: str, resolution: in
 
             knee = _knee_from_dense(x_dense, y_dense)
             if knee:
-                optimal_crf = round(-knee[0] * 2) / 2
-                optimal_crf = max(min(crfs), min(max(crfs), int(optimal_crf)))
+                val = -knee[0]
+                optimal_crf = int(val) if (val - int(val)) < 0.6 else int(val) + 1
                 if verbose:
-                    print(f"\nKnee point at CRF ~{optimal_crf:.1f} (SSIM: {knee[1]:.4f})")
-                return int(optimal_crf)
+                    print(f"\nKnee point at CRF ~{optimal_crf} (SSIM: {knee[1]:.4f})")
+                analysis_data = {
+                    "crfs": list(sorted_crfs),
+                    "ssims": [float(avg_ssims[c]) for c in sorted_crfs],
+                    "x_dense": x_dense,
+                    "y_dense": y_dense,
+                    "knee": tuple(float(v) for v in knee),
+                }
+                return optimal_crf, analysis_data
 
-        if verbose:
-            print("\nKnee detection failed, falling back to SSIM threshold")
-        target_ssim = 0.97
-        best_crf = sorted_crfs[0]
-        for crf in sorted_crfs:
-            if avg_ssims[crf] >= target_ssim:
-                best_crf = crf
-            else:
-                break
-        if verbose:
-            print(f"Selected CRF {best_crf} (SSIM: {avg_ssims[best_crf]:.4f})")
-        return best_crf
+        raise RuntimeError(
+            f"Knee point detection failed: {len(sorted_crfs)} CRF values tested, "
+            "no valid knee point found"
+        )
+
+
+def _plot_analysis(analysis: dict, optimal_crf: int, label: str, output_path: str) -> None:
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    crfs = analysis["crfs"]
+    ssims = analysis["ssims"]
+    x_dense = analysis["x_dense"]
+    y_dense = analysis["y_dense"]
+    knee = analysis["knee"]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    raw_crfs = [-x for x in x_dense]
+    ax.scatter(crfs, ssims, color="blue", s=60, zorder=5, label="Measured SSIM")
+    ax.plot(raw_crfs, y_dense, color="blue", linewidth=1.5, label="Polyfit curve")
+
+    if knee:
+        k_crf = -knee[0]
+        ax.axvline(x=k_crf, color="green", linestyle="--", linewidth=1.5,
+                   label=f"Knee: CRF {k_crf:.1f}")
+        ax.scatter([k_crf], [knee[1]], color="green", s=120, marker="*", zorder=10)
+
+    ax.set_xlabel("CRF (lower = higher quality)")
+    ax.set_ylabel("SSIM")
+    ax.set_title(f"{label} — Optimal CRF {optimal_crf}")
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.invert_xaxis()
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+    print(f"  Plot saved: {output_path}")
 
 
 def _encode_video(ffmpeg: str, ffprobe: str, input_path: str, output_path: str,
@@ -378,8 +411,8 @@ def main() -> None:
                         help="Output file (single input) or directory (multiple inputs)")
     parser.add_argument("-r", "--resolution", required=True, type=int,
                         help="Shortest side in pixels")
-    parser.add_argument("--ffmpeg", required=True,
-                        help="Path to ffmpeg executable")
+    parser.add_argument("--root", required=True, type=Path,
+                        help="Root directory (ffmpeg at <root>/ffmpeg/bin/ffmpeg.exe)")
     parser.add_argument("--crf-range",
                         default=",".join(str(c) for c in DEFAULT_CRFS),
                         help="Comma-separated CRF values for analysis "
@@ -403,12 +436,28 @@ def main() -> None:
                         help="Show analysis result but skip encoding")
     args = parser.parse_args()
 
-    ffmpeg, ffprobe = _resolve_tool(args.ffmpeg)
+    print_banner("Video Encoder")
+
+    root = args.root.resolve()
+    ffmpeg = str(root / "ffmpeg" / "bin" / "ffmpeg.exe")
+    ffprobe = str(root / "ffmpeg" / "bin" / "ffprobe.exe")
 
     if not os.path.isfile(ffmpeg):
-        sys.exit(f"ffmpeg not found: {ffmpeg}")
+        sys.exit(f"ffmpeg not found at {ffmpeg}")
     if not os.path.isfile(ffprobe):
-        sys.exit(f"ffprobe not found: {ffprobe}")
+        sys.exit(f"ffprobe not found at {ffprobe}")
+
+    plot_dir = root / "video" / "encode"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    today_str = date.today().isoformat()
+    existing = sorted(plot_dir.glob(f"{today_str}-*.png"))
+    plot_counter = 1
+    if existing:
+        last = existing[-1].stem
+        try:
+            plot_counter = int(last.split("-")[-1]) + 1
+        except (ValueError, IndexError):
+            pass
 
     try:
         crfs = sorted({int(c.strip()) for c in args.crf_range.split(",") if c.strip()})
@@ -437,16 +486,16 @@ def main() -> None:
 
     single_input = input_path.is_file()
 
-    print(f"Videos to process: {len(videos)}")
     if args.dry_run:
         print("Dry-run mode: analysis only, no encoding\n")
 
     results = []
-    for v in videos:
-        if args.verbose:
-            print(f"\n{'='*60}")
-            print(f"Processing: {v.name}")
-            print(f"{'='*60}")
+    total = len(videos)
+    for idx, v in enumerate(videos, 1):
+        prefix = f"[{idx}/{total}] "
+        start = time.time()
+        print(f"\n{'-'*50}")
+        print(f"File: {v.name}")
 
         if audio_layout:
             streams = _audio_stream_info(ffprobe, str(v))
@@ -459,8 +508,10 @@ def main() -> None:
                              f"'{args.audio_channels}' requires LFE but source "
                              f"layout '{info['layout']}' has none")
 
+        print(f"{prefix}[1/4] Analyzing video...")
+
         try:
-            optimal_crf = _find_optimal_crf(
+            optimal_crf, analysis_data = _find_optimal_crf(
                 ffmpeg, ffprobe, str(v), args.resolution, crfs,
                 args.sample_length, args.num_samples, args.preset, args.verbose
             )
@@ -469,7 +520,11 @@ def main() -> None:
             results.append({"input": str(v), "success": False, "error": str(e)})
             continue
 
-        print(f"Optimal CRF for {v.name}: {optimal_crf}")
+        plot_path = plot_dir / f"{today_str}-{plot_counter:04d}.png"
+        plot_counter += 1
+        _plot_analysis(analysis_data, optimal_crf, v.stem, str(plot_path))
+
+        print(f"{prefix}[2/4] Optimal CRF: {optimal_crf}")
 
         if args.dry_run:
             results.append({
@@ -491,19 +546,23 @@ def main() -> None:
             output_path.mkdir(parents=True, exist_ok=True)
             out = str(output_path / out_name)
 
+        print(f"{prefix}[3/4] Encoding...")
         result = _encode_video(ffmpeg, ffprobe, str(v), out, args.resolution,
                                optimal_crf, args.preset, args.verbose, args.audio_bitrate,
                                audio_layout)
         results.append(result)
 
+        elapsed = time.time() - start
+        mins, secs = divmod(int(elapsed), 60)
+        time_str = f"{mins}m{secs:02d}s" if mins else f"{secs}s"
+        print(f"{prefix}[4/4] Done in {time_str}:", end=" ")
         if result["success"]:
             src_mb = result.get("source_size", 0) / 1_048_576
             out_mb = result.get("output_size", 0) / 1_048_576
             pct = (out_mb / src_mb * 100) if src_mb else 0
-            print(f"  {v.name}: {src_mb:.1f} MB -> {out_mb:.1f} MB ({pct:.1f}%)")
+            print(f"{src_mb:.1f} MB -> {out_mb:.1f} MB ({pct:.1f}%)")
         else:
-            print(f"  {v.name}: encode failed: {result.get('error', 'unknown')}")
-        print()
+            print(f"encode failed: {result.get('error', 'unknown')}")
 
     print(f"{'='*60}")
     print("Summary:")
