@@ -2,26 +2,28 @@
   'use strict';
 
   // ─── State ────────────────────────────────────────────
-  var state = {
-    model: 'flux-4b',
-    mode: 'text',
-    variant: 'distill',
-    fluxSchema: null,
-    ideogramSchema: null,
-    refImages: [],        // { serverPath, dataUrl }
-    polling: null,
-    loaded: false,
-  };
-
+  var current_model = 'flux-4b';
+  var current_variant = 'distill';
+  var current_prompt_format = 'text';
+  var fluxSchema = null;
+  var ideogramSchema = null;
   var jsonValues = {};
+  var refImages = [];        // { serverPath, dataUrl }
+  var loras = [];            // { path, label, weight }
+  var loraProjects = {};     // scanned from API
+  var polling = null;
+  var loaded = false;
 
   // ─── DOM refs ──────────────────────────────────────────
   var $ = function (id) { return document.getElementById(id); };
   var el = {
     modelSelect: $('model-select'),
     variantSection: $('variant-section'),
+    variantFlux: $('variant-flux'),
+    variantAnima: $('variant-anima'),
     variantDistill: $('variant-distill'),
     variantBase: $('variant-base'),
+    animaVariant: $('anima-variant'),
     textQuant: $('text-quant'),
     denoiserQuant: $('denoiser-quant'),
     width: $('width'),
@@ -30,6 +32,14 @@
     steps: $('steps'),
     guidance: $('guidance'),
     seed: $('seed'),
+    negativePromptField: $('negative-prompt-field'),
+    negativePrompt: $('negative-prompt'),
+    loraSection: $('lora-section'),
+    loraProject: $('lora-project'),
+    loraCheckpoint: $('lora-checkpoint'),
+    loraWeight: $('lora-weight'),
+    addLora: $('add-lora'),
+    loraList: $('lora-list'),
     refSection: $('ref-section'),
     refSize: $('ref-size'),
     addRef: $('add-ref'),
@@ -57,18 +67,61 @@
     },
   };
 
-  // ─── Helpers ───────────────────────────────────────────
-  function isFlux() {
-    return state.model && state.model.indexOf('flux') === 0;
+  // ─── Model / variant setters ──────────────────────────
+
+  function setCurrentModel(model) {
+    current_model = model;
+
+    el.variantSection.style.display = ['flux-4b', 'flux-9b', 'anima'].indexOf(model) > -1 ? 'block' : 'none';
+    el.variantFlux.style.display = model.indexOf('flux') === 0 ? 'block' : 'none';
+    el.variantAnima.style.display = model === 'anima' ? 'block' : 'none';
+    el.loraSection.style.display = ['flux-4b', 'flux-9b'].indexOf(model) > -1 ? 'block' : 'none';
+    el.refSection.style.display = ['flux-4b', 'flux-9b'].indexOf(model) > -1 ? 'block' : 'none';
+    el.negativePromptField.style.display = ['anima'].indexOf(model) > -1 ? 'block' : 'none';
+
+    if (['flux-4b', 'flux-9b'].indexOf(model) > -1) {
+      if (['distill', 'base'].indexOf(current_variant) === -1) current_variant = 'distill';
+      setCurrentVariant(current_variant);
+    } else if (model === 'anima') {
+      if (['base', 'aesthetic', 'turbo', 'preview'].indexOf(current_variant) === -1) current_variant = 'base';
+      setCurrentVariant(current_variant);
+    } else {
+      el.guidance.value = 7.0;
+      el.steps.value = 50;
+    }
+
+    if (model === 'anima' && current_prompt_format === 'json') {
+      setCurrentPromptFormat('text');
+    }
+
+    if (loaded) {
+      loadQuantMethods();
+      loadLoraProjects();
+    }
   }
 
-  function getModelType() {
-    return isFlux() ? 'flux' : 'ideogram';
+  function setCurrentVariant(variant) {
+    current_variant = variant;
+    if (['flux-4b', 'flux-9b'].indexOf(current_model) > -1) {
+      el.variantDistill.classList.toggle('active', variant === 'distill');
+      el.variantBase.classList.toggle('active', variant === 'base');
+      el.steps.value = variant === 'distill' ? 4 : 50;
+      el.guidance.value = variant === 'distill' ? 1.0 : 4.0;
+    } else if (current_model === 'anima') {
+      el.animaVariant.value = variant;
+      el.steps.value = variant === 'turbo' ? 15 : variant === 'preview' ? 50 : 30;
+      el.guidance.value = variant === 'aesthetic' ? 7.0 : 4.0;
+    }
+    loadQuantMethods();
   }
 
-  function getFluxVersion() {
-    var parts = state.model.split('-');
-    return parts.length > 1 ? parts[1] : '4b';
+  function setCurrentPromptFormat(format) {
+    current_prompt_format = format;
+    el.modeText.classList.toggle('active', format === 'text');
+    el.modeJson.classList.toggle('active', format === 'json');
+    el.formText.style.display = format === 'text' ? 'block' : 'none';
+    el.formJson.style.display = format === 'json' ? 'block' : 'none';
+    updatePromptDisplay();
   }
 
   // ─── Init ──────────────────────────────────────────────
@@ -76,12 +129,13 @@
     fetch('/api/config')
       .then(function (resp) { return resp.json(); })
       .then(function (cfg) {
-        state.fluxSchema = cfg.flux_schema;
-        state.ideogramSchema = cfg.ideogram_schema;
-        state.loaded = true;
-        renderJsonForm(state.fluxSchema);
+        fluxSchema = cfg.flux_schema;
+        ideogramSchema = cfg.ideogram_schema;
+        loaded = true;
+        renderJsonForm(fluxSchema);
         bindEvents();
         loadQuantMethods();
+        loadLoraProjects();
         loadHistory();
       });
   }
@@ -89,9 +143,11 @@
   // ─── Quant method loader ───────────────────────────────
   function loadQuantMethods() {
     var params = new URLSearchParams();
-    params.set('model', state.model);
-    if (isFlux()) {
-      params.set('variant', state.variant);
+    params.set('model', current_model);
+    if (['flux-4b', 'flux-9b'].indexOf(current_model) > -1) {
+      params.set('variant', current_variant);
+    } else if (current_model === 'anima') {
+      params.set('variant', el.animaVariant ? el.animaVariant.value : 'base');
     }
 
     fetch('/api/quant-methods?' + params.toString())
@@ -197,10 +253,10 @@
 
   // ─── Prompt display ────────────────────────────────────
   function updatePromptDisplay() {
-    if (state.mode === 'text') {
+    if (current_prompt_format === 'text') {
       el.promptDisplay.value = el.textPrompt.value;
     } else {
-      var schema = getModelType() === 'flux' ? state.fluxSchema : state.ideogramSchema;
+      var schema = current_model.indexOf('flux') === 0 ? fluxSchema : ideogramSchema;
       var obj = buildJsonObject(schema);
       el.promptDisplay.value = JSON.stringify(obj, null, 2) || '{}';
     }
@@ -226,25 +282,141 @@
   }
 
   function getPromptString() {
-    if (state.mode === 'text') {
+    if (current_prompt_format === 'text') {
       return el.textPrompt.value;
     }
-    var schema = getModelType() === 'flux' ? state.fluxSchema : state.ideogramSchema;
+    var schema = current_model.indexOf('flux') === 0 ? fluxSchema : ideogramSchema;
     return buildJsonObject(schema);
+  }
+
+  // ─── LoRA ──────────────────────────────────────────────
+  function loadLoraProjects() {
+    var params = new URLSearchParams();
+    params.set('model', current_model);
+
+    fetch('/api/lora-projects?' + params.toString())
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        loraProjects = data.projects || {};
+        populateLoraProjectDropdown();
+      })
+      .catch(function () {
+        loraProjects = {};
+        populateLoraProjectDropdown();
+      });
+  }
+
+  function populateLoraProjectDropdown() {
+    el.loraProject.innerHTML = '';
+    var opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '(none)';
+    el.loraProject.appendChild(opt);
+
+    var names = Object.keys(loraProjects);
+    if (names.length === 0) {
+      var opt2 = document.createElement('option');
+      opt2.value = '';
+      opt2.textContent = '(no projects found)';
+      opt2.disabled = true;
+      el.loraProject.appendChild(opt2);
+      el.loraCheckpoint.disabled = true;
+      el.addLora.disabled = true;
+      return;
+    }
+
+    el.addLora.disabled = false;
+    names.sort().forEach(function (name) {
+      var opt2 = document.createElement('option');
+      opt2.value = name;
+      opt2.textContent = name;
+      el.loraProject.appendChild(opt2);
+    });
+    populateLoraCheckpointDropdown();
+  }
+
+  function populateLoraCheckpointDropdown() {
+    var project = el.loraProject.value;
+    el.loraCheckpoint.innerHTML = '';
+    var checkpoints = loraProjects[project] || [];
+
+    if (!project || checkpoints.length === 0) {
+      var opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = project ? '(no checkpoints)' : '(select project first)';
+      el.loraCheckpoint.appendChild(opt);
+      el.loraCheckpoint.disabled = true;
+      return;
+    }
+
+    el.loraCheckpoint.disabled = false;
+    checkpoints.forEach(function (ckpt) {
+      var opt = document.createElement('option');
+      opt.value = ckpt.path;
+      opt.textContent = ckpt.label;
+      el.loraCheckpoint.appendChild(opt);
+    });
+  }
+
+  function addLora() {
+    var path = el.loraCheckpoint.value;
+    if (!path) return;
+
+    var project = el.loraProject.value;
+    var checkpoints = loraProjects[project] || [];
+    var match = null;
+    for (var i = 0; i < checkpoints.length; i++) {
+      if (checkpoints[i].path === path) { match = checkpoints[i]; break; }
+    }
+    var label = match ? match.label : path;
+    var weight = parseFloat(el.loraWeight.value) || 1.0;
+
+    // Don't add duplicates
+    for (var i = 0; i < loras.length; i++) {
+      if (loras[i].path === path) return;
+    }
+
+    loras.push({ path: path, label: label, weight: weight });
+    renderLoras();
+  }
+
+  function removeLora(index) {
+    loras.splice(index, 1);
+    renderLoras();
+  }
+
+  function renderLoras() {
+    el.loraList.innerHTML = '';
+    loras.forEach(function (lora, i) {
+      var item = document.createElement('div');
+      item.className = 'lora-item';
+
+      var info = document.createElement('span');
+      info.className = 'lora-item-info';
+      info.textContent = lora.label + ' [' + lora.weight.toFixed(2) + ']';
+
+      var btn = document.createElement('button');
+      btn.className = 'lora-remove';
+      btn.textContent = '\u00d7';
+      btn.addEventListener('click', function () { removeLora(i); });
+
+      item.appendChild(info);
+      item.appendChild(btn);
+      el.loraList.appendChild(item);
+    });
   }
 
   // ─── Events ────────────────────────────────────────────
   function bindEvents() {
     el.modelSelect.addEventListener('change', function () {
-      state.model = el.modelSelect.value;
-      onModelChange();
+      setCurrentModel(el.modelSelect.value);
     });
 
-    el.variantDistill.addEventListener('click', function () { setVariant('distill'); });
-    el.variantBase.addEventListener('click', function () { setVariant('base'); });
+    el.variantDistill.addEventListener('click', function () { setCurrentVariant('distill'); });
+    el.variantBase.addEventListener('click', function () { setCurrentVariant('base'); });
 
-    el.modeText.addEventListener('click', function () { setMode('text'); });
-    el.modeJson.addEventListener('click', function () { setMode('json'); });
+    el.modeText.addEventListener('click', function () { setCurrentPromptFormat('text'); });
+    el.modeJson.addEventListener('click', function () { setCurrentPromptFormat('json'); });
 
     el.ratio.addEventListener('change', updateWidthFromRatio);
     el.height.addEventListener('input', updateWidthFromRatio);
@@ -261,6 +433,17 @@
     });
 
     el.textPrompt.addEventListener('input', updatePromptDisplay);
+    if (el.animaVariant) {
+      el.animaVariant.addEventListener('change', function () {
+        setCurrentVariant(el.animaVariant.value);
+      });
+    }
+    if (el.negativePrompt) {
+      el.negativePrompt.addEventListener('input', updatePromptDisplay);
+    }
+
+    el.loraProject.addEventListener('change', populateLoraCheckpointDropdown);
+    el.addLora.addEventListener('click', addLora);
 
     el.addRef.addEventListener('click', function () { el.refPicker.click(); });
     el.refPicker.addEventListener('change', function (e) {
@@ -275,50 +458,6 @@
       var btn = e.target.closest('.btn-regen');
       if (btn) handleRegen(btn.dataset.entryId);
     });
-
-
-  }
-
-  function onModelChange() {
-    var isFluxModel = isFlux();
-    var schema = isFluxModel ? state.fluxSchema : state.ideogramSchema;
-    renderJsonForm(schema);
-    updatePromptDisplay();
-
-    el.variantSection.style.display = isFluxModel ? 'block' : 'none';
-    el.refSection.style.display = isFluxModel ? 'block' : 'none';
-
-    if (isFluxModel) {
-      setVariant(state.variant);
-    } else {
-      el.guidance.value = 7.0;
-      el.steps.value = 50;
-    }
-
-    if (state.loaded) loadQuantMethods();
-  }
-
-  function setVariant(variant) {
-    state.variant = variant;
-    el.variantDistill.classList.toggle('active', variant === 'distill');
-    el.variantBase.classList.toggle('active', variant === 'base');
-    if (variant === 'distill') {
-      el.steps.value = 4;
-      el.guidance.value = 1.0;
-    } else {
-      el.steps.value = 50;
-      el.guidance.value = 4.0;
-    }
-    loadQuantMethods();
-  }
-
-  function setMode(mode) {
-    state.mode = mode;
-    el.modeText.classList.toggle('active', mode === 'text');
-    el.modeJson.classList.toggle('active', mode === 'json');
-    el.formText.style.display = mode === 'text' ? 'block' : 'none';
-    el.formJson.style.display = mode === 'json' ? 'block' : 'none';
-    updatePromptDisplay();
   }
 
   // ─── Aspect ratio ──────────────────────────────────────
@@ -346,7 +485,7 @@
             console.error('Upload failed:', data.error);
             return;
           }
-          state.refImages.push({ serverPath: data.path, dataUrl: dataUrl });
+          refImages.push({ serverPath: data.path, dataUrl: dataUrl });
           renderRefs();
         })
         .catch(function (err) { console.error('Upload error:', err); });
@@ -355,13 +494,13 @@
   }
 
   function removeRefImage(index) {
-    state.refImages.splice(index, 1);
+    refImages.splice(index, 1);
     renderRefs();
   }
 
   function renderRefs() {
     el.refList.innerHTML = '';
-    state.refImages.forEach(function (ref, i) {
+    refImages.forEach(function (ref, i) {
       var thumb = document.createElement('div');
       thumb.className = 'ref-thumb';
 
@@ -387,9 +526,10 @@
     el.runBtn.disabled = true;
 
     var payload = {
-      model: state.model,
-      mode: state.mode,
-      base: state.variant === 'base',
+      model: current_model,
+      mode: current_prompt_format,
+      base: current_variant === 'base',
+      variant: current_model === 'anima' ? (el.animaVariant ? el.animaVariant.value : 'base') : current_variant,
       prompt: getPromptString(),
       width: parseInt(el.width.value) || 1024,
       height: parseInt(el.height.value) || 1024,
@@ -399,8 +539,10 @@
       text_quant_method: el.textQuant.value || null,
       denoiser_quant_method: el.denoiserQuant.value || null,
       reference_size: parseInt(el.refSize.value) || 512,
-      reference_images: state.refImages.map(function (r) { return r.serverPath; }),
+      reference_images: refImages.map(function (r) { return r.serverPath; }),
+      loras: loras.map(function (l) { return { path: l.path, weight: l.weight }; }),
       offloading: el.offloadingValue() === 'on',
+      negative_prompt: current_model === 'anima' ? (el.negativePrompt.value || null) : null,
     };
 
     showProgress('Submitting...', 10);
@@ -429,7 +571,7 @@
 
   function pollJob(jobId) {
     showProgress('Queued...', 15);
-    state.polling = setInterval(function () {
+    polling = setInterval(function () {
       fetch('/api/generate/status/' + jobId)
         .then(function (resp) { return resp.json(); })
         .then(function (data) {
@@ -438,8 +580,8 @@
           } else if (data.status === 'running') {
             showProgress('Generating...', 50);
           } else if (data.status === 'done') {
-            clearInterval(state.polling);
-            state.polling = null;
+            clearInterval(polling);
+            polling = null;
             el.runBtn.disabled = false;
             hideProgress();
             if (data.paths && data.paths.length > 0) {
@@ -447,16 +589,16 @@
             }
             loadHistory();
           } else if (data.status === 'failed') {
-            clearInterval(state.polling);
-            state.polling = null;
+            clearInterval(polling);
+            polling = null;
             el.runBtn.disabled = false;
             hideProgress();
             showError(data.error || 'Generation failed');
           }
         })
         .catch(function (err) {
-          clearInterval(state.polling);
-          state.polling = null;
+          clearInterval(polling);
+          polling = null;
           el.runBtn.disabled = false;
           hideProgress();
           showError('Status polling failed: ' + err.message);
@@ -519,7 +661,7 @@
       return;
     }
     el.historyList.innerHTML = '';
-    entries.slice().reverse().forEach(function (entry) {
+    entries.forEach(function (entry) {
       var card = document.createElement('div');
       card.className = 'history-card';
 
@@ -570,25 +712,27 @@
         if (entry.model) {
           var modelType = entry.model;
           var fluxVersion = entry.flux_version || '4b';
-          var newModel = modelType === 'ideogram' ? 'ideogram' : 'flux-' + fluxVersion;
+          var newModel = modelType === 'ideogram' ? 'ideogram' : modelType === 'anima' ? 'anima' : 'flux-' + fluxVersion;
           el.modelSelect.value = newModel;
-          state.model = newModel;
-          onModelChange();
+          setCurrentModel(newModel);
         }
 
-        // Restore variant (Flux only)
-        if (isFlux()) {
+        // Restore variant
+        if (['flux-4b', 'flux-9b'].indexOf(current_model) > -1) {
           var baseFlag = entry.flux_base === true;
           var variant = baseFlag ? 'base' : 'distill';
-          setVariant(variant);
+          setCurrentVariant(variant);
+        } else if (current_model === 'anima') {
+          var animaVar = entry.anima_variant || entry.settings.anima_variant || 'base';
+          setCurrentVariant(animaVar);
         }
 
-        // Restore mode
-        var mode = entry.mode || 'text';
-        setMode(mode);
+        // Restore prompt format
+        var format = entry.mode || 'text';
+        setCurrentPromptFormat(format);
 
         // Restore prompt
-        if (mode === 'text') {
+        if (format === 'text') {
           el.textPrompt.value = typeof entry.prompt === 'string' ? entry.prompt : JSON.stringify(entry.prompt || '');
         } else if (typeof entry.prompt === 'object') {
           restoreJsonValues(entry.prompt);
@@ -610,13 +754,23 @@
           var off = document.querySelector('input[name="offloading"][value="' + (s.offloading ? 'on' : 'off') + '"]');
           if (off) off.checked = true;
         }
+        if (current_model === 'anima' && el.negativePrompt) {
+          el.negativePrompt.value = entry.negative_prompt || s.negative_prompt || '';
+        }
 
         // Restore ref images
-        state.refImages = [];
+        refImages = [];
         (entry.reference_images || []).forEach(function (path) {
-          state.refImages.push({ serverPath: path, dataUrl: '' });
+          refImages.push({ serverPath: path, dataUrl: '' });
         });
         renderRefs();
+
+        // Restore loras
+        loras = [];
+        (entry.loras || []).forEach(function (l) {
+          loras.push({ path: l.path, label: l.label || l.path, weight: l.weight });
+        });
+        renderLoras();
         updatePromptDisplay();
       })
       .catch(function (err) {
@@ -625,7 +779,7 @@
   }
 
   function restoreJsonValues(obj) {
-    var schema = getModelType() === 'flux' ? state.fluxSchema : state.ideogramSchema;
+    var schema = current_model.indexOf('flux') === 0 ? fluxSchema : ideogramSchema;
     if (!schema || !schema.fields) return;
 
     schema.fields.forEach(function (field) {

@@ -14,6 +14,7 @@ from ideogram.denoiser.targets import _build_ideogram_denoiser_target_tensors
 from krea_2.text_encoder.target import _build_krea2_text_encoder_targets
 from krea_2.denoiser.targets import _build_krea2_denoiser_target_tensors
 from anima.denoiser.targets import _build_anima_denoiser_target_tensors
+from anima.text_encoder.targets import _build_anima_text_encoder_targets
 from gemma4.config import (
     _GEMMA4_QUANT_CONFIGS,
     _HIGH_LINEAR_WEIGHT_SUFFIXES,
@@ -85,6 +86,10 @@ def _build_krea2_denoiser_files(source: Path) -> list[Path]:
 
 def _build_anima_denoiser_files(source: Path) -> list[Path]:
     return [source / "anima-base-v1.0.safetensors"]
+
+
+def _build_anima_text_encoder_files(source: Path) -> list[Path]:
+    return [source / "qwen_3_06b_base.safetensors"]
 
 
 def _build_wan22_denoiser_files(source: Path) -> list[Path]:
@@ -203,6 +208,10 @@ def _krea2_denoiser_target_configs() -> dict[str, dict[str, list[str]]]:
     return _mixed_target_configs(_build_krea2_denoiser_target_tensors)
 
 
+def _anima_text_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(_build_anima_text_encoder_targets)
+
+
 def _model_specs() -> dict[str, dict[str, object]]:
     flux2_4b_text = {
         "files": lambda source: _build_flux2_text_encoder_files(source, "4b"),
@@ -237,6 +246,10 @@ def _model_specs() -> dict[str, dict[str, object]]:
         "anima_denoiser": {
             "files": _build_anima_denoiser_files,
             "target_configs": lambda: _mixed_target_configs(_build_anima_denoiser_target_tensors),
+        },
+        "anima_text_encoder": {
+            "files": _build_anima_text_encoder_files,
+            "target_configs": _anima_text_target_configs,
         },
         "flux2_4b_text_encoder": flux2_4b_text,
         "flux2_9b_text_encoder": flux2_9b_text,

@@ -401,6 +401,15 @@ def _collect_videos(path: Path) -> List[Path]:
     ])
 
 
+def _output_exists(v: Path, output_path: Path, single_input: bool,
+                    resolution: int, audio_bitrate: int | None,
+                    audio_layout: dict | None) -> bool:
+    if single_input:
+        return output_path.is_file() if output_path.suffix.lower() in VIDEO_EXTS else False
+    pattern = f"{v.stem}_hevc_{resolution}p_cq_*"
+    return bool(list(output_path.glob(pattern)))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Encode video(s) with analysis-guided optimal CRF (HEVC NVENC)"
@@ -432,6 +441,8 @@ def main() -> None:
                         help="Downmix audio to this layout (e.g. 'stereo', '2.1', "
                              "'5.1'). Only applies with --audio. Raises error if "
                              "source lacks LFE when target requires it.")
+    parser.add_argument("--reset", action="store_true",
+                        help="Re-encode even if output already exists")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show analysis result but skip encoding")
     args = parser.parse_args()
@@ -508,6 +519,14 @@ def main() -> None:
                              f"'{args.audio_channels}' requires LFE but source "
                              f"layout '{info['layout']}' has none")
 
+        if not args.reset and _output_exists(
+            v, output_path, single_input, args.resolution,
+            args.audio_bitrate, audio_layout
+        ):
+            print(f"{prefix} Output exists, skipping")
+            results.append({"input": str(v), "success": True, "skipped": True})
+            continue
+
         print(f"{prefix}[1/4] Analyzing video...")
 
         try:
@@ -566,15 +585,20 @@ def main() -> None:
 
     print(f"{'='*60}")
     print("Summary:")
-    successes = [r for r in results if r.get("success")]
+    encoded = [r for r in results if r.get("success") and not r.get("skipped")]
+    skipped = [r for r in results if r.get("skipped")]
     failures = [r for r in results if not r.get("success")]
-    if successes:
-        print(f"  Encoded: {len(successes)}")
-        for r in successes:
+    if encoded:
+        print(f"  Encoded: {len(encoded)}")
+        for r in encoded:
             if r.get("dry_run"):
                 print(f"    {r['input']} -> dry-run (CRF {r['crf']})")
             else:
                 print(f"    {r['input']} -> {r['output']} (CRF {r['crf']})")
+    if skipped:
+        print(f"  Skipped: {len(skipped)}")
+        for r in skipped:
+            print(f"    {r['input']}")
     if failures:
         print(f"  Failed: {len(failures)}")
         for r in failures:

@@ -574,6 +574,8 @@ def generate_image(
     )
     if loras:
         print("  * applying loras ...")
+        for lora_path, strength in loras.items():
+            print(f"    {lora_path} [{strength:.2f}]")
         apply_lora(transformer, loras)
     if offloading:
         pinned = pin_module_parameters(transformer)

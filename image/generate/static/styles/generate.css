@@ -228,6 +228,44 @@ textarea.input {
   color: var(--text);
 }
 
+.lora-list {
+  margin-top: 0.5rem;
+}
+
+.lora-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.35rem 0.5rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 4px;
+}
+
+.lora-item-info {
+  font-size: 0.8rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lora-remove {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  background: var(--danger);
+  border: none;
+  border-radius: 50%;
+  color: white;
+  font-size: 0.8rem;
+  line-height: 20px;
+  text-align: center;
+  cursor: pointer;
+  margin-left: 0.4rem;
+}
+
 .ref-list {
   display: flex;
   flex-wrap: wrap;

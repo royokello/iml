@@ -25,11 +25,38 @@ def _entry_from_metadata(meta: dict, outputs: list[str]) -> dict[str, Any]:
         "mode": iml.get("mode", "text"),
         "flux_version": iml.get("flux_version"),
         "flux_base": iml.get("flux_base", False),
+        "anima_variant": iml.get("anima_variant"),
         "prompt": iml.get("prompt", ""),
+        "negative_prompt": iml.get("settings", {}).get("negative_prompt"),
         "settings": iml.get("settings", {}),
         "reference_images": iml.get("reference_images", []),
+        "loras": iml.get("loras", []),
         "outputs": outputs,
     }
+
+
+def _scan_lora_checkpoints(root_dir: Path, version: str) -> dict[str, list[dict[str, Any]]]:
+    lora_root = root_dir / "flux2" / version / "loras"
+    if not lora_root.is_dir():
+        return {}
+    projects: dict[str, list[dict[str, Any]]] = {}
+    for proj_dir in sorted(lora_root.iterdir()):
+        if not proj_dir.is_dir():
+            continue
+        models_dir = proj_dir / "models"
+        if not models_dir.is_dir():
+            continue
+        checkpoints: list[dict[str, Any]] = []
+        for ckpt in sorted(models_dir.glob("*.safetensors")):
+            step = ckpt.stem
+            checkpoints.append({
+                "path": str(ckpt.as_posix()),
+                "step": step,
+                "label": f"{proj_dir.name} ({step})",
+            })
+        if checkpoints:
+            projects[proj_dir.name] = checkpoints
+    return projects
 
 
 def _read_png_metadata(png_path: Path) -> dict | None:
@@ -90,6 +117,8 @@ def _parse_model(value: str) -> tuple[str, str | None]:
     if value.startswith("flux"):
         parts = value.split("-", 1)
         return "flux", parts[1] if len(parts) > 1 else config.DEFAULT_FLUX_VERSION
+    if value == "anima":
+        return "anima", None
     return "ideogram", None
 
 
@@ -128,6 +157,14 @@ def init_app(app, root_dir: Path) -> None:
             "flux_schema": flux_schema,
             "ideogram_schema": ideogram_schema,
         })
+
+    @app.route("/api/lora-projects")
+    def api_lora_projects():
+        model = request.args.get("model", "flux-4b")
+        _, version = _parse_model(model)
+        ver = version or config.DEFAULT_FLUX_VERSION
+        projects = _scan_lora_checkpoints(root_dir, ver)
+        return jsonify({"projects": projects})
 
     @app.route("/api/quant-methods")
     def api_quant_methods():
@@ -183,14 +220,21 @@ def init_app(app, root_dir: Path) -> None:
         width = int(data.get("width", 1024))
         height = int(data.get("height", 1024))
         steps = int(data.get("steps", 50))
-        guidance_scale = float(data.get("guidance_scale", 4.0 if model_type == "flux" else 7.0))
+        guidance_scale = float(data.get("guidance_scale", 4.0 if model_type in ("flux", "anima") else 7.0))
         seed_raw = data.get("seed")
         seed = int(seed_raw) if seed_raw is not None else None
         text_quant = data.get("text_quant_method")
         denoiser_quant = data.get("denoiser_quant_method")
         ref_size = int(data.get("reference_size", config.DEFAULT_REF_SIZE))
         refs = data.get("reference_images") or []
+        raw_loras = data.get("loras") or []
+        loras: list[dict[str, Any]] = []
+        for l in raw_loras:
+            if isinstance(l, dict) and "path" in l:
+                loras.append({"path": l["path"], "weight": float(l.get("weight", 1.0))})
         offloading = bool(data.get("offloading", False))
+        anima_variant = data.get("variant", config.DEFAULT_ANIMA_VARIANT)
+        negative_prompt = data.get("negative_prompt") or None
 
         job_id = jobs.new_job_id()
         output_dir = root_dir / config.OUTPUT_SUBDIR
@@ -200,7 +244,7 @@ def init_app(app, root_dir: Path) -> None:
                 root_dir,
                 model=model_type,
                 mode=mode,
-                version=flux_ver,
+                version=anima_variant if model_type == "anima" else flux_ver,
                 base=base,
                 prompt=prompt,
                 width=width,
@@ -212,9 +256,11 @@ def init_app(app, root_dir: Path) -> None:
                 denoiser_quant_method=denoiser_quant,
                 reference_images=refs,
                 reference_size=ref_size,
+                loras=loras,
                 output_dir=output_dir,
                 job_id=job_id,
                 offloading=offloading,
+                negative_prompt=negative_prompt,
             )
 
         jobs.create_entry(job_id)
@@ -256,7 +302,7 @@ def init_app(app, root_dir: Path) -> None:
 
     @app.route("/api/history")
     def api_history():
-        entries = _job_history_entries(root_dir, limit=50)
+        entries = _job_history_entries(root_dir, limit=5)
         return jsonify({"entries": entries})
 
     @app.route("/api/history/<entry_id>/regen")

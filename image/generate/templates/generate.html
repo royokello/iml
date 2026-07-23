@@ -23,14 +23,23 @@
             <option value="flux-4b">Flux 2 4B</option>
             <option value="flux-9b">Flux 2 9B</option>
             <option value="ideogram">Ideogram</option>
+            <option value="anima">Anima</option>
           </select>
         </section>
 
         <section class="section" id="variant-section">
           <h3 class="section-title">Variant</h3>
-          <div class="toggle-row">
+          <div id="variant-flux" class="toggle-row">
             <button id="variant-distill" class="btn-variant active" data-variant="distill">Distill</button>
             <button id="variant-base" class="btn-variant" data-variant="base">Base</button>
+          </div>
+          <div id="variant-anima" style="display:none">
+            <select id="anima-variant" class="input">
+              <option value="base">Base</option>
+              <option value="aesthetic">Aesthetic</option>
+              <option value="turbo">Turbo</option>
+              <option value="preview">Preview</option>
+            </select>
           </div>
         </section>
 
@@ -87,15 +96,41 @@
             <input id="steps" type="number" class="input" min="1" max="200" value="4" />
           </div>
           <div class="field-row">
+          <div class="field">
+            <label for="guidance">Guidance</label>
+            <input id="guidance" type="number" class="input" step="0.1" min="1" max="30" value="1.0" />
+          </div>
+          <div class="field">
+            <label for="seed">Seed</label>
+            <input id="seed" type="number" class="input" value="19930625" />
+          </div>
+          <div class="field" id="negative-prompt-field" style="display:none">
+            <label for="negative-prompt">Negative Prompt</label>
+            <textarea id="negative-prompt" class="input" rows="2" placeholder="Things to exclude... (optional)"></textarea>
+          </div>
+          </div>
+        </section>
+
+        <section class="section lora-section" id="lora-section">
+          <h3 class="section-title">LoRAs</h3>
+          <div class="field">
+            <label for="lora-project">Project</label>
+            <select id="lora-project" class="input"><option value="">(none)</option></select>
+          </div>
+          <div class="field">
+            <label for="lora-checkpoint">Checkpoint</label>
+            <select id="lora-checkpoint" class="input" disabled><option value="">Select project first</option></select>
+          </div>
+          <div class="field-row">
             <div class="field">
-              <label for="guidance">Guidance</label>
-              <input id="guidance" type="number" class="input" step="0.1" min="1" max="30" value="1.0" />
+              <label for="lora-weight">Weight</label>
+              <input id="lora-weight" type="number" class="input" min="0.0" max="2.0" step="0.05" value="1.0" />
             </div>
-            <div class="field">
-              <label for="seed">Seed</label>
-              <input id="seed" type="number" class="input" value="19930625" />
+            <div class="field" style="display:flex;align-items:flex-end">
+              <button id="add-lora" class="btn btn-secondary">+ Add</button>
             </div>
           </div>
+          <div id="lora-list" class="lora-list"></div>
         </section>
 
         <section class="section ref-section" id="ref-section">

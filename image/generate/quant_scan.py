@@ -23,6 +23,8 @@ def scan_text_encoder(root: Path, model: str, version: str | None = None) -> lis
     if "flux" in model:
         v = version or "4b"
         return _extract_methods(root / "flux2" / v / "model" / "text_encoder")
+    if model == "anima":
+        return _extract_methods(root / "anima" / "model" / "text_encoder")
     return []
 
 
@@ -37,4 +39,7 @@ def scan_denoiser(root: Path, model: str, version: str | None = None, variant: s
         v = version or "4b"
         var = variant or "distill"
         return _extract_methods(root / "flux2" / v / "model" / "transformer" / var)
+    if model == "anima":
+        var = variant or "base"
+        return _extract_methods(root / "anima" / "model" / "denoiser" / var)
     return []

@@ -39,7 +39,10 @@ def _build_metadata(
     denoiser_quant_method: str,
     reference_images: list[str] | None,
     reference_size: int,
+    loras: list[dict] | None = None,
     offloading: bool = False,
+    negative_prompt: str | None = None,
+    anima_variant: str | None = None,
 ) -> str:
     data = {
         "iml_generate": {
@@ -48,8 +51,8 @@ def _build_metadata(
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
             "model": model,
             "mode": mode,
-            "flux_version": version,
-            "flux_base": base,
+            "flux_version": version if model != "anima" else None,
+            "flux_base": base if model != "anima" else None,
             "prompt": prompt,
             "settings": {
                 "width": width,
@@ -61,10 +64,15 @@ def _build_metadata(
                 "denoiser_quant_method": denoiser_quant_method,
                 "reference_size": reference_size,
                 "offloading": offloading,
+                "negative_prompt": negative_prompt,
+                "anima_variant": anima_variant if model == "anima" else None,
             },
             "reference_images": reference_images or [],
+            "loras": loras or [],
         }
     }
+    if model == "anima":
+        data["iml_generate"]["anima_variant"] = anima_variant
     return json.dumps(data)
 
 
@@ -101,19 +109,26 @@ def generate_images(
     denoiser_quant_method: str,
     reference_images: list[str] | None,
     reference_size: int,
+    loras: list[dict] | None = None,
     output_dir: Path,
     job_id: str,
     offloading: bool = False,
+    negative_prompt: str | None = None,
 ) -> dict:
     root = Path(root).expanduser().resolve()
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    anima_variant = version if model == "anima" else None
+
     metadata_str = _build_metadata(
         job_id, model, mode, version, base, prompt, width, height, steps,
         guidance_scale, seed, text_quant_method,
         denoiser_quant_method, reference_images, reference_size,
+        loras=loras,
         offloading=offloading,
+        negative_prompt=negative_prompt,
+        anima_variant=anima_variant,
     )
     pnginfo = PngImagePlugin.PngInfo()
     pnginfo.add_text("iml_generate", metadata_str)
@@ -122,6 +137,9 @@ def generate_images(
         from flux2.gen import generate_image as flux_generate
 
         flux_ver = version or config.DEFAULT_FLUX_VERSION
+        loras_dict: dict[str, float] | None = None
+        if loras:
+            loras_dict = {l["path"]: l.get("weight", 1.0) for l in loras}
 
         images = flux_generate(
             root,
@@ -137,6 +155,7 @@ def generate_images(
             ref_size=reference_size,
             text_quant_method=text_quant_method,
             denoiser_quant_method=denoiser_quant_method,
+            loras=loras_dict,
             offloading=offloading,
         )
 
@@ -163,6 +182,28 @@ def generate_images(
 
         if not images:
             raise RuntimeError("Ideogram generation produced no output")
+
+        saved_paths = _save_with_metadata(images, output_dir, pnginfo)
+
+    elif model == "anima":
+        from anima.gen import generate_image as anima_generate
+
+        images = anima_generate(
+            root,
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            variant=anima_variant or "base",
+            steps=steps,
+            cfg=guidance_scale,
+            seed=seed,
+            width=width,
+            height=height,
+            text_quant_method=text_quant_method or None,
+            denoiser_quant_method=denoiser_quant_method or None,
+        )
+
+        if not images:
+            raise RuntimeError("Anima generation produced no output")
 
         saved_paths = _save_with_metadata(images, output_dir, pnginfo)
 
