@@ -33,6 +33,8 @@ def main(
     steps: int,
     target_resolution: int,
     reference_resolution: int,
+    target_upscale: bool,
+    ref_upscale: bool,
     rank: int,
     alpha: int,
     resume: bool,
@@ -93,7 +95,9 @@ def main(
         cache_text=cache_text,
         cache_images=cache_images,
         target_resolution=target_resolution,
-        reference_resolution=reference_resolution
+        reference_resolution=reference_resolution,
+        target_upscale=target_upscale,
+        ref_upscale=ref_upscale,
     )
     dataset_size = len(dataset.target_latents)
     if dataset_size == 0:
@@ -395,7 +399,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rank", type=int, default=32)
     parser.add_argument("--alpha", type=int, default=32)
     parser.add_argument("--target_res", type=int, default=512)
+    parser.add_argument("--target-upscale", action="store_true")
     parser.add_argument("--ref_res", type=int, default=512)
+    parser.add_argument("--ref-upscale", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-4,
         help="Learning rate (default: 0.0001)")
     return parser.parse_args()
@@ -435,6 +441,8 @@ if __name__ == "__main__":
         lr=args.lr,
         target_resolution=args.target_res,
         reference_resolution=args.ref_res,
+        target_upscale=args.target_upscale,
+        ref_upscale=args.ref_upscale,
     )
 
     print(f"  * training done in {time.perf_counter() - training_start:.3f}s")

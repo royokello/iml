@@ -204,6 +204,8 @@ class Flux2Dataset:
         load_target_images: bool = True,
         load_reference_images: bool = True,
         load_target_ratios: bool = False,
+        target_upscale: bool = False,
+        ref_upscale: bool = False,
     ):
         print("Loading dataset ...")
         print(f" * Dataset DirPath: {dataset_dirpath}")
@@ -216,6 +218,8 @@ class Flux2Dataset:
         print(f" * Load Target Images: {load_target_images}")
         print(f" * Load Reference Images: {load_reference_images}")
         print(f" * Load Target Ratios: {load_target_ratios}")
+        print(f" * Target Upscale: {target_upscale}")
+        print(f" * Ref Upscale: {ref_upscale}")
 
         torch.cuda.empty_cache()
 
@@ -261,7 +265,8 @@ class Flux2Dataset:
                         with Image.open(ref_filepath) as ref_img:
                             rw, rh = ref_img.size
                         if min(rw, rh) < reference_resolution:
-                            continue
+                            if not ref_upscale:
+                                continue
 
                         has_good_ref = True
 
@@ -341,6 +346,17 @@ class Flux2Dataset:
                         target_image_rgb = target_image.convert("RGB")
 
                     w, h = target_image_rgb.size
+                    if min(w, h) < target_resolution and not target_upscale:
+                        print(f"   * skipped: target below target_resolution ({target_resolution})")
+                        target_latents.append(None)
+                        if load_target_ratios:
+                            target_ratios.append(None)
+                        captions.append(None)
+                        text_embeddings.append(None)
+                        text_cache_paths.append(None)
+                        all_ref_latents.append(None)
+                        i += 1
+                        continue
                     if load_target_ratios:
                         target_ratios.append(w / h)
                     scale = target_resolution / min(w, h)
@@ -405,6 +421,18 @@ class Flux2Dataset:
                     text_cache_paths.append(text_cache_filepath)
 
                 i += 1
+
+        # Remove entries with None target_latents (safety compaction)
+        valid = [j for j, t in enumerate(target_latents) if t is not None]
+        removed = len(target_latents) - len(valid)
+        if removed:
+            print(f"  * removed {removed} entries with missing target latents")
+            target_latents = [target_latents[j] for j in valid]
+            target_ratios = [target_ratios[j] for j in valid] if load_target_ratios else target_ratios
+            captions = [captions[j] for j in valid]
+            text_embeddings = [text_embeddings[j] for j in valid]
+            text_cache_paths = [text_cache_paths[j] for j in valid]
+            all_ref_latents = [all_ref_latents[j] for j in valid]
 
         del vae
         del image_processor

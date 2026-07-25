@@ -89,6 +89,18 @@ def parse_args() -> argparse.Namespace:
         default=512,
         help="Resolution for reference image encoding.",
     )
+    parser.add_argument(
+        "--target-upscale",
+        dest="target_upscale",
+        action="store_true",
+        help="Upscale target images below target_res to meet the target resolution.",
+    )
+    parser.add_argument(
+        "--ref-upscale",
+        dest="ref_upscale",
+        action="store_true",
+        help="Upscale reference images below ref_res to meet the target resolution.",
+    )
     parser.add_argument("--samples", type=int, default=1)
     parser.add_argument(
         "--start",
@@ -183,6 +195,8 @@ def main() -> None:
         indices=None if parsed_indices is None else [i - 1 for i in parsed_indices],
         load_target_images=False,
         load_target_ratios=True,
+        target_upscale=args.target_upscale,
+        ref_upscale=args.ref_upscale,
     )
 
     dataset_size = len(cached_dataset.target_ratios)
@@ -404,16 +418,16 @@ def main() -> None:
                 )
                 scheduler.set_begin_index(0)
 
+                ref_latents = cached_dataset.ref_latents[selected_index]
                 reference_latents_batch = None
                 reference_latent_ids_batch = None
-                # ref_item = cached_dataset.reference_images[selected_index]
-                # if ref_item is not None:
-                #     ref_latents = ref_item[0]
-                #     reference_latents_batch = ref_latents.unsqueeze(0).to(
-                #         device=device,
-                #         dtype=latents.dtype,
-                #     )
-                #     reference_latent_ids_batch = None
+                if ref_latents is not None:
+                    ref_latent_tensor, ref_ids_tensor = ref_latents
+                    reference_latents_batch = ref_latent_tensor.unsqueeze(0).to(
+                        device=device,
+                        dtype=latents.dtype,
+                    )
+                    reference_latent_ids_batch = ref_ids_tensor.unsqueeze(0).to(device=device)
 
                 for timestep_value in timesteps:
                     timestep = timestep_value.expand(latents.shape[0]).to(latents.dtype)
