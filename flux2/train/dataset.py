@@ -206,6 +206,7 @@ class Flux2Dataset:
         load_target_ratios: bool = False,
         target_upscale: bool = False,
         ref_upscale: bool = False,
+        pose_res: int = 0,
     ):
         print("Loading dataset ...")
         print(f" * Dataset DirPath: {dataset_dirpath}")
@@ -220,6 +221,7 @@ class Flux2Dataset:
         print(f" * Load Target Ratios: {load_target_ratios}")
         print(f" * Target Upscale: {target_upscale}")
         print(f" * Ref Upscale: {ref_upscale}")
+        print(f" * Pose Resolution: {pose_res}")
 
         torch.cuda.empty_cache()
 
@@ -242,6 +244,8 @@ class Flux2Dataset:
         i = 0
 
         for target_filepath in dataset_dirpath.iterdir():
+            if target_filepath.name.lower().endswith(".pose.png"):
+                continue
             if target_filepath.is_file() and target_filepath.suffix.lower() in IMAGE_SUFFIXES:
                 if indices is not None and i not in indices:
                     i += 1
@@ -317,6 +321,60 @@ class Flux2Dataset:
                             del latent
                             del latents_bn_mean
                             del latents_bn_std
+
+                # --- Pose image ---
+                pose_path = dataset_dirpath / f"{target_filepath.stem}.pose.png"
+                if pose_path.is_file() and pose_res > 0:
+                    pose_cache_path = pose_path.parent / f"{pose_path.stem}.safetensors"
+                    if pose_cache_path.is_file():
+                        ref_tensors = load_file(str(pose_cache_path), device="cpu")
+                        ref_latent = (ref_tensors["latent"], ref_tensors["id"])
+                        sample_refs.append(ref_latent)
+                        has_good_ref = True
+                        print(f"   * pose ({pose_path.name}) loaded cache")
+                    else:
+                        ref_start = time.perf_counter()
+                        with Image.open(pose_path) as pose_image:
+                            pose_image_rgb = pose_image.convert("RGB")
+
+                        pw, ph = pose_image_rgb.size
+                        scale = pose_res / min(pw, ph)
+                        new_w = max(16, round(pw * scale / 16) * 16)
+                        new_h = max(16, round(ph * scale / 16) * 16)
+                        new_size = (new_w, new_h)
+                        pose_image_resized = pose_image_rgb.resize(new_size, Image.LANCZOS)
+                        ref_loading_time = time.perf_counter() - ref_start
+
+                        ref_encoding_start = time.perf_counter()
+                        image_tensor = image_processor.preprocess(pose_image_resized)
+                        image_tensor = image_tensor.to(device="cuda", dtype=torch.float16)
+
+                        with torch.inference_mode():
+                            latent = vae.encode(image_tensor)
+                            latent = _retrieve_latents(latent)
+                        latent = _patchify_latents(latent)
+
+                        latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latent.device, latent.dtype)
+                        latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
+                            latent.device, latent.dtype
+                        )
+                        latent = (latent - latents_bn_mean) / latents_bn_std
+
+                        ref_latent = (
+                            _pack_latents(latent).squeeze(0).cpu(),
+                            _prepare_latent_ids(torch, latent).squeeze(0).cpu()
+                        )
+
+                        ref_encoding_time = time.perf_counter() - ref_encoding_start
+                        print(f"   * pose encoded in load={ref_loading_time:.3f}, enc={ref_encoding_time:.3f}, total={ref_loading_time + ref_encoding_time:.3f}s at {new_size}")
+
+                        sample_refs.append(ref_latent)
+                        has_good_ref = True
+
+                        del image_tensor
+                        del latent
+                        del latents_bn_mean
+                        del latents_bn_std
 
                 # Skip if refs exist but none met resolution threshold
                 if refs_dirpath.exists() and not has_good_ref:

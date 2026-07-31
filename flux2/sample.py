@@ -128,6 +128,8 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Required for captionless datasets. Encoded once and kept on GPU for all samples.",
     )
+    parser.add_argument("--pose-res", dest="pose_res", type=int, default=256,
+        help="Resolution for pose reference images. 0 to disable. Always upscales. Default: 256")
     return parser.parse_args()
 
 
@@ -197,6 +199,7 @@ def main() -> None:
         load_target_ratios=True,
         target_upscale=args.target_upscale,
         ref_upscale=args.ref_upscale,
+        pose_res=args.pose_res,
     )
 
     dataset_size = len(cached_dataset.target_ratios)

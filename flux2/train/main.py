@@ -42,6 +42,7 @@ def main(
     cache_images: bool,
     lr: float,
     lora_init_checkpoint: Path | None = None,
+    pose_res: int = 256,
 ):
     print("Training Started ...")
     pending_loss_logs: list[tuple[int, int, int, float, torch.Tensor]] = []
@@ -98,6 +99,7 @@ def main(
         reference_resolution=reference_resolution,
         target_upscale=target_upscale,
         ref_upscale=ref_upscale,
+        pose_res=pose_res,
     )
     dataset_size = len(dataset.target_latents)
     if dataset_size == 0:
@@ -233,6 +235,8 @@ def main(
             logs_handle.write("\n".join(step.to_csv_row() for step in new_steps))
             logs_handle.write("\n")
             logs_handle.flush()
+
+        _plot_loss(logs_filepath, models_dirpath / "loss.png")
 
         pending_loss_logs.clear()
 
@@ -375,6 +379,51 @@ def main(
         first_sample_index = 0
         current_epoch += 1
 
+    _plot_loss(logs_filepath, models_dirpath / "loss.png")
+
+
+def _plot_loss(csv_path: Path, output_path: Path) -> None:
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return
+
+    import csv
+    steps, losses = [], []
+    with csv_path.open() as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            steps.append(int(row["step"]))
+            losses.append(float(row["loss"]))
+
+    if not steps:
+        return
+
+    try:
+        import numpy as np
+    except ImportError:
+        np = None
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.plot(steps, losses, color="blue", linewidth=1.0, alpha=0.4, label="Loss")
+
+    if np is not None and len(losses) >= 32:
+        window = 32
+        ma = np.convolve(losses, np.ones(window) / window, mode="valid")
+        ma_steps = steps[window - 1:]
+        ax.plot(ma_steps, ma, color="orange", linewidth=1.0, label=f"{window}-step MA")
+
+    ax.set_xlabel("Step")
+    ax.set_ylabel("Loss")
+    ax.set_title("Training Loss")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  * loss plot saved to {output_path}")
+
 
 MODEL_METADATA_NAMES = {
     "4b": "flux 2 klein 4b",
@@ -398,12 +447,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--rank", type=int, default=32)
     parser.add_argument("--alpha", type=int, default=32)
-    parser.add_argument("--target_res", type=int, default=512)
+    parser.add_argument("--target-res", dest="target_res", type=int, default=512)
     parser.add_argument("--target-upscale", action="store_true")
-    parser.add_argument("--ref_res", type=int, default=512)
+    parser.add_argument("--ref-res", dest="ref_res", type=int, default=512)
     parser.add_argument("--ref-upscale", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-4,
         help="Learning rate (default: 0.0001)")
+    parser.add_argument("--pose-res", dest="pose_res", type=int, default=256,
+        help="Resolution for pose reference images. 0 to disable. Always upscales. Default: 256")
     return parser.parse_args()
 
 if __name__ == "__main__":
@@ -443,6 +494,7 @@ if __name__ == "__main__":
         reference_resolution=args.ref_res,
         target_upscale=args.target_upscale,
         ref_upscale=args.ref_upscale,
+        pose_res=args.pose_res,
     )
 
     print(f"  * training done in {time.perf_counter() - training_start:.3f}s")
