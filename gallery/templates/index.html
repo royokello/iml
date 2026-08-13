@@ -181,7 +181,7 @@
                 updateImageTransform();
 
                 // Update metadata display
-                elements.folderPath.textContent = meta.folder;
+                elements.folderPath.textContent = meta.is_zip ? meta.folder + ' [zip]' : meta.folder;
                 elements.imageCount.textContent = `${meta.image_index + 1} / ${meta.folder_count}`;
                 elements.globalCount.textContent = `${meta.global_index} / ${meta.total_images}`;
             } catch (error) {
