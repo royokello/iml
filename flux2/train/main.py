@@ -79,12 +79,14 @@ def main(
         resume_optimizer_filepath = resume_checkpoint_path.with_suffix(".optimizer.pt")
         print(f"  * resuming from checkpoint: {resume_checkpoint_path}")
         print(f"  * resume step: {current_step}")
+        _truncate_logs_to_step(logs_filepath, current_step)
     else:
         with logs_filepath.open("w", encoding="utf-8", newline="") as logs_handle:
             logs_handle.write(f"{STEP_CSV_HEADER}\n")
 
     if current_step >= steps:
         print(f"  * latest checkpoint step {current_step} is already at max steps {steps}; nothing to train")
+        _plot_loss(logs_filepath, models_dirpath / "loss.png")
         return
 
     # LOAD DATASET
@@ -380,6 +382,39 @@ def main(
         current_epoch += 1
 
     _plot_loss(logs_filepath, models_dirpath / "loss.png")
+
+
+def _truncate_logs_to_step(csv_path: Path, current_step: int) -> None:
+    if not csv_path.is_file():
+        return
+
+    rows: list[dict[str, str]] = []
+    with csv_path.open(encoding="utf-8", newline="") as logs_handle:
+        reader = csv.DictReader(logs_handle)
+        for row in reader:
+            rows.append(row)
+
+    kept_rows: dict[int, dict[str, str]] = {}
+    for row in rows:
+        try:
+            step = int(row["step"])
+        except (KeyError, ValueError):
+            continue
+        if step <= current_step:
+            kept_rows[step] = row
+
+    removed = len(rows) - len(kept_rows)
+    if removed == 0:
+        return
+
+    with csv_path.open("w", encoding="utf-8", newline="") as logs_handle:
+        logs_handle.write(f"{STEP_CSV_HEADER}\n")
+        for row in kept_rows.values():
+            logs_handle.write(
+                f"{row['datetime']},{row['step']},{row['epoch']},{row['sample']},"
+                f"{row['learning rate']},{row['loss']}\n"
+            )
+    print(f"  * truncated steps.csv: removed {removed} stale/duplicate row(s) at or after step {current_step}")
 
 
 def _plot_loss(csv_path: Path, output_path: Path) -> None:
