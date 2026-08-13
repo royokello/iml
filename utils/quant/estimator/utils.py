@@ -195,6 +195,9 @@ def _estimate_output_tensors(
     if method == "fp32":
         return [(name, "F32", shape)]
 
+    if method is None:
+        return [(name, "F16", shape)]
+
     family = quant_method_family(method)
     mode = quant_method_mode(method)
     if family == "symmetric":
