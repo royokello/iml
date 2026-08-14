@@ -9,7 +9,7 @@ import threading
 import zipfile
 from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from flask import Flask, jsonify, render_template, request, send_file
 
@@ -20,10 +20,10 @@ app = Flask(
 )
 
 SCAN_RESULT: List[Dict[str, Any]] = []  # Stores [{"folder_path": str, "images": [str]}]
-_IMG_CACHE: "OrderedDict[Tuple[str, str], bytes]" = OrderedDict()  # (zip, entry) -> decoded bytes
-_ZIP_INDEX: Dict[str, int] = {}  # zip path -> folder index in SCAN_RESULT
-_LOADING: set = set()  # (zip, entry) pairs currently being decoded (dedup guard)
-_PREFETCH_QUEUE: "queue.Queue[Tuple[str, str]]" = queue.Queue()
+_IMG_CACHE: "OrderedDict[str, bytes]" = OrderedDict()  # ref string -> decoded bytes
+_FOLDER_INDEX: Dict[str, int] = {}  # folder path -> index in SCAN_RESULT
+_LOADING: set = set()  # ref strings currently being decoded (dedup guard)
+_PREFETCH_QUEUE: "queue.Queue[str]" = queue.Queue()
 _WORKER_STARTED = False
 _WORKER_LOCK = threading.Lock()
 
@@ -77,72 +77,79 @@ def _read_zip_entry(zip_path: str, entry: str) -> bytes | None:
         return None
 
 
-def _cache_get(zip_path: str, entry: str) -> bytes | None:
-    key = (zip_path, entry)
-    if key in _IMG_CACHE:
-        _IMG_CACHE.move_to_end(key)
-        return _IMG_CACHE[key]
+def _ref_folder(ref: str) -> str:
+    """Album folder a cache key belongs to (zip path for zip refs, dirname otherwise)."""
+    split = _split_zip_ref(ref)
+    return split[0] if split else os.path.dirname(ref)
+
+
+def _read_media(ref: str) -> bytes | None:
+    """Read decoded bytes for any image ref. Returns None if unavailable or not cacheable."""
+    split = _split_zip_ref(ref)
+    if split is not None:
+        return _read_zip_entry(*split)
+    if Path(ref).suffix.lower() in VIDEO_EXTENSIONS:
+        return None
+    try:
+        return Path(ref).read_bytes()
+    except OSError:
+        return None
+
+
+def _cache_get(ref: str) -> bytes | None:
+    if ref in _IMG_CACHE:
+        _IMG_CACHE.move_to_end(ref)
+        return _IMG_CACHE[ref]
     return None
 
 
-def _cache_put(zip_path: str, entry: str, data: bytes) -> None:
-    _IMG_CACHE[(zip_path, entry)] = data
-    _IMG_CACHE.move_to_end((zip_path, entry))
+def _cache_put(ref: str, data: bytes) -> None:
+    _IMG_CACHE[ref] = data
+    _IMG_CACHE.move_to_end(ref)
     while len(_IMG_CACHE) > IMG_CACHE_CAP:
         _IMG_CACHE.popitem(last=False)
 
 
-def _decode(zip_path: str, entry: str) -> None:
-    """Decode one entry into the cache (worker path, dedup-guarded)."""
-    key = (zip_path, entry)
-    if key in _IMG_CACHE or key in _LOADING:
+def _decode(ref: str) -> None:
+    """Decode one ref into the cache (worker path, dedup-guarded)."""
+    if ref in _IMG_CACHE or ref in _LOADING:
         return
     with _WORKER_LOCK:
-        if key in _IMG_CACHE or key in _LOADING:
+        if ref in _IMG_CACHE or ref in _LOADING:
             return
-        _LOADING.add(key)
+        _LOADING.add(ref)
     try:
-        data = _read_zip_entry(zip_path, entry)
+        data = _read_media(ref)
         if data is not None:
-            _cache_put(zip_path, entry, data)
+            _cache_put(ref, data)
     finally:
-        _LOADING.discard(key)
+        _LOADING.discard(ref)
 
 
-def _neighbor_zips(f: int) -> tuple[list[str], list[str]]:
-    """Zip albums in the window ahead and behind folder index f (zip-count budget)."""
-    ahead: List[str] = []
-    behind: List[str] = []
+def _neighbor_albums(f: int) -> tuple[list[str], list[str]]:
+    """Albums in the window ahead and behind folder index f (album-count budget)."""
     n = len(SCAN_RESULT)
-    for idx in range(f + 1, n):
-        if len(ahead) >= CACHE_NEXT_LIMIT:
-            break
-        z = SCAN_RESULT[idx]["folder_path"]
-        if z in _ZIP_INDEX:
-            ahead.append(z)
-    for idx in range(f - 1, -1, -1):
-        if len(behind) >= CACHE_BACK_LIMIT:
-            break
-        z = SCAN_RESULT[idx]["folder_path"]
-        if z in _ZIP_INDEX:
-            behind.append(z)
+    ahead = [SCAN_RESULT[idx]["folder_path"] for idx in range(f + 1, n)][:CACHE_NEXT_LIMIT]
+    behind = [SCAN_RESULT[idx]["folder_path"] for idx in range(f - 1, -1, -1)][:CACHE_BACK_LIMIT]
     return ahead, behind
 
 
 def _evict_outside_window(f: int) -> None:
     keep = {SCAN_RESULT[f]["folder_path"]}
-    for group in _neighbor_zips(f):
+    for group in _neighbor_albums(f):
         keep.update(group)
-    for key in list(_IMG_CACHE):
-        if key[0] not in keep:
-            del _IMG_CACHE[key]
+    for ref in list(_IMG_CACHE):
+        if _ref_folder(ref) not in keep:
+            del _IMG_CACHE[ref]
 
 
-def _enqueue(zip_path: str, entry: str) -> None:
-    if (zip_path, entry) in _IMG_CACHE or (zip_path, entry) in _LOADING:
+def _enqueue(ref: str) -> None:
+    if Path(ref).suffix.lower() in VIDEO_EXTENSIONS:
+        return
+    if ref in _IMG_CACHE or ref in _LOADING:
         return
     if _PREFETCH_QUEUE.qsize() < IMG_CACHE_CAP:
-        _PREFETCH_QUEUE.put((zip_path, entry))
+        _PREFETCH_QUEUE.put(ref)
 
 
 def _enqueue_window(f: int, i: int) -> None:
@@ -151,15 +158,11 @@ def _enqueue_window(f: int, i: int) -> None:
     indices = list(range(i + 1, min(n, i + PREFETCH_NEXT + 1))) + \
         list(range(max(0, i - PREFETCH_BACK), i))
     for idx in indices:
-        split = _split_zip_ref(images[idx])
-        if split is not None:
-            _enqueue(*split)
-    ahead, behind = _neighbor_zips(f)
-    for z in ahead + behind:
-        for ref in SCAN_RESULT[_ZIP_INDEX[z]]["images"][:PREFETCH_NEXT]:
-            split = _split_zip_ref(ref)
-            if split is not None:
-                _enqueue(*split)
+        _enqueue(images[idx])
+    ahead, behind = _neighbor_albums(f)
+    for album in ahead + behind:
+        for ref in SCAN_RESULT[_FOLDER_INDEX[album]]["images"][:PREFETCH_NEXT]:
+            _enqueue(ref)
 
 
 def _start_worker() -> None:
@@ -171,8 +174,8 @@ def _start_worker() -> None:
 
         def loop() -> None:
             while True:
-                zip_path, entry = _PREFETCH_QUEUE.get()
-                _decode(zip_path, entry)
+                ref = _PREFETCH_QUEUE.get()
+                _decode(ref)
 
         threading.Thread(target=loop, daemon=True).start()
 
@@ -197,8 +200,10 @@ def api_scan():
 
     SCAN_RESULT = []
     _IMG_CACHE.clear()
-    _ZIP_INDEX.clear()
+    _FOLDER_INDEX.clear()
     _LOADING.clear()
+    while not _PREFETCH_QUEUE.empty():
+        _PREFETCH_QUEUE.get()
     zip_files = []
     for root, dirs, files in os.walk(path_obj):
         dirs.sort()
@@ -209,6 +214,7 @@ def api_scan():
         )
         if media_files:
             SCAN_RESULT.append({"folder_path": root, "images": media_files})
+            _FOLDER_INDEX[root] = len(SCAN_RESULT) - 1
         zip_files.extend(os.path.join(root, f) for f in files if f.lower().endswith(ZIP_SUFFIX))
 
     for zip_path in sorted(zip_files):
@@ -227,7 +233,7 @@ def api_scan():
             "folder_path": zip_path,
             "images": [f"{zip_path}!{entry}" for entry in entries],
         })
-        _ZIP_INDEX[zip_path] = len(SCAN_RESULT) - 1
+        _FOLDER_INDEX[zip_path] = len(SCAN_RESULT) - 1
 
     total_images = sum(len(folder["images"]) for folder in SCAN_RESULT)
     folders_meta = [
@@ -260,23 +266,24 @@ def api_view():
     ext = Path(media_path).suffix.lower()
     if ext in VIDEO_EXTENSIONS:
         return send_file(media_path, mimetype=VIDEO_MIMETYPES.get(ext, "video/mp4"))
-    split = _split_zip_ref(media_path)
-    if split is not None:
-        zip_path, entry = split
+    if ext in IMAGE_EXTENSIONS:
         _start_worker()
-        data = _cache_get(zip_path, entry)
+        data = _cache_get(media_path)
         if data is None:
-            data = _read_zip_entry(zip_path, entry)
+            data = _read_media(media_path)
             if data is not None:
-                _cache_put(zip_path, entry, data)
-        if data is None:
+                _cache_put(media_path, data)
+        if data is not None:
+            _evict_outside_window(f)
+            _enqueue_window(f, i)
+            split = _split_zip_ref(media_path)
+            filename = split[1] if split else os.path.basename(media_path)
+            return send_file(
+                io.BytesIO(data),
+                mimetype=mimetypes.guess_type(filename)[0] or "application/octet-stream",
+            )
+        if _split_zip_ref(media_path) is not None:
             return jsonify({"error": "Image unavailable from zip"}), 404
-        _evict_outside_window(f)
-        _enqueue_window(f, i)
-        return send_file(
-            io.BytesIO(data),
-            mimetype=mimetypes.guess_type(entry)[0] or "application/octet-stream",
-        )
     return send_file(media_path)
 
 
