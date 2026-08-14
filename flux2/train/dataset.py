@@ -240,6 +240,7 @@ class Flux2Dataset:
         text_embeddings = []
         text_cache_paths: list[Path] = []
         all_ref_latents: list = []
+        sample_names: list[str | None] = []
 
         i = 0
 
@@ -380,6 +381,7 @@ class Flux2Dataset:
                 if refs_dirpath.exists() and not has_good_ref:
                     print(f"   * skipped: no ref meets reference_resolution ({reference_resolution})")
                     target_latents.append(None)
+                    sample_names.append(None)
                     if load_target_ratios:
                         target_ratios.append(None)
                     captions.append(None)
@@ -407,6 +409,7 @@ class Flux2Dataset:
                     if min(w, h) < target_resolution and not target_upscale:
                         print(f"   * skipped: target below target_resolution ({target_resolution})")
                         target_latents.append(None)
+                        sample_names.append(None)
                         if load_target_ratios:
                             target_ratios.append(None)
                         captions.append(None)
@@ -445,6 +448,7 @@ class Flux2Dataset:
                     )
 
                     target_latents.append(target_latent)
+                    sample_names.append(target_filepath.stem)
                     target_encoding_time = time.perf_counter() - target_encoding_start
                     print(f" * * target encoded in load={target_loading_time:.3f}, enc={target_encoding_time:.3f}, total={target_loading_time + target_encoding_time:.3f}s at {new_size}")
 
@@ -486,6 +490,7 @@ class Flux2Dataset:
         if removed:
             print(f"  * removed {removed} entries with missing target latents")
             target_latents = [target_latents[j] for j in valid]
+            sample_names = [sample_names[j] for j in valid]
             target_ratios = [target_ratios[j] for j in valid] if load_target_ratios else target_ratios
             captions = [captions[j] for j in valid]
             text_embeddings = [text_embeddings[j] for j in valid]
@@ -557,3 +562,4 @@ class Flux2Dataset:
         self.target_latents = target_latents
         self.target_ratios = target_ratios
         self.ref_latents = all_ref_latents
+        self.sample_names = sample_names

@@ -45,7 +45,7 @@ def main(
     pose_res: int = 256,
 ):
     print("Training Started ...")
-    pending_loss_logs: list[tuple[int, int, int, float, torch.Tensor]] = []
+    pending_loss_logs: list[tuple[int, int, int, str, float, torch.Tensor]] = []
 
     current_step = 0
     current_epoch = 1
@@ -216,6 +216,7 @@ def main(
             log_total_step,
             log_epoch_number,
             log_sample_number,
+            log_sample_name,
             log_learning_rate,
             pending_loss,
         ) in pending_loss_logs:
@@ -223,13 +224,14 @@ def main(
             step = Step()
             step.step = log_total_step
             step.epoch = log_epoch_number
-            step.sample = log_sample_number
+            step.sample_index = log_sample_number
+            step.sample_name = log_sample_name
             step.learning_rate = float(log_learning_rate)
             step.loss = float(loss_value)
 
             new_steps.append(step)
             print(
-                f"      logged epoch {step.epoch} sample {step.sample}: "
+                f"      logged epoch {step.epoch} sample {step.sample_index} ({step.sample_name}): "
                 f"loss {step.loss:.6f}"
             )
 
@@ -317,6 +319,7 @@ def main(
                 current_step,
                 current_epoch,
                 sample_index + 1,
+                dataset.sample_names[sample_index],
                 learning_rate,
                 loss.detach(),
             ))
@@ -411,8 +414,8 @@ def _truncate_logs_to_step(csv_path: Path, current_step: int) -> None:
         logs_handle.write(f"{STEP_CSV_HEADER}\n")
         for row in kept_rows.values():
             logs_handle.write(
-                f"{row['datetime']},{row['step']},{row['epoch']},{row['sample']},"
-                f"{row['learning rate']},{row['loss']}\n"
+                f"{row['datetime']},{row['step']},{row['epoch']},{row['sample_index']},"
+                f"{row['sample_name']},{row['learning rate']},{row['loss']}\n"
             )
     print(f"  * truncated steps.csv: removed {removed} stale/duplicate row(s) at or after step {current_step}")
 
