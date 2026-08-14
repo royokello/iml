@@ -4,9 +4,12 @@ import argparse
 import io
 import mimetypes
 import os
+import queue
+import threading
 import zipfile
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from flask import Flask, jsonify, render_template, request, send_file
 
@@ -17,10 +20,18 @@ app = Flask(
 )
 
 SCAN_RESULT: List[Dict[str, Any]] = []  # Stores [{"folder_path": str, "images": [str]}]
-_ZIP_CACHE: Dict[str, Dict[str, bytes]] = {}  # zip path -> {entry: bytes}
+_IMG_CACHE: "OrderedDict[Tuple[str, str], bytes]" = OrderedDict()  # (zip, entry) -> decoded bytes
 _ZIP_INDEX: Dict[str, int] = {}  # zip path -> folder index in SCAN_RESULT
-CACHE_NEXT_LIMIT = 2  # whole zips held in memory ahead of the current album
-CACHE_BACK_LIMIT = 1  # whole zips held in memory behind the current album
+_LOADING: set = set()  # (zip, entry) pairs currently being decoded (dedup guard)
+_PREFETCH_QUEUE: "queue.Queue[Tuple[str, str]]" = queue.Queue()
+_WORKER_STARTED = False
+_WORKER_LOCK = threading.Lock()
+
+CACHE_NEXT_LIMIT = 2  # albums ahead whose first images stay cached
+CACHE_BACK_LIMIT = 1  # albums behind whose first images stay cached
+PREFETCH_NEXT = 8  # images to preload ahead of the current position
+PREFETCH_BACK = 4  # images to preload behind the current position
+IMG_CACHE_CAP = 1024  # hard cap on cached images (LRU eviction)
 
 
 def _strip_outer_quotes(value: str) -> str:
@@ -57,58 +68,113 @@ def _split_zip_ref(ref: str) -> tuple[str, str] | None:
     return zip_path, entry
 
 
-def _load_zip(zip_path: str) -> None:
+def _read_zip_entry(zip_path: str, entry: str) -> bytes | None:
+    """Decode a single entry from a zip. Returns None if unavailable."""
     try:
         with zipfile.ZipFile(zip_path) as zf:
-            images = {
-                info.filename: zf.read(info.filename)
-                for info in zf.infolist()
-                if not info.is_dir() and Path(info.filename).suffix.lower() in IMAGE_EXTENSIONS
-            }
-    except (zipfile.BadZipFile, OSError):
+            return zf.read(entry)
+    except (zipfile.BadZipFile, KeyError, OSError):
+        return None
+
+
+def _cache_get(zip_path: str, entry: str) -> bytes | None:
+    key = (zip_path, entry)
+    if key in _IMG_CACHE:
+        _IMG_CACHE.move_to_end(key)
+        return _IMG_CACHE[key]
+    return None
+
+
+def _cache_put(zip_path: str, entry: str, data: bytes) -> None:
+    _IMG_CACHE[(zip_path, entry)] = data
+    _IMG_CACHE.move_to_end((zip_path, entry))
+    while len(_IMG_CACHE) > IMG_CACHE_CAP:
+        _IMG_CACHE.popitem(last=False)
+
+
+def _decode(zip_path: str, entry: str) -> None:
+    """Decode one entry into the cache (worker path, dedup-guarded)."""
+    key = (zip_path, entry)
+    if key in _IMG_CACHE or key in _LOADING:
         return
-    if images:
-        _ZIP_CACHE[zip_path] = images
+    with _WORKER_LOCK:
+        if key in _IMG_CACHE or key in _LOADING:
+            return
+        _LOADING.add(key)
+    try:
+        data = _read_zip_entry(zip_path, entry)
+        if data is not None:
+            _cache_put(zip_path, entry, data)
+    finally:
+        _LOADING.discard(key)
 
 
-def _ensure_window(f: int) -> None:
-    """Load the current zip plus the N zips ahead and behind it; evict anything outside the window."""
-    folder = SCAN_RESULT[f]
-    ref = folder["images"][0]
-    split = _split_zip_ref(ref)
-    if split is None:
-        return
-    current_zip, _ = split
-    if current_zip not in _ZIP_CACHE:
-        _load_zip(current_zip)
-
-    load_ahead = CACHE_NEXT_LIMIT
-    load_behind = CACHE_BACK_LIMIT
+def _neighbor_zips(f: int) -> tuple[list[str], list[str]]:
+    """Zip albums in the window ahead and behind folder index f (zip-count budget)."""
+    ahead: List[str] = []
+    behind: List[str] = []
     n = len(SCAN_RESULT)
-    for i in range(f + 1, n):
-        if load_ahead == 0:
+    for idx in range(f + 1, n):
+        if len(ahead) >= CACHE_NEXT_LIMIT:
             break
-        zip_path = SCAN_RESULT[i]["folder_path"]
-        if zip_path in _ZIP_CACHE or _ZIP_INDEX.get(zip_path) is None:
-            continue
-        _load_zip(zip_path)
-        load_ahead -= 1
-    for i in range(f - 1, -1, -1):
-        if load_behind == 0:
+        z = SCAN_RESULT[idx]["folder_path"]
+        if z in _ZIP_INDEX:
+            ahead.append(z)
+    for idx in range(f - 1, -1, -1):
+        if len(behind) >= CACHE_BACK_LIMIT:
             break
-        zip_path = SCAN_RESULT[i]["folder_path"]
-        if zip_path in _ZIP_CACHE or _ZIP_INDEX.get(zip_path) is None:
-            continue
-        _load_zip(zip_path)
-        load_behind -= 1
+        z = SCAN_RESULT[idx]["folder_path"]
+        if z in _ZIP_INDEX:
+            behind.append(z)
+    return ahead, behind
 
-    cached = [p for p in _ZIP_CACHE if p in _ZIP_INDEX]
-    behind = sorted((p for p in cached if _ZIP_INDEX[p] < f), key=lambda p: _ZIP_INDEX[p], reverse=True)
-    ahead = sorted((p for p in cached if _ZIP_INDEX[p] > f), key=lambda p: _ZIP_INDEX[p])
-    for p in behind[CACHE_BACK_LIMIT:]:
-        del _ZIP_CACHE[p]
-    for p in ahead[CACHE_NEXT_LIMIT:]:
-        del _ZIP_CACHE[p]
+
+def _evict_outside_window(f: int) -> None:
+    keep = {SCAN_RESULT[f]["folder_path"]}
+    for group in _neighbor_zips(f):
+        keep.update(group)
+    for key in list(_IMG_CACHE):
+        if key[0] not in keep:
+            del _IMG_CACHE[key]
+
+
+def _enqueue(zip_path: str, entry: str) -> None:
+    if (zip_path, entry) in _IMG_CACHE or (zip_path, entry) in _LOADING:
+        return
+    if _PREFETCH_QUEUE.qsize() < IMG_CACHE_CAP:
+        _PREFETCH_QUEUE.put((zip_path, entry))
+
+
+def _enqueue_window(f: int, i: int) -> None:
+    images = SCAN_RESULT[f]["images"]
+    n = len(images)
+    indices = list(range(i + 1, min(n, i + PREFETCH_NEXT + 1))) + \
+        list(range(max(0, i - PREFETCH_BACK), i))
+    for idx in indices:
+        split = _split_zip_ref(images[idx])
+        if split is not None:
+            _enqueue(*split)
+    ahead, behind = _neighbor_zips(f)
+    for z in ahead + behind:
+        for ref in SCAN_RESULT[_ZIP_INDEX[z]]["images"][:PREFETCH_NEXT]:
+            split = _split_zip_ref(ref)
+            if split is not None:
+                _enqueue(*split)
+
+
+def _start_worker() -> None:
+    global _WORKER_STARTED
+    with _WORKER_LOCK:
+        if _WORKER_STARTED:
+            return
+        _WORKER_STARTED = True
+
+        def loop() -> None:
+            while True:
+                zip_path, entry = _PREFETCH_QUEUE.get()
+                _decode(zip_path, entry)
+
+        threading.Thread(target=loop, daemon=True).start()
 
 
 @app.route("/")
@@ -130,8 +196,9 @@ def api_scan():
         return jsonify({"error": "Invalid directory path"}), 400
 
     SCAN_RESULT = []
-    _ZIP_CACHE.clear()
+    _IMG_CACHE.clear()
     _ZIP_INDEX.clear()
+    _LOADING.clear()
     zip_files = []
     for root, dirs, files in os.walk(path_obj):
         dirs.sort()
@@ -160,10 +227,7 @@ def api_scan():
             "folder_path": zip_path,
             "images": [f"{zip_path}!{entry}" for entry in entries],
         })
-
-    _ZIP_INDEX.update(
-        {folder["folder_path"]: i for i, folder in enumerate(SCAN_RESULT)}
-    )
+        _ZIP_INDEX[zip_path] = len(SCAN_RESULT) - 1
 
     total_images = sum(len(folder["images"]) for folder in SCAN_RESULT)
     folders_meta = [
@@ -199,10 +263,16 @@ def api_view():
     split = _split_zip_ref(media_path)
     if split is not None:
         zip_path, entry = split
-        _ensure_window(f)
-        data = _ZIP_CACHE.get(zip_path, {}).get(entry)
+        _start_worker()
+        data = _cache_get(zip_path, entry)
+        if data is None:
+            data = _read_zip_entry(zip_path, entry)
+            if data is not None:
+                _cache_put(zip_path, entry, data)
         if data is None:
             return jsonify({"error": "Image unavailable from zip"}), 404
+        _evict_outside_window(f)
+        _enqueue_window(f, i)
         return send_file(
             io.BytesIO(data),
             mimetype=mimetypes.guess_type(entry)[0] or "application/octet-stream",
@@ -246,18 +316,24 @@ def api_meta():
 
 
 def main() -> None:
-    global CACHE_NEXT_LIMIT, CACHE_BACK_LIMIT
+    global CACHE_NEXT_LIMIT, CACHE_BACK_LIMIT, PREFETCH_NEXT, PREFETCH_BACK
     parser = argparse.ArgumentParser(description="Media Gallery — Web viewer for images and videos")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=5053, help="Port to listen on (default: 5053)")
     parser.add_argument("--debug", action="store_true", default=True, help="Enable Flask debug mode")
     parser.add_argument("--cache-next", type=int, default=2,
-                        help="Whole zips held in memory ahead of the current album (default: 2)")
+                        help="Albums ahead whose first images stay cached (default: 2)")
     parser.add_argument("--cache-back", type=int, default=1,
-                        help="Whole zips held in memory behind the current album (default: 1)")
+                        help="Albums behind whose first images stay cached (default: 1)")
+    parser.add_argument("--prefetch-next", type=int, default=8,
+                        help="Images to preload ahead of the current image (default: 8)")
+    parser.add_argument("--prefetch-back", type=int, default=4,
+                        help="Images to preload behind the current image (default: 4)")
     args = parser.parse_args()
     CACHE_NEXT_LIMIT = max(0, args.cache_next)
     CACHE_BACK_LIMIT = max(0, args.cache_back)
+    PREFETCH_NEXT = max(0, args.prefetch_next)
+    PREFETCH_BACK = max(0, args.prefetch_back)
 
     print(f"Serving Media Gallery on http://{args.host}:{args.port}")
     for rule in sorted(app.url_map.iter_rules(), key=lambda r: r.rule):
