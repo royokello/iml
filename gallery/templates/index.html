@@ -16,6 +16,19 @@
             <div class="input-group">
                 <input type="text" id="pathInput" placeholder="Enter directory path (e.g., C:\Photos)" />
                 <button id="scanBtn">Scan</button>
+                <button id="editBtn">Edit</button>
+            </div>
+            <div id="cropToolbar" class="crop-toolbar" style="display: none;">
+                <span class="crop-label">Ratio:</span>
+                <div class="ratio-group" id="ratioGroup">
+                    <button class="ratio-btn active" data-ratio="1:1">1:1</button>
+                    <button class="ratio-btn" data-ratio="1:2">1:2</button>
+                    <button class="ratio-btn" data-ratio="2:1">2:1</button>
+                    <button class="ratio-btn" data-ratio="2:3">2:3</button>
+                    <button class="ratio-btn" data-ratio="3:2">3:2</button>
+                </div>
+                <button id="saveCropBtn">Save PNG</button>
+                <button id="cancelCropBtn">Cancel</button>
             </div>
             <div id="errorMsg" class="error-message" style="display: none;"></div>
             <div class="help-text">
@@ -31,6 +44,19 @@
                 <video id="videoDisplay" style="display: none;" controls loop autoplay muted></video>
             </div>
             <div id="placeholder" class="loading">Enter a directory path and click Scan to begin</div>
+            <div id="cropOverlay" class="crop-overlay">
+                <div class="crop-shade top"></div>
+                <div class="crop-shade bottom"></div>
+                <div class="crop-shade left"></div>
+                <div class="crop-shade right"></div>
+                <div id="cropBox" class="crop-box">
+                    <div class="crop-grid"><span></span><span></span><span></span><span></span></div>
+                    <div class="crop-handle corner nw" data-corner="nw"></div>
+                    <div class="crop-handle corner ne" data-corner="ne"></div>
+                    <div class="crop-handle corner sw" data-corner="sw"></div>
+                    <div class="crop-handle corner se" data-corner="se"></div>
+                </div>
+            </div>
             <div id="fullscreenHint" class="fullscreen-hint" style="display: none;">Press F or Esc to exit fullscreen</div>
         </div>
 
@@ -58,13 +84,24 @@
             totalImages: 0,
             zoomed: false,
             panY: 0,
-            fullscreen: false
+            fullscreen: false,
+            editMode: false,
+            isVideo: false,
+            stem: '',
+            cropRatio: { w: 1, h: 1 },
+            crop: null
         };
 
         const elements = {
             viewerContainer: document.querySelector('.viewer-container'),
+            viewport: document.getElementById('viewport'),
             pathInput: document.getElementById('pathInput'),
             scanBtn: document.getElementById('scanBtn'),
+            editBtn: document.getElementById('editBtn'),
+            cropToolbar: document.getElementById('cropToolbar'),
+            ratioGroup: document.getElementById('ratioGroup'),
+            saveCropBtn: document.getElementById('saveCropBtn'),
+            cancelCropBtn: document.getElementById('cancelCropBtn'),
             errorMsg: document.getElementById('errorMsg'),
             imageDisplay: document.getElementById('imageDisplay'),
             videoDisplay: document.getElementById('videoDisplay'),
@@ -73,7 +110,9 @@
             fullscreenHint: document.getElementById('fullscreenHint'),
             folderPath: document.getElementById('folderPath'),
             imageCount: document.getElementById('imageCount'),
-            globalCount: document.getElementById('globalCount')
+            globalCount: document.getElementById('globalCount'),
+            cropOverlay: document.getElementById('cropOverlay'),
+            cropBox: document.getElementById('cropBox')
         };
 
         function showError(message) {
@@ -150,6 +189,8 @@
             state.panY = 0;
             stopVideoPlayback();
 
+            if (state.editMode) exitEditMode();
+
             // Update media source
             const mediaUrl = `/api/view?f=${state.folderIndex}&i=${state.imageIndex}`;
 
@@ -163,6 +204,10 @@
                 const isVideo = filename.endsWith('.mp4') || filename.endsWith('.webm') ||
                     filename.endsWith('.mov') || filename.endsWith('.avi') ||
                     filename.endsWith('.mkv');
+
+                state.isVideo = isVideo;
+                state.stem = meta.filename.replace(/\.[^.]+$/, '');
+                elements.editBtn.style.display = isVideo ? 'none' : '';
 
                 if (isVideo) {
                     // Show video, hide image
@@ -313,21 +358,261 @@
             renderImage();
         }
 
+        // ---- Crop edit mode ----
+
+        const CROP_MIN = 16; // min crop size in display pixels
+
+        function getImageRect() {
+            const img = elements.imageDisplay;
+            const vp = elements.viewport.getBoundingClientRect();
+            const r = img.getBoundingClientRect();
+            return { x: r.left - vp.left, y: r.top - vp.top, w: r.width, h: r.height };
+        }
+
+        function clampBox(box, ir) {
+            box.w = Math.max(CROP_MIN, Math.min(box.w, ir.w));
+            box.h = Math.max(CROP_MIN, Math.min(box.h, ir.h));
+            box.x = Math.max(ir.x, Math.min(ir.x + ir.w - box.w, box.x));
+            box.y = Math.max(ir.y, Math.min(ir.y + ir.h - box.h, box.y));
+            return box;
+        }
+
+        function fitToRatio(box, ratio, ir) {
+            let w = box.w, h = box.h;
+            const r = ratio.w / ratio.h;
+            if (w / h > r) h = w / r; else w = h * r;
+            if (w > ir.w) { w = ir.w; h = w / r; }
+            if (h > ir.h) { h = ir.h; w = h * r; }
+            if (w / h > r) h = w / r; else w = h * r;
+            const cx = box.x + box.w / 2, cy = box.y + box.h / 2;
+            box.x = cx - w / 2;
+            box.y = cy - h / 2;
+            box.w = w;
+            box.h = h;
+            return clampBox(box, ir);
+        }
+
+        function resizeFrom(anchorX, anchorY, ptrX, ptrY, ir, ratio) {
+            let w = Math.abs(ptrX - anchorX);
+            let h = Math.abs(ptrY - anchorY);
+            if (ratio) {
+                const r = ratio.w / ratio.h;
+                if (w / h > r) h = w / r; else w = h * r;
+            }
+            const right = ptrX >= anchorX, down = ptrY >= anchorY;
+            const maxW = right ? (ir.x + ir.w - anchorX) : (anchorX - ir.x);
+            const maxH = down ? (ir.y + ir.h - anchorY) : (anchorY - ir.y);
+            if (ratio) {
+                const r = ratio.w / ratio.h;
+                w = Math.min(w, maxW);
+                h = Math.min(h, maxH);
+                if (w / h > r) h = w / r; else w = h * r;
+                if (h > maxH) { h = maxH; w = h * r; }
+                if (w > maxW) { w = maxW; h = w / r; }
+                w = Math.max(w, CROP_MIN);
+                h = Math.max(h, CROP_MIN);
+                if (w > maxW) { w = maxW; h = w / r; }
+                if (h > maxH) { h = maxH; w = h * r; }
+            } else {
+                w = Math.max(CROP_MIN, Math.min(w, maxW));
+                h = Math.max(CROP_MIN, Math.min(h, maxH));
+            }
+            return {
+                x: right ? anchorX : anchorX - w,
+                y: down ? anchorY : anchorY - h,
+                w, h
+            };
+        }
+
+        function updateCropOverlay() {
+            const ir = getImageRect();
+            const b = state.crop;
+            const box = elements.cropBox;
+            box.style.left = b.x + 'px';
+            box.style.top = b.y + 'px';
+            box.style.width = b.w + 'px';
+            box.style.height = b.h + 'px';
+
+            const shadeTop = elements.cropOverlay.querySelector('.crop-shade.top');
+            const shadeBottom = elements.cropOverlay.querySelector('.crop-shade.bottom');
+            const shadeLeft = elements.cropOverlay.querySelector('.crop-shade.left');
+            const shadeRight = elements.cropOverlay.querySelector('.crop-shade.right');
+
+            shadeTop.style.cssText = `left:${ir.x}px;top:${ir.y}px;width:${ir.w}px;height:${b.y - ir.y}px;`;
+            shadeBottom.style.cssText = `left:${ir.x}px;top:${b.y + b.h}px;width:${ir.w}px;height:${ir.y + ir.h - b.y - b.h}px;`;
+            shadeLeft.style.cssText = `left:${ir.x}px;top:${b.y}px;width:${b.x - ir.x}px;height:${b.h}px;`;
+            shadeRight.style.cssText = `left:${b.x + b.w}px;top:${b.y}px;width:${ir.x + ir.w - b.x - b.w}px;height:${b.h}px;`;
+        }
+
+        function enterEditMode() {
+            if (state.folders.length === 0 || state.isVideo || state.editMode) return;
+            const img = elements.imageDisplay;
+            if (!img.complete || img.naturalWidth === 0) {
+                img.addEventListener('load', enterEditMode, { once: true });
+                return;
+            }
+
+            state.editMode = true;
+            state.cropRatio = { w: 1, h: 1 };
+            document.querySelectorAll('.ratio-btn').forEach((b) => {
+                b.classList.toggle('active', b.dataset.ratio === '1:1');
+            });
+
+            state.zoomed = false;
+            state.panY = 0;
+            updateImageTransform();
+
+            document.body.classList.add('gallery-edit');
+            elements.cropToolbar.style.display = 'flex';
+            elements.editBtn.style.display = 'none';
+
+            const ir = getImageRect();
+            state.crop = { x: ir.x, y: ir.y, w: ir.w, h: ir.h };
+            elements.cropOverlay.classList.add('active');
+            updateCropOverlay();
+        }
+
+        function exitEditMode() {
+            state.editMode = false;
+            state.crop = null;
+            document.body.classList.remove('gallery-edit');
+            elements.cropToolbar.style.display = 'none';
+            elements.cropOverlay.classList.remove('active');
+            elements.editBtn.style.display = state.isVideo ? 'none' : '';
+        }
+
+        function saveCrop() {
+            if (!state.editMode || !state.crop) return;
+            const img = elements.imageDisplay;
+            const ir = getImageRect();
+            const b = state.crop;
+
+            let sx = Math.round((b.x - ir.x) / ir.w * img.naturalWidth);
+            let sy = Math.round((b.y - ir.y) / ir.h * img.naturalHeight);
+            let sw = Math.max(1, Math.round(b.w / ir.w * img.naturalWidth));
+            let sh = Math.max(1, Math.round(b.h / ir.h * img.naturalHeight));
+
+            sx = Math.max(0, Math.min(sx, img.naturalWidth - 1));
+            sy = Math.max(0, Math.min(sy, img.naturalHeight - 1));
+            sw = Math.min(sw, img.naturalWidth - sx);
+            sh = Math.min(sh, img.naturalHeight - sy);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = sw;
+            canvas.height = sh;
+            const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+
+            canvas.toBlob((blob) => {
+                if (!blob) {
+                    showError('Failed to generate PNG');
+                    return;
+                }
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = state.stem + '.png';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }, 'image/png');
+        }
+
+        let cropDrag = null;
+
+        function cropPointerDown(e) {
+            if (!state.editMode) return;
+            e.preventDefault();
+            const ir = getImageRect();
+            const overlayRect = elements.cropOverlay.getBoundingClientRect();
+            const px = e.clientX - overlayRect.left;
+            const py = e.clientY - overlayRect.top;
+
+            const handle = e.target.closest('.crop-handle');
+            if (handle) {
+                const corner = handle.dataset.corner;
+                const anchors = {
+                    nw: [state.crop.x + state.crop.w, state.crop.y + state.crop.h],
+                    ne: [state.crop.x, state.crop.y + state.crop.h],
+                    sw: [state.crop.x + state.crop.w, state.crop.y],
+                    se: [state.crop.x, state.crop.y],
+                };
+                cropDrag = { mode: 'resize', corner, anchorX: anchors[corner][0], anchorY: anchors[corner][1], ir };
+            } else if (e.target.closest('#cropBox')) {
+                cropDrag = { mode: 'move', startX: px, startY: py, origX: state.crop.x, origY: state.crop.y, ir };
+            } else {
+                cropDrag = { mode: 'draw', anchorX: px, anchorY: py, ir };
+            }
+            document.addEventListener('pointermove', cropPointerMove);
+            document.addEventListener('pointerup', cropPointerUp);
+        }
+
+        function cropPointerMove(e) {
+            if (!cropDrag) return;
+            const overlayRect = elements.cropOverlay.getBoundingClientRect();
+            const px = e.clientX - overlayRect.left;
+            const py = e.clientY - overlayRect.top;
+            const ir = cropDrag.ir;
+
+            if (cropDrag.mode === 'resize' || cropDrag.mode === 'draw') {
+                state.crop = resizeFrom(cropDrag.anchorX, cropDrag.anchorY, px, py, ir, state.cropRatio);
+            } else if (cropDrag.mode === 'move') {
+                const nx = cropDrag.origX + (px - cropDrag.startX);
+                const ny = cropDrag.origY + (py - cropDrag.startY);
+                state.crop.x = Math.max(ir.x, Math.min(ir.x + ir.w - state.crop.w, nx));
+                state.crop.y = Math.max(ir.y, Math.min(ir.y + ir.h - state.crop.h, ny));
+            }
+            updateCropOverlay();
+        }
+
+        function cropPointerUp() {
+            cropDrag = null;
+            document.removeEventListener('pointermove', cropPointerMove);
+            document.removeEventListener('pointerup', cropPointerUp);
+        }
+
         // Event listeners
         elements.scanBtn.addEventListener('click', scanDirectory);
+        elements.editBtn.addEventListener('click', enterEditMode);
+        elements.saveCropBtn.addEventListener('click', saveCrop);
+        elements.cancelCropBtn.addEventListener('click', exitEditMode);
         elements.pathInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') scanDirectory();
         });
 
+        elements.ratioGroup.addEventListener('click', (e) => {
+            const btn = e.target.closest('.ratio-btn');
+            if (!btn) return;
+            document.querySelectorAll('.ratio-btn').forEach((b) => b.classList.remove('active'));
+            btn.classList.add('active');
+            const [w, h] = btn.dataset.ratio.split(':').map(Number);
+            state.cropRatio = { w, h };
+            if (state.editMode && state.crop) {
+                state.crop = fitToRatio(state.crop, state.cropRatio, getImageRect());
+                updateCropOverlay();
+            }
+        });
+
+        elements.cropOverlay.addEventListener('pointerdown', cropPointerDown);
+
         document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && state.editMode) {
+                e.preventDefault();
+                exitEditMode();
+                return;
+            }
             if (e.key === 'Escape' && state.fullscreen) {
                 e.preventDefault();
                 toggleFullscreen(false);
                 return;
             }
 
-            // Don't navigate if typing in input
+            // Don't navigate if typing in input or editing a crop
             if (document.activeElement === elements.pathInput) return;
+            if (state.editMode) return;
 
             switch (e.key) {
                 case 'ArrowRight':
@@ -375,6 +660,7 @@
         elements.imageContainer.addEventListener('wheel', (e) => {
             if (state.folders.length === 0) return;
             if (document.activeElement === elements.pathInput) return;
+            if (state.editMode) return;
             e.preventDefault();
 
             if (e.deltaY > 0) {
@@ -387,6 +673,7 @@
         elements.imageContainer.addEventListener('mousedown', (e) => {
             if (state.folders.length === 0) return;
             if (document.activeElement === elements.pathInput) return;
+            if (state.editMode) return;
 
             if (e.button === 1) {
                 e.preventDefault();

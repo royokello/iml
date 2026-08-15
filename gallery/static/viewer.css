@@ -169,3 +169,118 @@ body.viewer-fullscreen {
 .help-text a:hover {
     text-decoration: underline;
 }
+
+/* ---- Crop edit mode ---- */
+
+body.gallery-edit .info-bar {
+    display: none;
+}
+
+.crop-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.crop-toolbar .crop-label {
+    color: #93a1a1;
+    font-size: 0.9rem;
+}
+
+.crop-toolbar .ratio-group {
+    display: flex;
+    gap: 0.35rem;
+}
+
+.crop-toolbar button {
+    padding: 0.4rem 0.7rem;
+    background: #073642;
+    color: #fdf6e3;
+    border: 1px solid #0f3b46;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+}
+
+.crop-toolbar button.active {
+    background: #2aa198;
+    border-color: #2aa198;
+    color: #002b36;
+    font-weight: 700;
+}
+
+.crop-toolbar #saveCropBtn {
+    background: #859900;
+    border-color: #859900;
+    color: #002b36;
+    font-weight: 700;
+}
+
+.crop-toolbar #cancelCropBtn {
+    background: transparent;
+    border-color: #dc322f;
+    color: #dc322f;
+}
+
+.crop-toolbar button:hover:not(.active) {
+    border-color: #2aa198;
+}
+
+.crop-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: none;
+    cursor: crosshair;
+    touch-action: none;
+}
+
+.crop-overlay.active {
+    display: block;
+}
+
+.crop-shade {
+    position: absolute;
+    background: rgba(0, 0, 0, 0.55);
+}
+
+.crop-box {
+    position: absolute;
+    border: 1px solid #2aa198;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 0 12px rgba(42, 161, 152, 0.4);
+    cursor: move;
+}
+
+.crop-grid {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.crop-grid span {
+    position: absolute;
+    background: rgba(253, 246, 227, 0.35);
+}
+
+.crop-grid span:nth-child(1) { left: 33.333%; top: 0; width: 1px; height: 100%; }
+.crop-grid span:nth-child(2) { left: 66.666%; top: 0; width: 1px; height: 100%; }
+.crop-grid span:nth-child(3) { top: 33.333%; left: 0; height: 1px; width: 100%; }
+.crop-grid span:nth-child(4) { top: 66.666%; left: 0; height: 1px; width: 100%; }
+
+.crop-handle {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    background: #2aa198;
+    border: 1px solid #002b36;
+    border-radius: 3px;
+    box-sizing: border-box;
+}
+
+.crop-handle.nw { left: -7px; top: -7px; cursor: nwse-resize; }
+.crop-handle.ne { right: -7px; top: -7px; cursor: nesw-resize; }
+.crop-handle.sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
+.crop-handle.se { right: -7px; bottom: -7px; cursor: nwse-resize; }
