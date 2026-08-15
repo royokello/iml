@@ -392,9 +392,12 @@ class Flux2Dataset:
                     continue
 
                 # --- Target ---
-                target_cache_filepath = dataset_dirpath / f"{target_filepath.stem}.image.safetensors"
+                target_cache_filepath = dataset_dirpath / f"{target_filepath.stem}.{target_resolution}.safetensors"
 
                 if target_cache_filepath.exists():
+                    target_tensors = load_file(str(target_cache_filepath), device="cpu")
+                    target_latents.append((target_tensors["latent"], target_tensors["id"]))
+                    sample_names.append(target_filepath.stem)
                     if load_target_ratios:
                         with Image.open(target_filepath) as img:
                             w, h = img.size
@@ -451,6 +454,12 @@ class Flux2Dataset:
                     sample_names.append(target_filepath.stem)
                     target_encoding_time = time.perf_counter() - target_encoding_start
                     print(f" * * target encoded in load={target_loading_time:.3f}, enc={target_encoding_time:.3f}, total={target_loading_time + target_encoding_time:.3f}s at {new_size}")
+
+                    if cache_images:
+                        save_file(
+                            {"latent": target_latent[0].contiguous(), "id": target_latent[1].contiguous()},
+                            str(target_cache_filepath),
+                        )
 
                     del image_tensor
                     del latent
