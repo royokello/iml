@@ -43,8 +43,12 @@ def main(
     lr: float,
     lora_init_checkpoint: Path | None = None,
     pose_res: int = 256,
+    seed: int = 19930625,
 ):
     print("Training Started ...")
+    print(f"  * seed: {seed}")
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
     pending_loss_logs: list[tuple[int, int, int, str, float, torch.Tensor]] = []
 
     current_step = 0
@@ -491,6 +495,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ref-upscale", action="store_true")
     parser.add_argument("--lr", type=float, default=1e-4,
         help="Learning rate (default: 0.0001)")
+    parser.add_argument("--seed", type=int, default=19930625,
+        help="Global seed for reproducible noise sampling (default: 19930625)")
     parser.add_argument("--pose-res", dest="pose_res", type=int, default=256,
         help="Resolution for pose reference images. 0 to disable. Always upscales. Default: 256")
     return parser.parse_args()
@@ -533,6 +539,7 @@ if __name__ == "__main__":
         target_upscale=args.target_upscale,
         ref_upscale=args.ref_upscale,
         pose_res=args.pose_res,
+        seed=args.seed,
     )
 
     print(f"  * training done in {time.perf_counter() - training_start:.3f}s")

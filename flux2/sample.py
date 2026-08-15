@@ -265,6 +265,7 @@ def main() -> None:
     from flux2.lora import inject_trainable_lora_modules
     from flux2.lora.config import FLUX2_LORA_TARGETS
     from safetensors import safe_open
+    from utils.seed import image_seed
 
     # Read rank/alpha from the first checkpoint so modules are created at the
     # right size regardless of what the config defaults say.
@@ -381,6 +382,7 @@ def main() -> None:
                 selected_index = selected_dataset_index_by_sample[sample_index]
                 sample_width, sample_height = sample_resolutions[sample_index]
                 print(f"    * denoise sample {sample_index} at {sample_width}x{sample_height} ...")
+                sample_name = cached_dataset.sample_names[selected_index] or f"index_{sample_index}"
                 if dataset_mode == "prompt":
                     text_embed, text_id = cached_dataset.trigger_embedding
                 else:
@@ -400,7 +402,7 @@ def main() -> None:
                 latent_shape = (1, num_channels_latents * 4, latent_height // 2, latent_width // 2)
 
                 latent_generator = torch.Generator(device=device)
-                latent_generator.manual_seed(args.sample_seed + sample_index)
+                latent_generator.manual_seed(image_seed(args.sample_seed, sample_name))
                 latents = torch.randn(
                     latent_shape,
                     device=device,
