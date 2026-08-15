@@ -264,7 +264,7 @@ class Flux2Dataset:
                         if not (ref_filepath.is_file() and ref_filepath.suffix.lower() in IMAGE_SUFFIXES):
                             continue
 
-                        ref_cache_path = ref_filepath.parent / f"{ref_filepath.stem}.safetensors"
+                        ref_cache_path = ref_filepath.parent / f"{ref_filepath.stem}.{reference_resolution}.safetensors"
 
                         # Check short side against reference_resolution
                         with Image.open(ref_filepath) as ref_img:
@@ -315,6 +315,12 @@ class Flux2Dataset:
 
                             ref_encoding_time = time.perf_counter() - ref_encoding_start
                             print(f"   * ref encoded in load={ref_loading_time:.3f}, enc={ref_encoding_time:.3f}, total={ref_loading_time + ref_encoding_time:.3f}s at {new_size}")
+
+                            if cache_images:
+                                save_file(
+                                    {"latent": ref_latent[0].contiguous(), "id": ref_latent[1].contiguous()},
+                                    str(ref_cache_path),
+                                )
 
                             sample_refs.append(ref_latent)
 
