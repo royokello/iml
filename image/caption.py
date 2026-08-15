@@ -170,8 +170,14 @@ def main() -> None:
     args = parse_args()
 
     root = args.input.expanduser().resolve()
-    if not root.is_dir():
-        sys.exit(f"ERROR: {root} is not a directory.")
+    if root.is_file():
+        if root.suffix.lower() not in IMAGE_EXTS:
+            sys.exit(f"ERROR: {root} is not an image file.")
+        files = [root]
+    else:
+        if not root.is_dir():
+            sys.exit(f"ERROR: {root} is not a directory or image file.")
+        files = iter_images(root, recursive=args.recursive)
     if not args.trigger.strip():
         sys.exit("ERROR: --trigger must not be empty.")
     if args.max_res <= 0:
@@ -186,7 +192,6 @@ def main() -> None:
     if not prompt_text:
         sys.exit(f"ERROR: --prompt file is empty: {prompt_file}")
 
-    files = iter_images(root, recursive=args.recursive)
     if not files:
         print(f"[caption] no images found under {root}")
         return
