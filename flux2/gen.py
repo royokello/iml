@@ -204,21 +204,6 @@ def _validate_joint_attention_dim(
         )
 
 
-def _resize_to_max_side(pil_image, max_side: int):
-    width, height = pil_image.size
-    longest_side = max(width, height)
-    if longest_side <= max_side:
-        return pil_image
-
-    scale = max_side / float(longest_side)
-    new_width = max(1, int(round(width * scale)))
-    new_height = max(1, int(round(height * scale)))
-
-    from PIL import Image
-
-    return pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-
 def _patchify_latents(latents):
     batch_size, num_channels_latents, height, width = latents.shape
     latents = latents.view(batch_size, num_channels_latents, height // 2, 2, width // 2, 2)
@@ -267,25 +252,6 @@ def _prepare_latent_ids(torch_module, latents):
         torch_module.arange(1),
     )
     return latent_ids.unsqueeze(0).expand(batch_size, -1, -1)
-
-
-def _prepare_image_ids(torch_module, image_latents: list, scale: int = 10):
-    t_coords = [scale + scale * t for t in torch_module.arange(0, len(image_latents))]
-    t_coords = [t.view(-1) for t in t_coords]
-
-    image_latent_ids = []
-    for latent, t in zip(image_latents, t_coords):
-        latent = latent.squeeze(0)
-        _, height, width = latent.shape
-        coords = torch_module.cartesian_prod(
-            t,
-            torch_module.arange(height),
-            torch_module.arange(width),
-            torch_module.arange(1),
-        )
-        image_latent_ids.append(coords)
-
-    return torch_module.cat(image_latent_ids, dim=0).unsqueeze(0)
 
 
 def _prepare_text_ids(torch_module, prompt_embeds, t_coord=None):
@@ -374,7 +340,10 @@ def generate_image(
         pin_module_parameters,
     )
     from flux2.text_encoder.loader import _load_flux2_text_encoder as load_flux2_text_encoder
-    from flux2.lora import apply_lora
+    from flux2.lora import inject_trainable_lora_modules
+    from flux2.lora.config import FLUX2_LORA_TARGETS
+    from flux2.lora.loader import load_checkpoint as load_lora_checkpoint
+    from safetensors import safe_open
 
     print("1. Text Encoding")
     text_encoding_start = time.perf_counter()
@@ -399,12 +368,14 @@ def generate_image(
         guidance_scale=guidance_scale,
     )
     transformer_variant = _resolve_transformer_variant(base=is_base)
-    if seed is not None:
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+    from utils.seed import image_seed
+
+    effective_seed = seed
+    if image is not None:
+        effective_seed = image_seed(seed, Path(_split_image_paths(image)[0]).stem)
     latent_generator = torch.Generator(device=device)
-    if seed is not None:
-        latent_generator.manual_seed(seed)
+    if effective_seed is not None:
+        latent_generator.manual_seed(effective_seed)
 
     print("  * loading tokenizer ...")
     tokenizer = Qwen2TokenizerFast.from_pretrained(str(tokenizer_path))
@@ -480,19 +451,19 @@ def generate_image(
 
         image_paths = _split_image_paths(image)
         encoded_image_latents = []
+        encoded_image_ids = []
 
         for image_path in image_paths:
             pil_image = Image.open(image_path).convert("RGB")
             image_processor.check_image_input(pil_image)
-            pil_image = _resize_to_max_side(pil_image, ref_size)
 
-            image_width, image_height = pil_image.size
+            img_width, img_height = pil_image.size
+            scale = ref_size / min(img_width, img_height)
+            new_width = max(16, round(img_width * scale / 16) * 16)
+            new_height = max(16, round(img_height * scale / 16) * 16)
+            pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-            multiple_of = vae_scale_factor * 2
-            image_width = (image_width // multiple_of) * multiple_of
-            image_height = (image_height // multiple_of) * multiple_of
-
-            image_tensor = image_processor.preprocess(pil_image, height=image_height, width=image_width, resize_mode="crop")
+            image_tensor = image_processor.preprocess(pil_image)
             image_tensor = image_tensor.to(device=device, dtype=torch.float16)
 
             latent = _retrieve_latents(vae.encode(image_tensor))
@@ -503,12 +474,14 @@ def generate_image(
                 vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps
             ).to(latent.device, latent.dtype)
             latent = (latent - latents_bn_mean) / latents_bn_std
-            encoded_image_latents.append(latent)
 
-        image_latent_ids = _prepare_image_ids(torch, encoded_image_latents).to(device)
-        image_latents = torch.cat([_pack_latents(latent).squeeze(0) for latent in encoded_image_latents], dim=0)
-        image_latents = image_latents.unsqueeze(0).repeat(batch_size, 1, 1)
-        image_latent_ids = image_latent_ids.repeat(batch_size, 1, 1)
+            encoded_image_latents.append(_pack_latents(latent).squeeze(0))
+            encoded_image_ids.append(_prepare_latent_ids(torch, latent).squeeze(0))
+
+        image_latents = torch.cat(encoded_image_latents, dim=0)
+        image_latent_ids = torch.cat(encoded_image_ids, dim=0)
+        image_latents = image_latents.unsqueeze(0).repeat(batch_size, 1, 1).to(device=device)
+        image_latent_ids = image_latent_ids.unsqueeze(0).repeat(batch_size, 1, 1).to(device=device)
 
         print(f"    image latent tokens: {tuple(image_latents.shape)}")
         print(f"    image latent ids: {tuple(image_latent_ids.shape)}")
@@ -574,9 +547,23 @@ def generate_image(
     )
     if loras:
         print("  * applying loras ...")
-        for lora_path, strength in loras.items():
-            print(f"    {lora_path} [{strength:.2f}]")
-        apply_lora(transformer, loras)
+        lora_rank = None
+        lora_alpha = None
+        for lora_path in loras:
+            with safe_open(str(lora_path), framework="pt") as handle:
+                metadata = handle.metadata() or {}
+            lora_rank = int(metadata["rank"])
+            lora_alpha = int(metadata["alpha"])
+            break
+        if lora_rank is None or lora_alpha is None:
+            raise RuntimeError("Could not read rank/alpha metadata from LoRA checkpoint.")
+        injected = inject_trainable_lora_modules(
+            transformer,
+            target_linear_names=FLUX2_LORA_TARGETS,
+            rank=lora_rank,
+            alpha=lora_alpha,
+        )
+        print(f"    injected lora modules: {len(injected)}")
     if offloading:
         pinned = pin_module_parameters(transformer)
         print(f"    pinned {pinned} cpu tensors for faster block swaps")
@@ -584,6 +571,18 @@ def generate_image(
         transformer.enable_block_offload(device)
     else:
         transformer = transformer.to(device)
+    if loras:
+        from flux2.lora import TrainableLoraLinear
+
+        for lora_path, strength in loras.items():
+            print(f"    {lora_path} [{strength:.2f}]")
+            load_lora_checkpoint(transformer, lora_path)
+            if strength != 1.0:
+                scale = strength ** 0.5
+                for module in transformer.modules():
+                    if isinstance(module, TrainableLoraLinear):
+                        module.lora_A.data.mul_(scale)
+                        module.lora_B.data.mul_(scale)
     prompt_embeds = prompt_embeds.to(device=device, dtype=transformer.dtype)
     if negative_prompt_embeds is not None:
         negative_prompt_embeds = negative_prompt_embeds.to(device=device, dtype=transformer.dtype)
