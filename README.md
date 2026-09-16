@@ -309,22 +309,26 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
 
 #### `image.crop`
 - Features
-  - Train a YOLO detector from CSV labels, then crop one best box per class
-  - Crops are expanded to fixed aspect ratios per class and resized by long side
+  - Labels carry a class and an independent ratio; class is used for balancing/statistics, ratio drives the crop shape
+  - Ratios: `1x1`, `1x2`, `2x3`, `2x1`, `3x2`
+  - Each distinct `class_ratio` pair (e.g. `face_1x1`, `portrait_2x3`) becomes a YOLO class
+  - Train a YOLO detector from CSV labels, then crop one best box per class/ratio combination
+  - Crops are expanded to the labeled ratio and resized by long side
   - Output crops are zero-padded (default width 6, starting at `000001.png` via `--filename-width`)
 - Typical flow
   1) Label boxes (first step)
      - `python -m image.crop.label.main --project "/proj" --stage 1` then open `http://localhost:5051`
      - Custom port: `python -m image.crop.label.main --project "/proj" --stage 1 --port 5001`
-     - Writes `stage_<N>_crop_labels.csv` under the project root (resumes if present)
+     - Writes `stage_<N>_crop_labels.csv` (`img,class,ratio,x1,y1,x,y`) under the project root (resumes if present)
   2) Prepare YOLO dataset from labels CSV
       - `python -m image.crop.prepare.main --model yolo --project "/proj" --stage 1 --val_split 0.2`
-      - Add `--balance` only if you explicitly want to downsample every class to the smallest class count
+      - Add `--balance` only if you explicitly want to downsample every class/ratio combination to the smallest count
   3) Train a detector (Ultralytics)
      - `python -m image.crop.train --project "/proj" --stage 1 --variant yolo11n --epochs 100 --batch 16`
   4) Run cropper using the trained weights
-     - Native crop size (no resize): `python -m image.crop.main --project "/proj" --stage 1 --classes 0 1 2 3 4`
-     - Resize long side: `python -m image.crop.main --project "/proj" --stage 1 --resolution 768 --classes 0 1 2 3 4`
+     - Native crop size (no resize): `python -m image.crop.main --project "/proj" --stage 1 --classes 0 1 2 3 4 5`
+     - Resize long side: `python -m image.crop.main --project "/proj" --stage 1 --resolution 768 --classes 0 1 2 3 4 5`
+     - `--classes` filters by base class id (all of its ratios)
 
 ### Video
 

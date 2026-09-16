@@ -25,6 +25,9 @@
           <hr />
           <div class="stat-line section-label"><strong>Per-class totals</strong></div>
           <ul id="classStats"></ul>
+          <hr />
+          <div class="stat-line section-label"><strong>Per-combination totals</strong></div>
+          <ul id="pairStats"></ul>
         </div>
       </aside>
 
@@ -67,10 +70,18 @@
             <label class="field-label">Class
               <select id="classSelect">
                 <option value="0">face</option>
-                <option value="1">portrait</option>
-                <option value="2">landscape</option>
-                <option value="3">full_body</option>
-                <option value="4">widescreen</option>
+                <option value="1">head_shot</option>
+                <option value="2">half_body</option>
+                <option value="3">cowboy_shot</option>
+                <option value="4">three_quarter</option>
+                <option value="5">full_body</option>
+              </select>
+            </label>
+            <label class="field-label">Ratio
+              <select id="ratioSelect">
+                {% for r in ratio_order %}
+                <option value="{{ r }}">{{ r }}</option>
+                {% endfor %}
               </select>
             </label>
           </div>
@@ -92,6 +103,7 @@
       current_index: {{ current_index }},
       total_labels: {{ total_labels }},
       class_stats: {{ class_stats|tojson }},
+      pair_stats: {{ pair_stats|tojson }},
       labelled_count: {{ labelled_count }}
     };
   </script>

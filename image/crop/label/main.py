@@ -6,6 +6,7 @@ import os
 import random
 from flask import Flask, render_template, request, jsonify, send_from_directory, make_response
 from utils.stages import find_latest_stage
+from image.crop.ratios import RATIO_ORDER, normalize_ratio
 from PIL import Image
 
 app = Flask(__name__)
@@ -13,8 +14,8 @@ app = Flask(__name__)
 # Globals
 image_dir = ""
 image_files = []
-# box tuple: (class_id, x1, y1, x, y) where x,y are x2,y2 (bottom-right)
-labels = {}         # Dict[int, List[Tuple[int, float, float, float, float]]]
+# box tuple: (class_id, ratio, x1, y1, x, y) where x,y are x2,y2 (bottom-right)
+labels = {}         # Dict[int, List[Tuple[int, str, float, float, float, float]]]
 labels_file = ""
 
 ratios = []
@@ -31,6 +32,23 @@ def _get_class_stats(labels_dict):
     return stats
 
 
+def _get_ratio_stats(labels_dict):
+    stats = {}
+    for _idx, boxes in labels_dict.items():
+        for (_cls_id, ratio, *_coords) in boxes:
+            stats[ratio] = stats.get(ratio, 0) + 1
+    return stats
+
+
+def _get_pair_stats(labels_dict):
+    stats = {}
+    for _idx, boxes in labels_dict.items():
+        for (cls_id, ratio, *_coords) in boxes:
+            key = f"{cls_id}|{ratio}"
+            stats[key] = stats.get(key, 0) + 1
+    return stats
+
+
 @app.route('/')
 def index():
     return render_template(
@@ -38,6 +56,9 @@ def index():
         total_images=len(image_files),
         total_labels=sum(len(b) for b in labels.values()),
         class_stats=_get_class_stats(labels),
+        ratio_stats=_get_ratio_stats(labels),
+        pair_stats=_get_pair_stats(labels),
+        ratio_order=list(RATIO_ORDER),
         current_index=current_image_index,
         labelled_count=len(labelled_idxs)
     )
@@ -52,8 +73,8 @@ def get_image(index):
 
     label_data = []
     if index in labels:
-        for (cls_id, x1, y1, x, y) in labels[index]:
-            label_data.append({'class': cls_id, 'x1': x1, 'y1': y1, 'x': x, 'y': y})
+        for (cls_id, ratio, x1, y1, x, y) in labels[index]:
+            label_data.append({'class': cls_id, 'ratio': ratio, 'x1': x1, 'y1': y1, 'x': x, 'y': y})
 
     response = make_response(send_from_directory(image_dir, img_name))
     if label_data:
@@ -68,8 +89,8 @@ def get_labels(index):
     except (IndexError, TypeError):
         return jsonify(error='Image not found'), 404
     lst = []
-    for i, (cls_id, x1, y1, x, y) in enumerate(labels.get(index, [])):
-        lst.append({'id': i, 'class': cls_id, 'x1': x1, 'y1': y1, 'x': x, 'y': y})
+    for i, (cls_id, ratio, x1, y1, x, y) in enumerate(labels.get(index, [])):
+        lst.append({'id': i, 'class': cls_id, 'ratio': ratio, 'x1': x1, 'y1': y1, 'x': x, 'y': y})
     return jsonify(labels=lst)
 
 
@@ -80,6 +101,9 @@ def get_stats():
         labelled_images=len(labelled_idxs),
         total_labels=sum(len(b) for b in labels.values()),
         class_stats=_get_class_stats(labels),
+        ratio_stats=_get_ratio_stats(labels),
+        pair_stats=_get_pair_stats(labels),
+        ratio_order=list(RATIO_ORDER),
         current_index=current_image_index
     )
 
@@ -104,6 +128,7 @@ def label_image():
 
     try:
         cls_id = int(data['class'])
+        ratio = normalize_ratio(data['ratio'])
         x1 = float(data['x1'])
         y1 = float(data['y1'])
         x  = float(data['x'])
@@ -111,7 +136,7 @@ def label_image():
     except (KeyError, TypeError, ValueError):
         return jsonify(error='Invalid label data'), 400
 
-    labels.setdefault(idx, []).append((cls_id, x1, y1, x, y))
+    labels.setdefault(idx, []).append((cls_id, ratio, x1, y1, x, y))
     if idx not in labelled_idxs:
         labelled_idxs.append(idx)
 
@@ -127,6 +152,7 @@ def update_label():
         idx = int(data['index'])
         box_id = int(data['box_id'])
         cls_id = int(data['class'])
+        ratio = normalize_ratio(data['ratio'])
         x1 = float(data['x1'])
         y1 = float(data['y1'])
         x  = float(data['x'])
@@ -137,7 +163,7 @@ def update_label():
     if idx not in labels or box_id < 0 or box_id >= len(labels[idx]):
         return jsonify(error='Label not found'), 404
 
-    labels[idx][box_id] = (cls_id, x1, y1, x, y)
+    labels[idx][box_id] = (cls_id, ratio, x1, y1, x, y)
     _rewrite_labels_csv()
     return jsonify(_stats_payload())
 
@@ -228,14 +254,14 @@ def _rewrite_labels_csv():
     with open(labels_file, 'w', newline='') as f:
         w = csv.writer(f)
         # YOLO-normalized center + half-size, but keep headers as x1,y1,x,y per your spec
-        w.writerow(['img', 'class', 'x1', 'y1', 'x', 'y'])
+        w.writerow(['img', 'class', 'ratio', 'x1', 'y1', 'x', 'y'])
         for img_idx in sorted(labels.keys()):
             img_name = image_files[img_idx]
             if img_name not in dims_cache:
                 with Image.open(os.path.join(image_dir, img_name)) as im:
                     dims_cache[img_name] = im.size  # (iw, ih)
             iw, ih = dims_cache[img_name]
-            for (cls_id, x1, y1, x2, y2) in labels[img_idx]:
+            for (cls_id, ratio, x1, y1, x2, y2) in labels[img_idx]:
                 cx_px = (x1 + x2) / 2.0
                 cy_px = (y1 + y2) / 2.0
                 hx_px = (x2 - x1) / 2.0
@@ -244,13 +270,16 @@ def _rewrite_labels_csv():
                 cy = cy_px / ih
                 hx = hx_px / iw
                 hy = hy_px / ih
-                w.writerow([img_name, cls_id,
+                w.writerow([img_name, cls_id, ratio,
                             f'{cx:.6f}', f'{cy:.6f}', f'{hx:.6f}', f'{hy:.6f}'])
 
 def _stats_payload():
     return dict(
         total_labels=sum(len(b) for b in labels.values()),
         class_stats=_get_class_stats(labels),
+        ratio_stats=_get_ratio_stats(labels),
+        pair_stats=_get_pair_stats(labels),
+        ratio_order=list(RATIO_ORDER),
         labelled_images=len(labelled_idxs)
     )
 
@@ -277,7 +306,7 @@ def main(project: str, stage: int = None, port: int = 5051):
 
     if not os.path.exists(labels_file):
         with open(labels_file, 'w', newline='') as f:
-            csv.writer(f).writerow(['img', 'class', 'x1', 'y1', 'x', 'y'])
+            csv.writer(f).writerow(['img', 'class', 'ratio', 'x1', 'y1', 'x', 'y'])
 
     labels.clear()
     name_to_idx = {name: i for i, name in enumerate(image_files)}
@@ -288,11 +317,12 @@ def main(project: str, stage: int = None, port: int = 5051):
             header = next(reader, None)
             for row in reader:
                 try:
-                    img_name, cls_s, cx_s, cy_s, hx_s, hy_s = row
+                    img_name, cls_s, ratio_s, cx_s, cy_s, hx_s, hy_s = row
                     if img_name not in name_to_idx:
                         continue
                     idx_i = name_to_idx[img_name]
                     cls_id = int(cls_s)
+                    ratio = normalize_ratio(ratio_s)
                     cx, cy, hx, hy = float(cx_s), float(cy_s), float(hx_s), float(hy_s)
                     with Image.open(os.path.join(image_dir, img_name)) as im:
                         iw, ih = im.size
@@ -300,7 +330,7 @@ def main(project: str, stage: int = None, port: int = 5051):
                     y1 = (cy - hy) * ih
                     x2 = (cx + hx) * iw
                     y2 = (cy + hy) * ih
-                    labels.setdefault(idx_i, []).append((cls_id, x1, y1, x2, y2))
+                    labels.setdefault(idx_i, []).append((cls_id, ratio, x1, y1, x2, y2))
                 except Exception:
                     continue
 

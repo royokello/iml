@@ -5,13 +5,17 @@ import shutil
 from collections import defaultdict
 from typing import Dict, List, Tuple
 
-Label = Tuple[str, int, float, float, float, float]
+from image.crop.ratios import normalize_ratio, pair_sort_key
+
+Label = Tuple[str, int, str, float, float, float, float]
+Pair = Tuple[int, str]
 CLASS_NAMES: Dict[int, str] = {
     0: "face",
-    1: "portrait",
-    2: "landscape",
-    3: "full_body",
-    4: "widescreen",
+    1: "head_shot",
+    2: "half_body",
+    3: "cowboy_shot",
+    4: "three_quarter",
+    5: "full_body",
 }
 
 
@@ -22,8 +26,16 @@ def read_labels_csv(csv_path: str) -> List[Label]:
         next(reader, None)
         for row in reader:
             try:
-                img, cls_s, cx_s, cy_s, hx_s, hy_s = row
-                labels.append((img, int(cls_s), float(cx_s), float(cy_s), float(hx_s), float(hy_s)))
+                img, cls_s, ratio_s, cx_s, cy_s, hx_s, hy_s = row
+                labels.append((
+                    img,
+                    int(cls_s),
+                    normalize_ratio(ratio_s),
+                    float(cx_s),
+                    float(cy_s),
+                    float(hx_s),
+                    float(hy_s),
+                ))
             except Exception:
                 continue
     return labels
@@ -35,10 +47,10 @@ def make_dirs(base_out: str):
         os.makedirs(os.path.join(base_out, split, "labels"), exist_ok=True)
 
 
-def write_yolo_label_file(path: str, labels: List[Label], class_id_map: Dict[int, int]):
+def write_yolo_label_file(path: str, labels: List[Label], pair_id_map: Dict[Pair, int]):
     with open(path, "w", newline="") as f:
-        for (_, cls_id, cx, cy, hx, hy) in labels:
-            mapped_cls = class_id_map.get(cls_id, cls_id)
+        for (_, cls_id, ratio, cx, cy, hx, hy) in labels:
+            mapped_cls = pair_id_map[(cls_id, ratio)]
             w = 2.0 * hx
             h = 2.0 * hy
             f.write(f"{mapped_cls} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
@@ -59,15 +71,15 @@ def balance_and_split(
     """
     rnd = random.Random(seed)
 
-    by_class: Dict[int, List[Label]] = defaultdict(list)
+    by_class: Dict[Pair, List[Label]] = defaultdict(list)
     for lab in all_labels:
-        by_class[lab[1]].append(lab)
+        by_class[(lab[1], lab[2])].append(lab)
     if not by_class:
         return {}, {}
 
     if balance:
         cap = min(len(v) for v in by_class.values())
-        labels_by_class: Dict[int, List[Label]] = {}
+        labels_by_class: Dict[Pair, List[Label]] = {}
         for c, lst in by_class.items():
             lst_copy = lst[:]
             rnd.shuffle(lst_copy)
@@ -79,7 +91,7 @@ def balance_and_split(
             rnd.shuffle(lst_copy)
             labels_by_class[c] = lst_copy
 
-    classes = sorted(labels_by_class.keys())
+    classes = sorted(labels_by_class.keys(), key=pair_sort_key)
 
     train_by_img: Dict[str, List[Label]] = defaultdict(list)
     val_by_img: Dict[str, List[Label]] = defaultdict(list)
@@ -107,7 +119,7 @@ def copy_and_write(
     images_root: str,
     out_root: str,
     split_name: str,
-    class_id_map: Dict[int, int],
+    pair_id_map: Dict[Pair, int],
 ):
     img_out = os.path.join(out_root, split_name, "images")
     lbl_out = os.path.join(out_root, split_name, "labels")
@@ -120,7 +132,7 @@ def copy_and_write(
 
         base, _ = os.path.splitext(img_name)
         lbl_path = os.path.join(lbl_out, base + ".txt")
-        write_yolo_label_file(lbl_path, lbls, class_id_map)
+        write_yolo_label_file(lbl_path, lbls, pair_id_map)
 
 
 def run(
@@ -145,18 +157,21 @@ def run(
     if not all_labels:
         raise SystemExit("No labels found in CSV.")
 
-    present_classes = sorted({lab[1] for lab in all_labels})
-    class_id_map = {cls_id: idx for idx, cls_id in enumerate(present_classes)}
-    class_names = [CLASS_NAMES.get(cls_id, f"class_{cls_id}") for cls_id in present_classes]
-    class_counts = {cls_id: 0 for cls_id in present_classes}
-    for _, cls_id, *_ in all_labels:
-        class_counts[cls_id] += 1
+    present_pairs = sorted({(lab[1], lab[2]) for lab in all_labels}, key=pair_sort_key)
+    pair_id_map = {pair: idx for idx, pair in enumerate(present_pairs)}
+    class_names = [
+        f"{CLASS_NAMES.get(cls_id, f'class_{cls_id}')}_{ratio}"
+        for cls_id, ratio in present_pairs
+    ]
+    pair_counts = {pair: 0 for pair in present_pairs}
+    for _, cls_id, ratio, *_ in all_labels:
+        pair_counts[(cls_id, ratio)] += 1
 
-    print(f"Loaded {len(all_labels)} labels across {len(present_classes)} classes from {csv_path}")
-    for cls_id in present_classes:
-        print(f"  class {cls_id} ({CLASS_NAMES.get(cls_id, f'class_{cls_id}')}): {class_counts[cls_id]}")
+    print(f"Loaded {len(all_labels)} labels across {len(present_pairs)} class/ratio combinations from {csv_path}")
+    for (cls_id, ratio), count in pair_counts.items():
+        print(f"  {CLASS_NAMES.get(cls_id, f'class_{cls_id}')}_{ratio}: {count}")
     if balance:
-        print(f"Balancing enabled: capping each class to {min(class_counts.values())} labels before splitting.")
+        print(f"Balancing enabled: capping each combination to {min(pair_counts.values())} labels before splitting.")
 
     train_by_img, val_by_img = balance_and_split(
         all_labels,
@@ -168,8 +183,8 @@ def run(
     out_root = os.path.join(project, f"stage_{stage}_yolo")
     make_dirs(out_root)
 
-    copy_and_write(train_by_img, stage_dir, out_root, "train", class_id_map)
-    copy_and_write(val_by_img, stage_dir, out_root, "val", class_id_map)
+    copy_and_write(train_by_img, stage_dir, out_root, "train", pair_id_map)
+    copy_and_write(val_by_img, stage_dir, out_root, "val", pair_id_map)
 
     yaml_path = os.path.join(project, f"stage_{stage}_yolo.yaml")
     with open(yaml_path, "w") as f:

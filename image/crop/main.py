@@ -3,51 +3,51 @@ from pathlib import Path
 from PIL import Image
 from ultralytics import YOLO
 from utils.stages import find_latest_stage
+from image.crop.ratios import RATIOS, normalize_ratio, pair_sort_key
 import numpy as np
 
-CLASS_RATIOS = {0: (1, 1), 1: (2, 3), 2: (3, 2), 3: (1, 2), 4: (2, 1)}  # w:h
 
-
-def read_yolo_class_mapping(project: str, stage: int) -> tuple[dict[int, int], dict[int, int]]:
+def read_yolo_class_mapping(project: str, stage: int) -> tuple[dict[int, tuple[int, str]], dict[tuple[int, str], int]]:
     labels_path = os.path.join(project, f"stage_{stage}_crop_labels.csv")
     if not os.path.isfile(labels_path):
         raise FileNotFoundError(labels_path)
 
-    original_classes = set()
+    pairs = set()
     with open(labels_path, "r", newline="") as f:
         reader = csv.reader(f)
         next(reader, None)
         for row in reader:
             try:
-                original_classes.add(int(row[1]))
+                pairs.add((int(row[1]), normalize_ratio(row[2])))
             except (IndexError, TypeError, ValueError):
                 continue
 
-    if not original_classes:
-        raise RuntimeError(f"No classes found in {labels_path}")
+    if not pairs:
+        raise RuntimeError(f"No class/ratio combinations found in {labels_path}")
 
-    present_classes = sorted(original_classes)
-    yolo_to_original = {idx: cls_id for idx, cls_id in enumerate(present_classes)}
-    original_to_yolo = {cls_id: idx for idx, cls_id in yolo_to_original.items()}
-    return yolo_to_original, original_to_yolo
+    present_pairs = sorted(pairs, key=pair_sort_key)
+    yolo_to_pair = {idx: pair for idx, pair in enumerate(present_pairs)}
+    pair_to_yolo = {pair: idx for idx, pair in yolo_to_pair.items()}
+    return yolo_to_pair, pair_to_yolo
 
 
-def yolo_ratio_map(yolo_to_original: dict[int, int]) -> dict[int, tuple[int, int]]:
+def yolo_ratio_map(yolo_to_pair: dict[int, tuple[int, str]]) -> dict[int, tuple[int, int]]:
     return {
-        yolo_id: CLASS_RATIOS.get(original_cls_id, (1, 1))
-        for yolo_id, original_cls_id in yolo_to_original.items()
+        yolo_id: RATIOS[pair[1]]
+        for yolo_id, pair in yolo_to_pair.items()
     }
 
 
-def map_requested_classes(classes, original_to_yolo: dict[int, int]) -> list[int] | None:
+def map_requested_classes(classes, pair_to_yolo: dict[tuple[int, str], int]) -> list[int] | None:
     if classes is None:
         return None
 
-    mapped = []
-    for cls_id in classes:
-        if cls_id in original_to_yolo:
-            mapped.append(original_to_yolo[cls_id])
-
+    requested = set(classes)
+    mapped = [
+        yolo_id
+        for (cls_id, _ratio), yolo_id in pair_to_yolo.items()
+        if cls_id in requested
+    ]
     return sorted(set(mapped))
 
 def list_images(d: str):
@@ -165,16 +165,16 @@ def perform_cropping(
     os.makedirs(out_dir, exist_ok=True)
 
     model = YOLO(weights)
-    yolo_to_original, original_to_yolo = read_yolo_class_mapping(project, stage)
-    ratio_by_yolo_id = yolo_ratio_map(yolo_to_original)
-    mapped_classes = map_requested_classes(classes, original_to_yolo)
+    yolo_to_pair, pair_to_yolo = read_yolo_class_mapping(project, stage)
+    ratio_by_yolo_id = yolo_ratio_map(yolo_to_pair)
+    mapped_classes = map_requested_classes(classes, pair_to_yolo)
 
     if classes is not None:
         print(f"Mapped requested classes {classes} to YOLO classes {mapped_classes}")
     print(
         "YOLO crop ratios: "
         + ", ".join(
-            f"{yolo_id}->class_{yolo_to_original[yolo_id]}={rw}:{rh}"
+            f"{yolo_id}->{yolo_to_pair[yolo_id][0]}_{yolo_to_pair[yolo_id][1]}={rw}:{rh}"
             for yolo_id, (rw, rh) in sorted(ratio_by_yolo_id.items())
         )
     )
@@ -215,11 +215,11 @@ def perform_cropping(
             conf = float(boxes.conf[j].item())
             if mapped_classes is not None and cls_id not in mapped_classes:
                 continue
-            # keep only highest confidence per class
+            # keep only highest confidence per class/ratio combination
             if cls_id not in best_by_class or conf > best_by_class[cls_id][0]:
                 best_by_class[cls_id] = (conf, boxes.xyxy[j].tolist())
 
-        # now crop once per class
+        # now crop once per class/ratio combination
         for cls_id, (_, (x1, y1, x2, y2)) in best_by_class.items():
             rw, rh = ratio_by_yolo_id.get(cls_id, (1,1))
             ex1, ey1, ex2, ey2 = expand_to_ratio((x1,y1,x2,y2), rw, rh, imW, imH)

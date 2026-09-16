@@ -2,6 +2,7 @@
 const img = document.getElementById('img');
 const selectionLayer = document.getElementById('selection-layer');
 const classSelect = document.getElementById('classSelect');
+const ratioSelect = document.getElementById('ratioSelect');
 const boxesList = document.getElementById('boxesList');
 
 const prevBtn = document.getElementById('prevBtn');
@@ -20,11 +21,12 @@ const imgPos = document.getElementById('imgPos');
 const labelledCount = document.getElementById('labelledCount');
 const totalLabels = document.getElementById('totalLabels');
 const classStatsEl = document.getElementById('classStats');
+const pairStatsEl = document.getElementById('pairStats');
 
-const ASPECT_BY_CLASS = { 0: 1/1, 1: 2/3, 2: 3/2, 3: 1/2, 4: 2/1 }; // width / height
+const ASPECT_BY_RATIO = { '1x1': 1/1, '1x2': 1/2, '2x3': 2/3, '2x1': 2/1, '3x2': 3/2 }; // width / height
 function currentAspect() {
-    const id = Number(classSelect.value);
-    return ASPECT_BY_CLASS.hasOwnProperty(id) ? ASPECT_BY_CLASS[id] : 1;
+    const id = ratioSelect.value;
+    return ASPECT_BY_RATIO.hasOwnProperty(id) ? ASPECT_BY_RATIO[id] : 1;
 }
 
 function ensureDefaultBox() {
@@ -43,7 +45,25 @@ function ensureDefaultBox() {
     sel = { left, top, width: w, height: h, boxId: null };
     renderSelection();
 }
-classSelect.addEventListener('change', ensureDefaultBox);
+function reshapeSelectionToAspect() {
+    const ar = currentAspect();
+    const rect = containerRect();
+    let width = sel.width;
+    let height = Math.round(width / ar);
+    if (height > rect.height) { height = rect.height; width = Math.round(height * ar); }
+    if (width > rect.width) { width = rect.width; height = Math.round(width / ar); }
+    const cx = sel.left + sel.width / 2;
+    const cy = sel.top + sel.height / 2;
+    const left = clamp(Math.round(cx - width / 2), 0, rect.width - width);
+    const top = clamp(Math.round(cy - height / 2), 0, rect.height - height);
+    sel.left = left; sel.top = top; sel.width = width; sel.height = height;
+    renderSelection();
+}
+
+ratioSelect.addEventListener('change', () => {
+    if (sel) reshapeSelectionToAspect();
+    else ensureDefaultBox();
+});
 
 
 let totalImages = window.__IML__.total_images || 0;
@@ -257,7 +277,7 @@ function renderBoxesList() {
     const li = document.createElement('li');
     li.dataset.id = i;
     const title = document.createElement('span');
-    title.textContent = `#${i+1} ${classNameFromId(b.class)}`;
+    title.textContent = `#${i+1} ${classNameFromId(b.class)} ${b.ratio}`;
     const dims = document.createElement('span');
     dims.textContent = `${b.x - b.x1}×${b.y - b.y1}`;
     li.appendChild(title); li.appendChild(dims);
@@ -265,8 +285,9 @@ function renderBoxesList() {
         [...boxesList.children].forEach(el => el.classList.remove('active'));
         li.classList.add('active');
         sel = { ...imageToSelectionCoords(b), boxId: b.id };
-        renderSelection();
         classSelect.value = String(b.class);
+        ratioSelect.value = b.ratio;
+        renderSelection();
     });
     boxesList.appendChild(li);
     });
@@ -284,6 +305,20 @@ function updateStatsPanel(payload) {
     const li = document.createElement('li');
     li.textContent = `${classNameFromId(k)}: ${stats[k]}`;
     classStatsEl.appendChild(li);
+    });
+
+    const pairs = payload?.pair_stats || {};
+    pairStatsEl.innerHTML = '';
+    const pairKeys = Object.keys(pairs).sort((a,b) => {
+    const [ac, ar] = a.split('|');
+    const [bc, br] = b.split('|');
+    return Number(ac) - Number(bc) || ar.localeCompare(br);
+    });
+    pairKeys.forEach(k => {
+    const [cls, ratio] = k.split('|');
+    const li = document.createElement('li');
+    li.textContent = `${classNameFromId(cls)}_${ratio}: ${pairs[k]}`;
+    pairStatsEl.appendChild(li);
     });
 }
 
@@ -353,11 +388,12 @@ saveBtn.onclick = () => {
     if (!sel) return;
     const coords = selectionToImageCoords();
     const cls = Number(classSelect.value);
+    const ratio = ratioSelect.value;
     if (sel.boxId != null) {
-    fetch('/label/update', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ index: currentIndex, box_id: sel.boxId, class: cls, ...coords }) })
+    fetch('/label/update', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ index: currentIndex, box_id: sel.boxId, class: cls, ratio, ...coords }) })
         .then(r=>r.json()).then(()=>{ loadImage(currentIndex); });
     } else {
-    fetch('/label', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ index: currentIndex, class: cls, ...coords }) })
+    fetch('/label', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ index: currentIndex, class: cls, ratio, ...coords }) })
         .then(r=>r.json()).then(()=>{ loadImage(currentIndex); });
     }
 };
@@ -381,6 +417,6 @@ img.addEventListener('mousedown', (e) => {
 
 // Initial render
 totalImages = window.__IML__.total_images;
-updateStatsPanel({ current_index: window.__IML__.current_index, labelled_images: window.__IML__.labelled_count, total_labels: window.__IML__.total_labels, class_stats: window.__IML__.class_stats });
+updateStatsPanel({ current_index: window.__IML__.current_index, labelled_images: window.__IML__.labelled_count, total_labels: window.__IML__.total_labels, class_stats: window.__IML__.class_stats, pair_stats: window.__IML__.pair_stats });
 if (totalImages > 0) loadImage(Math.max(0, window.__IML__.current_index));
 })();
