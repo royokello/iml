@@ -740,12 +740,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--text-quant-method",
-        default="sym-high",
+        default="sym-high-mini",
         help='Text encoder quantization method. "none" keeps checkpoint weights as loaded.',
     )
     parser.add_argument(
         "--denoiser-quant-method",
-        default="sym-med",
+        default="sym-med-nano",
         help='Denoiser quantization method. Use "none" to load the fp16 checkpoint directly.',
     )
     parser.add_argument(

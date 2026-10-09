@@ -121,7 +121,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--sample-seed", "--sample_seed", dest="sample_seed", type=int, default=DEFAULT_SAMPLE_SEED)
     parser.add_argument("--sample-indices", dest="sample_indices", type=str, default=None)
-    parser.add_argument("--text-quant-method", default="sym-med-nano")
+    parser.add_argument("--text-quant-method", default="sym-high-mini")
     parser.add_argument("--denoiser-quant-method", default="sym-med-nano")
     parser.add_argument(
         "--trigger",

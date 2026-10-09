@@ -479,7 +479,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=1024)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--text-quant", default="sym-med-nano")
+    parser.add_argument("--text-quant", default="sym-high-mini")
     parser.add_argument("--denoiser-quant", default="sym-med-nano")
     parser.add_argument("--cache-text", action="store_true")
     parser.add_argument("--cache-images", action="store_true")
