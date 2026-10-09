@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import time
 from pathlib import Path
 
@@ -244,7 +245,10 @@ def main(
             logs_handle.write("\n")
             logs_handle.flush()
 
-        _plot_loss(logs_filepath, models_dirpath / "loss.png")
+        try:
+            _plot_loss(logs_filepath, models_dirpath / "loss.png")
+        except Exception as exc:
+            print(f"      warning: loss plot save failed ({exc}); continuing without plot")
 
         pending_loss_logs.clear()
 
@@ -462,8 +466,10 @@ def _plot_loss(csv_path: Path, output_path: Path) -> None:
     ax.set_title("Training Loss")
     ax.legend()
     ax.grid(True, alpha=0.3)
-    fig.savefig(str(output_path), dpi=150, bbox_inches="tight")
+    temp_path = output_path.with_name(output_path.name + ".tmp")
+    fig.savefig(str(temp_path), dpi=150, bbox_inches="tight")
     plt.close(fig)
+    os.replace(temp_path, output_path)
     print(f"  * loss plot saved to {output_path}")
 
 
