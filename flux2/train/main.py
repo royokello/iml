@@ -45,6 +45,7 @@ def main(
     lora_init_checkpoint: Path | None = None,
     pose_res: int = 256,
     seed: int = 19930625,
+    ma_windows: list[int] = [32],
 ):
     print("Training Started ...")
     print(f"  * seed: {seed}")
@@ -91,7 +92,7 @@ def main(
 
     if current_step >= steps:
         print(f"  * latest checkpoint step {current_step} is already at max steps {steps}; nothing to train")
-        _plot_loss(logs_filepath, models_dirpath / "loss.png")
+        _plot_loss(logs_filepath, models_dirpath / "loss.png", ma_windows=ma_windows)
         return
 
     # LOAD DATASET
@@ -246,7 +247,7 @@ def main(
             logs_handle.flush()
 
         try:
-            _plot_loss(logs_filepath, models_dirpath / "loss.png")
+            _plot_loss(logs_filepath, models_dirpath / "loss.png", ma_windows=ma_windows)
         except Exception as exc:
             print(f"      warning: loss plot save failed ({exc}); continuing without plot")
 
@@ -428,7 +429,7 @@ def _truncate_logs_to_step(csv_path: Path, current_step: int) -> None:
     print(f"  * truncated steps.csv: removed {removed} stale/duplicate row(s) at or after step {current_step}")
 
 
-def _plot_loss(csv_path: Path, output_path: Path) -> None:
+def _plot_loss(csv_path: Path, output_path: Path, ma_windows: list[int]) -> None:
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -453,20 +454,23 @@ def _plot_loss(csv_path: Path, output_path: Path) -> None:
         np = None
 
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(steps, losses, color="blue", linewidth=1.0, alpha=0.4, label="Loss")
+    ax.plot(steps, losses, color="gray", linewidth=1.0, alpha=0.3, label="Loss")
 
-    if np is not None and len(losses) >= 32:
-        window = 32
-        ma = np.convolve(losses, np.ones(window) / window, mode="valid")
-        ma_steps = steps[window - 1:]
-        ax.plot(ma_steps, ma, color="orange", linewidth=1.0, label=f"{window}-step MA")
+    if np is not None and ma_windows:
+        ma_colors = ("lightcoral", "lightgreen", "lightskyblue")
+        for color, window in zip(ma_colors, ma_windows):
+            if len(losses) < window:
+                continue
+            ma = np.convolve(losses, np.ones(window) / window, mode="valid")
+            ma_steps = steps[window - 1:]
+            ax.plot(ma_steps, ma, color=color, linewidth=1.5, label=f"MA-{window}")
 
     ax.set_xlabel("Step")
     ax.set_ylabel("Loss")
     ax.set_title("Training Loss")
     ax.legend()
     ax.grid(True, alpha=0.3)
-    temp_path = output_path.with_name(output_path.name + ".tmp")
+    temp_path = output_path.with_name(output_path.stem + ".tmp.png")
     fig.savefig(str(temp_path), dpi=150, bbox_inches="tight")
     plt.close(fig)
     os.replace(temp_path, output_path)
@@ -505,12 +509,32 @@ def parse_args() -> argparse.Namespace:
         help="Global seed for reproducible noise sampling (default: 19930625)")
     parser.add_argument("--pose-res", dest="pose_res", type=int, default=256,
         help="Resolution for pose reference images. 0 to disable. Always upscales. Default: 256")
+    parser.add_argument(
+        "--moving-averages",
+        "--ma",
+        dest="ma_windows",
+        type=str,
+        default="32",
+        help="Comma-separated moving average window sizes for the loss plot, up to 3 values (default: 32).",
+    )
     return parser.parse_args()
+
+def _parse_ma_windows(raw: str) -> list[int]:
+    windows = sorted({int(part.strip()) for part in raw.split(",") if part.strip()})
+    if not windows:
+        raise ValueError("--moving-averages must contain at least one window size")
+    if any(window <= 0 for window in windows):
+        raise ValueError("--moving-averages window sizes must be positive integers")
+    if len(windows) > 3:
+        raise ValueError("--moving-averages accepts up to 3 window sizes")
+    return windows
+
 
 if __name__ == "__main__":
     args = parse_args()
     project_path = args.project
     model_root = args.root / "flux2" / args.version / "model"
+    ma_windows = _parse_ma_windows(args.ma_windows)
 
     print("1. Run training epochs ...")
 
@@ -546,6 +570,7 @@ if __name__ == "__main__":
         ref_upscale=args.ref_upscale,
         pose_res=args.pose_res,
         seed=args.seed,
+        ma_windows=ma_windows,
     )
 
     print(f"  * training done in {time.perf_counter() - training_start:.3f}s")
