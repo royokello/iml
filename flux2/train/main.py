@@ -393,7 +393,7 @@ def main(
         first_sample_index = 0
         current_epoch += 1
 
-    _plot_loss(logs_filepath, models_dirpath / "loss.png")
+    _plot_loss(logs_filepath, models_dirpath / "loss.png", ma_windows=ma_windows)
 
 
 def _truncate_logs_to_step(csv_path: Path, current_step: int) -> None:
