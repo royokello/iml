@@ -1,10 +1,11 @@
 from datetime import datetime
 import os
 import csv
+import random
 import torch
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 from torch import nn, optim
-from typing import Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 from image.cull.dataset import IMLCullDataset
 from image.cull.model import IMLCullModel
 from utils.stages import find_latest_stage
@@ -27,7 +28,28 @@ def train_epoch(model, dataloader, criterion, optimizer, dataset_size, device) -
         running_loss += loss.item() * pixel_values.size(0)
     return running_loss / dataset_size
 
-def validate_epoch(model, dataloader, criterion, dataset_size, device) -> Tuple[float, float, float]:
+def classification_metrics(probs, labels) -> Tuple[float, float]:
+    preds = [1 if p >= 0.5 else 0 for p in probs]
+    recalls: List[float] = []
+    f1s: List[float] = []
+
+    for cls in (0, 1):
+        tp = sum(1 for p, y in zip(preds, labels) if p == cls and y == cls)
+        fp = sum(1 for p, y in zip(preds, labels) if p == cls and y != cls)
+        fn = sum(1 for p, y in zip(preds, labels) if p != cls and y == cls)
+        support = tp + fn
+        if support > 0:
+            recalls.append(tp / support)
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / support if support > 0 else 0.0
+        f1s.append((2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0)
+
+    balanced_accuracy = sum(recalls) / len(recalls) if recalls else 0.0
+    macro_f1 = sum(f1s) / len(f1s) if f1s else 0.0
+    return balanced_accuracy, macro_f1
+
+
+def validate_epoch(model, dataloader, criterion, dataset_size, device) -> Tuple[float, float, float, float, float]:
     model.eval()
     running_loss, correct, total = 0.0, 0, 0
     all_probs, all_labels = [], []
@@ -52,8 +74,23 @@ def validate_epoch(model, dataloader, criterion, dataset_size, device) -> Tuple[
     avg_loss = running_loss / dataset_size
     accuracy = correct / total if total > 0 else 0.0
     auroc = roc_auc_score(all_labels, all_probs) if len(set(all_labels)) > 1 else 0.5
+    balanced_accuracy, macro_f1 = classification_metrics(all_probs, all_labels)
 
-    return avg_loss, accuracy, auroc
+    return avg_loss, accuracy, auroc, balanced_accuracy, macro_f1
+
+
+_TOL = 1e-6
+
+
+def _is_better(candidate: Dict, best: Dict) -> bool:
+    if candidate["bal_acc"] > best["bal_acc"] + _TOL:
+        return True
+    if abs(candidate["bal_acc"] - best["bal_acc"]) <= _TOL:
+        if candidate["auroc"] > best["auroc"] + _TOL:
+            return True
+        if abs(candidate["auroc"] - best["auroc"]) <= _TOL and candidate["acc"] > best["acc"] + _TOL:
+            return True
+    return False
 
 
 def run_stage(
@@ -70,27 +107,30 @@ def run_stage(
     val_loader: torch.utils.data.DataLoader,
     train_size: int,
     val_size: int,
-    best_val_auroc: float,
-    best_val_acc: float,
-) -> Tuple[IMLCullModel, float, float]:
+    best_state: Dict,
+) -> Tuple[IMLCullModel, Dict]:
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = optim.AdamW(trainable_params, lr=learning_rate, weight_decay=0.05)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs)
 
     epochs_no_improve = 0
-    history_val_auroc = []
+    history_bal_acc = []
 
     for epoch in range(num_epochs):
         train_loss = train_epoch(model, train_loader, criterion, optimizer, train_size, device)
-        val_loss, val_acc, val_auroc = validate_epoch(model, val_loader, criterion, val_size, device)
+        val_loss, val_acc, val_auroc, val_bal_acc, val_f1 = validate_epoch(
+            model, val_loader, criterion, val_size, device
+        )
 
-        if val_auroc > best_val_auroc:
-            improved = True
-            if abs(val_auroc - best_val_auroc) < 1e-6 and val_acc < best_val_acc:
-                improved = False
-        else:
-            improved = False
+        candidate = {
+            "bal_acc": val_bal_acc,
+            "auroc": val_auroc,
+            "acc": val_acc,
+            "epoch": epoch + 1,
+            "stage": training_stage,
+        }
+        improved = _is_better(candidate, best_state)
 
         saved_str = "SAVED" if improved else ""
 
@@ -98,7 +138,9 @@ def run_stage(
         print(
             f"[{epoch_timestamp}] training stage {training_stage}, "
             f"epoch {epoch+1}, train loss = {train_loss:.6f}, "
-            f"val loss = {val_loss:.6f}, val_acc = {val_acc:.6f}, val_auroc = {val_auroc:.6f} {saved_str}"
+            f"val loss = {val_loss:.6f}, val_acc = {val_acc:.6f}, "
+            f"val_bal_acc = {val_bal_acc:.6f}, val_auroc = {val_auroc:.6f}, "
+            f"val_f1 = {val_f1:.6f} {saved_str}"
         )
 
         with open(epoch_log_file, 'a', newline='') as f:
@@ -109,23 +151,23 @@ def run_stage(
                 train_loss,
                 val_loss,
                 val_acc,
+                val_bal_acc,
                 val_auroc,
+                val_f1,
                 "yes" if improved else "no",
             ])
 
         if improved:
-            best_val_auroc = val_auroc
-            best_val_acc = val_acc
+            best_state = candidate
             epochs_no_improve = 0
             torch.save(model.state_dict(), model_file)
-
         else:
             epochs_no_improve += 1
 
-        history_val_auroc.append(val_auroc)
+        history_bal_acc.append(val_bal_acc)
         patience_2x = patience * 2
-        if len(history_val_auroc) >= patience_2x:
-            window = history_val_auroc[-patience_2x:]
+        if len(history_bal_acc) >= patience_2x:
+            window = history_bal_acc[-patience_2x:]
             plateau = (max(window) - min(window)) <= training_plateau
             if epochs_no_improve >= patience_2x or plateau:
                 break
@@ -135,7 +177,31 @@ def run_stage(
 
         scheduler.step()
 
-    return (model, best_val_auroc, best_val_acc)
+    return model, best_state
+
+
+def stratified_split_indices(labels: List[int], val_split: float, seed: int) -> Tuple[List[int], List[int]]:
+    rnd = random.Random(seed)
+    by_class: Dict[int, List[int]] = {}
+    for idx, label in enumerate(labels):
+        by_class.setdefault(int(label), []).append(idx)
+
+    train_idx: List[int] = []
+    val_idx: List[int] = []
+    for indices in by_class.values():
+        indices = indices[:]
+        rnd.shuffle(indices)
+        n_val = int(round(val_split * len(indices)))
+        if 0.0 < val_split < 1.0 and len(indices) > 1:
+            n_val = max(1, min(len(indices) - 1, n_val))
+        else:
+            n_val = max(0, min(len(indices), n_val))
+        val_idx.extend(indices[:n_val])
+        train_idx.extend(indices[n_val:])
+
+    rnd.shuffle(train_idx)
+    rnd.shuffle(val_idx)
+    return train_idx, val_idx
 
 
 def train_model(
@@ -171,7 +237,10 @@ def train_model(
             pass
 
     with open(epoch_log_file, 'w', newline='') as f:
-        csv.writer(f).writerow(['datetime', 'training_stage', 'epoch', 'train_loss', 'val_loss', 'val_accuracy', 'val_auroc', 'saved'])
+        csv.writer(f).writerow([
+            'datetime', 'training_stage', 'epoch', 'train_loss', 'val_loss',
+            'val_accuracy', 'val_bal_acc', 'val_auroc', 'val_f1', 'saved',
+        ])
 
     print("Initializing model ...")
     model = IMLCullModel().to(device)
@@ -193,41 +262,47 @@ def train_model(
     if len(full_dataset) == 0:
         raise ValueError(f"No labeled images found in {image_dir_path}")
 
-    total_size = len(full_dataset)
-    val_size = int(total_size * validation_split)
-    train_size = total_size - val_size
-    gen = torch.Generator().manual_seed(19930625)
-    train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size], generator=gen)
+    sample_labels = [full_dataset.labels[name] for name in full_dataset.images]
+    train_indices, val_indices = stratified_split_indices(sample_labels, validation_split, seed=19930625)
+    if not val_indices:
+        print("Warning: validation split is empty; metrics will be unreliable.")
+
+    train_dataset = Subset(full_dataset, train_indices)
+    val_dataset = Subset(full_dataset, val_indices)
+    train_size = len(train_indices)
+    val_size = len(val_indices)
+    print(f"Stratified split: {train_size} train / {val_size} val")
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
-    best_val_auroc = -1.0
-    best_val_acc = -1.0
+    best_state = {"bal_acc": -1.0, "auroc": -1.0, "acc": -1.0, "epoch": 0, "stage": 0}
 
     model.freeze_backbone()
 
     print(f"Training stage 1: lr={stage1_lr}, epochs={stage1_epochs}, patience={stage1_patience}")
-    model, best_val_auroc, best_val_acc = run_stage(
+    model, best_state = run_stage(
         training_stage=1,
         model=model, num_epochs=stage1_epochs, learning_rate=stage1_lr,
         patience=stage1_patience, device=device, training_plateau=training_plateau,
         epoch_log_file=epoch_log_file, model_file=model_file,
         train_loader=train_loader, val_loader=val_loader,
-        train_size=train_size, val_size=val_size, best_val_auroc=best_val_auroc, best_val_acc=best_val_acc
+        train_size=train_size, val_size=val_size, best_state=best_state
     )
+    print(f"Best after stage 1: {best_state}")
 
     model.unfreeze_backbone()
 
     print(f"Training stage 2: lr={stage2_lr}, epochs={stage2_epochs}, patience={stage2_patience}")
-    model, best_val_auroc = run_stage(
+    model, best_state = run_stage(
         training_stage=2,
         model=model, num_epochs=stage2_epochs, learning_rate=stage2_lr,
         patience=stage2_patience, device=device, training_plateau=training_plateau,
         epoch_log_file=epoch_log_file, model_file=model_file,
         train_loader=train_loader, val_loader=val_loader,
-        train_size=train_size, val_size=val_size, best_val_auroc=best_val_auroc, best_val_acc=best_val_acc
+        train_size=train_size, val_size=val_size, best_state=best_state
     )
+    print(f"Best after stage 2: {best_state}")
 
     print("Training complete.")
     return model

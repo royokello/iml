@@ -280,6 +280,8 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
 #### `image.cull`
 - Features
   - Train a DeiT-based binary classifier on labeled images per stage
+  - Best checkpoint is selected on `val_bal_acc` (balanced accuracy = mean per-class recall), tie-broken by `val_auroc` then `val_acc`
+  - Train/val split is stratified per class so both labels are represented in validation
   - Inference supports `--mode copy|link|inplace` for kept-image output handling; logs and metrics saved
 - Typical flow (stages live under project root)
   1) Label keep/cull (first step)
