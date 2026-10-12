@@ -3,20 +3,13 @@ import os
 import random
 import shutil
 from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple
 
+from image.crop.classes import compound_name
 from image.crop.ratios import normalize_ratio, pair_sort_key
 
 Label = Tuple[str, int, str, float, float, float, float]
 Pair = Tuple[int, str]
-CLASS_NAMES: Dict[int, str] = {
-    0: "face",
-    1: "head_shot",
-    2: "half_body",
-    3: "cowboy_shot",
-    4: "three_quarter",
-    5: "full_body",
-}
 
 
 def read_labels_csv(csv_path: str) -> List[Label]:
@@ -141,6 +134,8 @@ def run(
     val_split: float = 0.2,
     balance: bool = False,
     seed: int = 19930625,
+    min_samples: int = 0,
+    combos: Sequence[str] | None = None,
 ):
     if not (0.0 <= val_split <= 1.0):
         raise SystemExit("--val_split must be between 0 and 1")
@@ -157,19 +152,39 @@ def run(
     if not all_labels:
         raise SystemExit("No labels found in CSV.")
 
+    if combos:
+        wanted = set(combos)
+        all_labels = [lab for lab in all_labels if compound_name(lab[1], lab[2]) in wanted]
+        if not all_labels:
+            raise SystemExit(f"No labels matched --combos {' '.join(sorted(wanted))}")
+
+    if min_samples > 0:
+        counts: Dict[Pair, int] = defaultdict(int)
+        for lab in all_labels:
+            counts[(lab[1], lab[2])] += 1
+        dropped = {pair: n for pair, n in counts.items() if n < min_samples}
+        if dropped:
+            print(
+                f"Dropping {len(dropped)} combination(s) with < {min_samples} labels: "
+                + ", ".join(
+                    f"{compound_name(cls_id, ratio)}={n}"
+                    for (cls_id, ratio), n in sorted(dropped.items(), key=lambda kv: pair_sort_key(kv[0]))
+                )
+            )
+        all_labels = [lab for lab in all_labels if counts[(lab[1], lab[2])] >= min_samples]
+        if not all_labels:
+            raise SystemExit(f"No combinations have at least {min_samples} labels.")
+
     present_pairs = sorted({(lab[1], lab[2]) for lab in all_labels}, key=pair_sort_key)
     pair_id_map = {pair: idx for idx, pair in enumerate(present_pairs)}
-    class_names = [
-        f"{CLASS_NAMES.get(cls_id, f'class_{cls_id}')}_{ratio}"
-        for cls_id, ratio in present_pairs
-    ]
+    class_names = [compound_name(cls_id, ratio) for cls_id, ratio in present_pairs]
     pair_counts = {pair: 0 for pair in present_pairs}
     for _, cls_id, ratio, *_ in all_labels:
         pair_counts[(cls_id, ratio)] += 1
 
     print(f"Loaded {len(all_labels)} labels across {len(present_pairs)} class/ratio combinations from {csv_path}")
     for (cls_id, ratio), count in pair_counts.items():
-        print(f"  {CLASS_NAMES.get(cls_id, f'class_{cls_id}')}_{ratio}: {count}")
+        print(f"  {compound_name(cls_id, ratio)}: {count}")
     if balance:
         print(f"Balancing enabled: capping each combination to {min(pair_counts.values())} labels before splitting.")
 

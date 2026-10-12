@@ -1,33 +1,26 @@
-import argparse, csv, os
+import argparse, os
 from pathlib import Path
 from PIL import Image
 from ultralytics import YOLO
 from utils.stages import find_latest_stage
-from image.crop.ratios import RATIOS, normalize_ratio, pair_sort_key
+from image.crop.classes import split_compound_name
+from image.crop.ratios import RATIOS
 import numpy as np
 
 
-def read_yolo_class_mapping(project: str, stage: int) -> tuple[dict[int, tuple[int, str]], dict[tuple[int, str], int]]:
-    labels_path = os.path.join(project, f"stage_{stage}_crop_labels.csv")
-    if not os.path.isfile(labels_path):
-        raise FileNotFoundError(labels_path)
+def model_class_mapping(model) -> tuple[dict[int, tuple[int, str]], dict[tuple[int, str], int]]:
+    names = getattr(model, "names", None) or {}
+    yolo_to_pair = {}
+    for yolo_id, name in names.items():
+        parsed = split_compound_name(str(name))
+        if parsed is None:
+            raise RuntimeError(f"Model class name '{name}' is not in <class>_<WxH> form")
+        yolo_to_pair[int(yolo_id)] = parsed
 
-    pairs = set()
-    with open(labels_path, "r", newline="") as f:
-        reader = csv.reader(f)
-        next(reader, None)
-        for row in reader:
-            try:
-                pairs.add((int(row[1]), normalize_ratio(row[2])))
-            except (IndexError, TypeError, ValueError):
-                continue
+    if not yolo_to_pair:
+        raise RuntimeError("Model exposes no class names")
 
-    if not pairs:
-        raise RuntimeError(f"No class/ratio combinations found in {labels_path}")
-
-    present_pairs = sorted(pairs, key=pair_sort_key)
-    yolo_to_pair = {idx: pair for idx, pair in enumerate(present_pairs)}
-    pair_to_yolo = {pair: idx for idx, pair in yolo_to_pair.items()}
+    pair_to_yolo = {pair: yolo_id for yolo_id, pair in yolo_to_pair.items()}
     return yolo_to_pair, pair_to_yolo
 
 
@@ -165,7 +158,7 @@ def perform_cropping(
     os.makedirs(out_dir, exist_ok=True)
 
     model = YOLO(weights)
-    yolo_to_pair, pair_to_yolo = read_yolo_class_mapping(project, stage)
+    yolo_to_pair, pair_to_yolo = model_class_mapping(model)
     ratio_by_yolo_id = yolo_ratio_map(yolo_to_pair)
     mapped_classes = map_requested_classes(classes, pair_to_yolo)
 

@@ -26,6 +26,18 @@ def main(argv: Sequence[str] | None = None):
         action="store_true",
         help="Downsample each class to the smallest class count before splitting",
     )
+    parser.add_argument(
+        "--min-samples",
+        type=int,
+        default=0,
+        help="Drop class/ratio combinations with fewer than this many labels",
+    )
+    parser.add_argument(
+        "--combos",
+        nargs="*",
+        default=None,
+        help="Only include these class/ratio combinations, e.g. head_shot_1x1 half_body_2x3",
+    )
     parser.add_argument("--seed", type=int, default=19930625, help="Random seed")
     args = parser.parse_args(argv)
     stage = resolve_stage(args.project, args.stage)
@@ -37,6 +49,8 @@ def main(argv: Sequence[str] | None = None):
             stage=stage,
             balance=args.balance,
             seed=args.seed,
+            min_samples=args.min_samples,
+            combos=args.combos,
         )
         return
 

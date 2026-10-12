@@ -311,9 +311,11 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
 - Features
   - Labels carry a class and an independent ratio; class is used for balancing/statistics, ratio drives the crop shape
   - Ratios: `1x1`, `1x2`, `2x3`, `2x1`, `3x2`
-  - Each distinct `class_ratio` pair (e.g. `face_1x1`, `portrait_2x3`) becomes a YOLO class
+  - Each distinct `class_ratio` pair (e.g. `face_1x1`, `half_body_2x3`) becomes a YOLO class
   - Train a YOLO detector from CSV labels, then crop one best box per class/ratio combination
+  - Classes: `0 face, 1 head_shot, 2 half_body, 3 cowboy_shot, 4 three_quarter, 5 full_body`
   - Crops are expanded to the labeled ratio and resized by long side
+  - The cropper reads class names from the trained weights, so training on a subset stays consistent
   - Output crops are zero-padded (default width 6, starting at `000001.png` via `--filename-width`)
 - Typical flow
   1) Label boxes (first step)
@@ -323,6 +325,8 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
   2) Prepare YOLO dataset from labels CSV
       - `python -m image.crop.prepare.main --model yolo --project "/proj" --stage 1 --val_split 0.2`
       - Add `--balance` only if you explicitly want to downsample every class/ratio combination to the smallest count
+      - `--min-samples N` drops combinations with fewer than N labels; `--combos head_shot_1x1 half_body_2x3` keeps only the listed combinations
+      - Recommended when data is thin: train only well-populated combinations, e.g. `--min-samples 20`
   3) Train a detector (Ultralytics)
      - `python -m image.crop.train --project "/proj" --stage 1 --variant yolo11n --epochs 100 --batch 16`
   4) Run cropper using the trained weights
