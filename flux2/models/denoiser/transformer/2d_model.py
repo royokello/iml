@@ -257,6 +257,10 @@ class Flux2Transformer2DModel(
         """
         self._offload_device = device
 
+    def disable_block_offload(self) -> None:
+        """Stop streaming blocks and run `forward` on the current block devices."""
+        self._offload_device = None
+
     @apply_lora_scale("joint_attention_kwargs")
     def forward(
         self,

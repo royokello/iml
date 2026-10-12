@@ -6,10 +6,21 @@ Unified Flux 2 Klein generation entrypoint.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import copy
 import inspect
 import json
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from diffusers import AutoencoderKLFlux2
+    from PIL import Image
+    from transformers import Qwen2TokenizerFast
+
+    from flux2.models.denoiser.transformer import Flux2Transformer2DModel
+    from flux2.models.text_encoder.model import Qwen3Model
 
 DEFAULT_DISTILLED_STEPS = 4
 DEFAULT_BASE_STEPS = 50
@@ -314,6 +325,84 @@ def _retrieve_timesteps(
     return timesteps, num_inference_steps
 
 
+def _module_device(module):
+    tensor = next(module.parameters(), None)
+    if tensor is None:
+        tensor = next(module.buffers(), None)
+    return None if tensor is None else tensor.device
+
+
+def _inject_loras(denoiser, loras: dict[str, float]) -> int:
+    from flux2.lora import inject_trainable_lora_modules
+    from flux2.lora.config import FLUX2_LORA_TARGETS
+    from safetensors import safe_open
+
+    lora_rank = None
+    lora_alpha = None
+    for lora_path in loras:
+        with safe_open(str(lora_path), framework="pt") as handle:
+            metadata = handle.metadata() or {}
+        lora_rank = int(metadata["rank"])
+        lora_alpha = int(metadata["alpha"])
+        break
+    if lora_rank is None or lora_alpha is None:
+        raise RuntimeError("Could not read rank/alpha metadata from LoRA checkpoint.")
+    injected = inject_trainable_lora_modules(
+        denoiser,
+        target_linear_names=FLUX2_LORA_TARGETS,
+        rank=lora_rank,
+        alpha=lora_alpha,
+    )
+    return len(injected)
+
+
+def _load_vae(vae_path: str | Path):
+    from diffusers import AutoencoderKLFlux2
+
+    print("  * loading vae ...")
+    return AutoencoderKLFlux2.from_pretrained(str(vae_path), local_files_only=True)
+
+
+@contextlib.contextmanager
+def _on_device(module, device, *, dtype=None, restore: bool = True):
+    """Move a module to device for a block. Move it back on exit if restore."""
+    original_device = _module_device(module)
+    original_dtype = None if dtype is None else next(module.parameters()).dtype
+    try:
+        if dtype is None:
+            module.to(device)
+        else:
+            module.to(device=device, dtype=dtype)
+        yield module
+    finally:
+        if restore and original_device is not None:
+            if original_dtype is None:
+                module.to(original_device)
+            else:
+                module.to(device=original_device, dtype=original_dtype)
+
+
+@contextlib.contextmanager
+def _denoiser_on_device(denoiser, device, *, offloading: bool):
+    """Place a caller denoiser for one denoise pass. Restore it on exit."""
+    from flux2.denoiser.loader import move_resident_layers_to
+
+    original_device = _module_device(denoiser)
+    try:
+        if offloading:
+            move_resident_layers_to(denoiser, device)
+            denoiser.enable_block_offload(device)
+        else:
+            denoiser.to(device)
+        yield denoiser
+    finally:
+        if offloading:
+            denoiser.disable_block_offload()
+            move_resident_layers_to(denoiser, original_device)
+        else:
+            denoiser.to(original_device)
+
+
 def generate_image(
     root: str | Path,
     *,
@@ -333,17 +422,79 @@ def generate_image(
     negative_prompt: str | None = None,
     max_length: int = 512,
     offloading: bool = False,
+    tokenizer: Qwen2TokenizerFast | None = None,
+    text_encoder: Qwen3Model | None = None,
+    denoiser: Flux2Transformer2DModel | None = None,
+    vae: AutoencoderKLFlux2 | None = None,
 ) -> list[Image.Image]:
+    """Generate one image with Flux 2 Klein.
+
+    Each model is loaded from disk unless the caller passes it in. Pass the
+    models to reuse them across many calls and skip the disk load.
+
+    The caller keeps passed models in host memory. This function moves each
+    passed model to the CUDA device only while the model is in use. It moves
+    the model back to its original device afterward. The VAE also casts to
+    float16 while in use and returns to its original dtype. This function
+    never deletes a passed model.
+
+    Args:
+        root (str | Path): Root folder that contains flux2/<version>/model.
+        version (str): Model family, "4b" or "9b".
+        image (str | Path | None, optional): Comma-separated reference image
+            paths. Defaults to None.
+        prompt (str, optional): Prompt text to encode.
+        width (int, optional): Output width in pixels. Defaults to 512.
+        height (int, optional): Output height in pixels. Defaults to 512.
+        num_inference_steps (int | None, optional): Denoising steps. Defaults
+            to 4 (distilled) or 50 (base).
+        seed (int, optional): Seed for the latent noise.
+        guidance_scale (float | None, optional): CFG scale. Used only with
+            base. Defaults to 1.0 (distilled) or 4.0 (base).
+        base (bool, optional): Use base-model inference. When a denoiser is
+            passed, this value must match the variant of that denoiser.
+        ref_size (int, optional): Short side of reference images in pixels.
+        text_quant_method (str | None, optional): Text encoder quantization.
+            Ignored when text_encoder is passed.
+        denoiser_quant_method (str | None, optional): Denoiser quantization.
+            Ignored when denoiser is passed.
+        loras (dict[str, float] | None, optional): Map of LoRA checkpoint
+            path to strength. When a denoiser is passed, the function
+            deep-copies it in host memory, injects the LoRA into the copy,
+            and moves the copy to the CUDA device. The copy needs one extra
+            denoiser-sized block of host memory. The function discards the
+            copy after the call. The passed denoiser is not changed.
+        negative_prompt (str | None, optional): Negative prompt. Used only
+            with base.
+        max_length (int, optional): Maximum tokenizer sequence length.
+        offloading (bool, optional): Stream denoiser blocks to the CUDA
+            device one at a time. Applies to a loaded denoiser and to a
+            passed denoiser. A passed denoiser has block offloading off
+            after the call.
+        tokenizer (Qwen2TokenizerFast | None, optional): Pre-loaded
+            tokenizer. Defaults to None (load from disk).
+        text_encoder (Qwen3Model | None, optional): Pre-loaded text encoder.
+            Its config is not validated against the denoiser. Defaults to
+            None (load from disk).
+        denoiser (Flux2Transformer2DModel | None, optional): Pre-loaded
+            denoiser in host memory. Defaults to None (load from disk).
+        vae (AutoencoderKLFlux2 | None, optional): Pre-loaded VAE. Defaults
+            to None (load from disk).
+
+    Returns:
+        list[Image.Image]: The generated images.
+
+    Raises:
+        RuntimeError: If CUDA is not available, or if LoRA metadata has no
+            rank or alpha.
+    """
     from flux2.denoiser.loader import (
         _load_flux2_denoiser as load_flux2_denoiser,
         move_resident_layers_to,
         pin_module_parameters,
     )
     from flux2.text_encoder.loader import _load_flux2_text_encoder as load_flux2_text_encoder
-    from flux2.lora import inject_trainable_lora_modules
-    from flux2.lora.config import FLUX2_LORA_TARGETS
     from flux2.lora.loader import load_checkpoint as load_lora_checkpoint
-    from safetensors import safe_open
 
     print("1. Text Encoding")
     text_encoding_start = time.perf_counter()
@@ -377,49 +528,58 @@ def generate_image(
     if effective_seed is not None:
         latent_generator.manual_seed(effective_seed)
 
-    print("  * loading tokenizer ...")
-    tokenizer = Qwen2TokenizerFast.from_pretrained(str(tokenizer_path))
+    owns_text_encoder = text_encoder is None
+    owns_vae = vae is None
 
-    print("  * loading text encoder ...")
-    print(f"    quantization: {text_quant_method or 'none'}")
-    torch.cuda.empty_cache()
-    text_encoder = load_flux2_text_encoder(
-        str(text_encoder_path),
-        quant_method=text_quant_method,
-    )
-    _validate_text_encoder_layers(text_encoder)
-    _validate_joint_attention_dim(
-        text_encoder=text_encoder,
-        transformer_path=transformer_path,
-    )
-    text_encoder = text_encoder.to(device)
+    if tokenizer is None:
+        print("  * loading tokenizer ...")
+        tokenizer = Qwen2TokenizerFast.from_pretrained(str(tokenizer_path))
+    else:
+        print("  * using caller-provided tokenizer")
 
-    print("  * text encoding ...")
-    torch.cuda.synchronize(device)
-    encode_start = time.perf_counter()
-    prompt_embeds, text_ids = _encode_prompt_embeddings(
-        torch,
-        tokenizer,
-        text_encoder,
-        prompt=prompt,
-        device=device,
-        max_length=max_length,
-    )
-    negative_prompt_embeds = None
-    negative_text_ids = None
-    if is_base:
-        neg_text = negative_prompt if negative_prompt else ""
-        negative_prompt_embeds, negative_text_ids = _encode_prompt_embeddings(
+    if text_encoder is None:
+        print("  * loading text encoder ...")
+        print(f"    quantization: {text_quant_method or 'none'}")
+        torch.cuda.empty_cache()
+        text_encoder = load_flux2_text_encoder(
+            str(text_encoder_path),
+            quant_method=text_quant_method,
+        )
+        _validate_text_encoder_layers(text_encoder)
+        _validate_joint_attention_dim(
+            text_encoder=text_encoder,
+            transformer_path=transformer_path,
+        )
+    else:
+        print("  * using caller-provided text encoder")
+
+    with _on_device(text_encoder, device, restore=not owns_text_encoder):
+        print("  * text encoding ...")
+        torch.cuda.synchronize(device)
+        encode_start = time.perf_counter()
+        prompt_embeds, text_ids = _encode_prompt_embeddings(
             torch,
             tokenizer,
             text_encoder,
-            prompt=neg_text,
+            prompt=prompt,
             device=device,
             max_length=max_length,
         )
-    torch.cuda.synchronize(device)
-    encode_seconds = time.perf_counter() - encode_start
-    print(f"    encode time: {encode_seconds:.3f}s")
+        negative_prompt_embeds = None
+        negative_text_ids = None
+        if is_base:
+            neg_text = negative_prompt if negative_prompt else ""
+            negative_prompt_embeds, negative_text_ids = _encode_prompt_embeddings(
+                torch,
+                tokenizer,
+                text_encoder,
+                prompt=neg_text,
+                device=device,
+                max_length=max_length,
+            )
+        torch.cuda.synchronize(device)
+        encode_seconds = time.perf_counter() - encode_start
+        print(f"    encode time: {encode_seconds:.3f}s")
 
     print("  * clearing encoder ...")
     del tokenizer
@@ -432,19 +592,18 @@ def generate_image(
     vae_scale_factor = _load_vae_scale_factor(vae_path)
     image_latents = None
     image_latent_ids = None
-    vae = None
     scheduler = None
 
     print("2. Image Encoding")
     if image:
         image_encoding_start = time.perf_counter()
-        from diffusers import AutoencoderKLFlux2
         from diffusers.pipelines.flux2.image_processor import Flux2ImageProcessor
         from PIL import Image
 
-        print("  * loading vae ...")
-        vae = AutoencoderKLFlux2.from_pretrained(str(vae_path), local_files_only=True)
-        vae = vae.to(device, dtype=torch.float16)
+        if vae is None:
+            vae = _load_vae(vae_path)
+        else:
+            print("  * using caller-provided vae")
 
         print("  * loading image processor ...")
         image_processor = Flux2ImageProcessor(vae_scale_factor=vae_scale_factor * 2)
@@ -453,30 +612,31 @@ def generate_image(
         encoded_image_latents = []
         encoded_image_ids = []
 
-        for image_path in image_paths:
-            pil_image = Image.open(image_path).convert("RGB")
-            image_processor.check_image_input(pil_image)
+        with _on_device(vae, device, dtype=torch.float16, restore=not owns_vae):
+            for image_path in image_paths:
+                pil_image = Image.open(image_path).convert("RGB")
+                image_processor.check_image_input(pil_image)
 
-            img_width, img_height = pil_image.size
-            scale = ref_size / min(img_width, img_height)
-            new_width = max(16, round(img_width * scale / 16) * 16)
-            new_height = max(16, round(img_height * scale / 16) * 16)
-            pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                img_width, img_height = pil_image.size
+                scale = ref_size / min(img_width, img_height)
+                new_width = max(16, round(img_width * scale / 16) * 16)
+                new_height = max(16, round(img_height * scale / 16) * 16)
+                pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-            image_tensor = image_processor.preprocess(pil_image)
-            image_tensor = image_tensor.to(device=device, dtype=torch.float16)
+                image_tensor = image_processor.preprocess(pil_image)
+                image_tensor = image_tensor.to(device=device, dtype=torch.float16)
 
-            latent = _retrieve_latents(vae.encode(image_tensor))
-            latent = _patchify_latents(latent)
+                latent = _retrieve_latents(vae.encode(image_tensor))
+                latent = _patchify_latents(latent)
 
-            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latent.device, latent.dtype)
-            latents_bn_std = torch.sqrt(
-                vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps
-            ).to(latent.device, latent.dtype)
-            latent = (latent - latents_bn_mean) / latents_bn_std
+                latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latent.device, latent.dtype)
+                latents_bn_std = torch.sqrt(
+                    vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps
+                ).to(latent.device, latent.dtype)
+                latent = (latent - latents_bn_mean) / latents_bn_std
 
-            encoded_image_latents.append(_pack_latents(latent).squeeze(0))
-            encoded_image_ids.append(_prepare_latent_ids(torch, latent).squeeze(0))
+                encoded_image_latents.append(_pack_latents(latent).squeeze(0))
+                encoded_image_ids.append(_prepare_latent_ids(torch, latent).squeeze(0))
 
         image_latents = torch.cat(encoded_image_latents, dim=0)
         image_latent_ids = torch.cat(encoded_image_ids, dim=0)
@@ -533,44 +693,37 @@ def generate_image(
 
     print("5. Denoise")
     denoise_start = time.perf_counter()
-    print("  * loading transformer ...")
-    print(f"    variant: {transformer_variant}")
-    print(f"    quantization: {denoiser_quant_method or 'none'}")
-    print(f"    offloading: {offloading}")
-    torch.cuda.empty_cache()
-    transformer = load_flux2_denoiser(
-        str(transformer_path),
-        quant_method=denoiser_quant_method,
-        variant=transformer_variant,
-        version=resolved_version,
-        offloading=offloading,
-    )
+    owns_transformer = denoiser is None or bool(loras)
+    if denoiser is None:
+        print("  * loading transformer ...")
+        print(f"    variant: {transformer_variant}")
+        print(f"    quantization: {denoiser_quant_method or 'none'}")
+        print(f"    offloading: {offloading}")
+        torch.cuda.empty_cache()
+        transformer = load_flux2_denoiser(
+            str(transformer_path),
+            quant_method=denoiser_quant_method,
+            variant=transformer_variant,
+            version=resolved_version,
+            offloading=offloading,
+        )
+    else:
+        print("  * using caller-provided transformer")
+        transformer = denoiser
+        if loras:
+            print("  * copying transformer before lora injection ...")
+            transformer = copy.deepcopy(denoiser)
     if loras:
         print("  * applying loras ...")
-        lora_rank = None
-        lora_alpha = None
-        for lora_path in loras:
-            with safe_open(str(lora_path), framework="pt") as handle:
-                metadata = handle.metadata() or {}
-            lora_rank = int(metadata["rank"])
-            lora_alpha = int(metadata["alpha"])
-            break
-        if lora_rank is None or lora_alpha is None:
-            raise RuntimeError("Could not read rank/alpha metadata from LoRA checkpoint.")
-        injected = inject_trainable_lora_modules(
-            transformer,
-            target_linear_names=FLUX2_LORA_TARGETS,
-            rank=lora_rank,
-            alpha=lora_alpha,
-        )
-        print(f"    injected lora modules: {len(injected)}")
-    if offloading:
-        pinned = pin_module_parameters(transformer)
-        print(f"    pinned {pinned} cpu tensors for faster block swaps")
-        move_resident_layers_to(transformer, device)
-        transformer.enable_block_offload(device)
-    else:
-        transformer = transformer.to(device)
+        print(f"    injected lora modules: {_inject_loras(transformer, loras)}")
+    if owns_transformer:
+        if offloading:
+            pinned = pin_module_parameters(transformer)
+            print(f"    pinned {pinned} cpu tensors for faster block swaps")
+            move_resident_layers_to(transformer, device)
+            transformer.enable_block_offload(device)
+        else:
+            transformer = transformer.to(device)
     if loras:
         from flux2.lora import TrainableLoraLinear
 
@@ -589,87 +742,94 @@ def generate_image(
 
     scheduler.set_begin_index(0)
     torch.cuda.synchronize(device)
-    with torch.inference_mode():
-        for step_index, timestep_value in enumerate(timesteps):
-            print(f"  * {step_index + 1}/{num_inference_steps} steps", flush=True)
-            step_start = time.perf_counter()
+    denoiser_placement = (
+        contextlib.nullcontext()
+        if owns_transformer
+        else _denoiser_on_device(denoiser, device, offloading=offloading)
+    )
+    with denoiser_placement:
+        with torch.inference_mode():
+            for step_index, timestep_value in enumerate(timesteps):
+                print(f"  * {step_index + 1}/{num_inference_steps} steps", flush=True)
+                step_start = time.perf_counter()
 
-            timestep = timestep_value.expand(latents.shape[0]).to(latents.dtype)
-            latent_model_input = latents.to(transformer.dtype)
-            latent_image_ids = latent_ids
+                timestep = timestep_value.expand(latents.shape[0]).to(latents.dtype)
+                latent_model_input = latents.to(transformer.dtype)
+                latent_image_ids = latent_ids
 
-            if image_latents is not None:
-                latent_model_input = torch.cat([latents, image_latents], dim=1).to(transformer.dtype)
-                latent_image_ids = torch.cat([latent_ids, image_latent_ids], dim=1)
+                if image_latents is not None:
+                    latent_model_input = torch.cat([latents, image_latents], dim=1).to(transformer.dtype)
+                    latent_image_ids = torch.cat([latent_ids, image_latent_ids], dim=1)
 
-            with transformer.cache_context("cond"):
-                noise_pred = transformer(
-                    hidden_states=latent_model_input,
-                    timestep=timestep / 1000,
-                    guidance=None,
-                    encoder_hidden_states=prompt_embeds,
-                    txt_ids=text_ids,
-                    img_ids=latent_image_ids,
-                    joint_attention_kwargs=None,
-                    return_dict=False,
-                )[0]
-
-            noise_pred = noise_pred[:, : latents.size(1) :]
-            if is_base:
-                with transformer.cache_context("uncond"):
-                    neg_noise_pred = transformer(
+                with transformer.cache_context("cond"):
+                    noise_pred = transformer(
                         hidden_states=latent_model_input,
                         timestep=timestep / 1000,
                         guidance=None,
-                        encoder_hidden_states=negative_prompt_embeds,
-                        txt_ids=negative_text_ids,
+                        encoder_hidden_states=prompt_embeds,
+                        txt_ids=text_ids,
                         img_ids=latent_image_ids,
                         joint_attention_kwargs=None,
                         return_dict=False,
                     )[0]
-                neg_noise_pred = neg_noise_pred[:, : latents.size(1) :]
-                noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
 
-            latents_dtype = latents.dtype
-            latents = scheduler.step(noise_pred, timestep_value, latents, return_dict=False)[0]
-            if latents.dtype != latents_dtype:
-                latents = latents.to(latents_dtype)
-            torch.cuda.synchronize(device)
-            step_seconds = time.perf_counter() - step_start
-            print(f"    * done in {step_seconds:.3f}s", flush=True)
+                noise_pred = noise_pred[:, : latents.size(1) :]
+                if is_base:
+                    with transformer.cache_context("uncond"):
+                        neg_noise_pred = transformer(
+                            hidden_states=latent_model_input,
+                            timestep=timestep / 1000,
+                            guidance=None,
+                            encoder_hidden_states=negative_prompt_embeds,
+                            txt_ids=negative_text_ids,
+                            img_ids=latent_image_ids,
+                            joint_attention_kwargs=None,
+                            return_dict=False,
+                        )[0]
+                    neg_noise_pred = neg_noise_pred[:, : latents.size(1) :]
+                    noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+
+                latents_dtype = latents.dtype
+                latents = scheduler.step(noise_pred, timestep_value, latents, return_dict=False)[0]
+                if latents.dtype != latents_dtype:
+                    latents = latents.to(latents_dtype)
+                torch.cuda.synchronize(device)
+                step_seconds = time.perf_counter() - step_start
+                print(f"    * done in {step_seconds:.3f}s", flush=True)
 
     torch.cuda.synchronize(device)
-    print("  * clearing transformer ...")
-    del transformer
+    if owns_transformer:
+        print("  * clearing transformer ...")
+        del transformer
     torch.cuda.empty_cache()
     denoise_seconds = time.perf_counter() - denoise_start
     print(f"  * done in {denoise_seconds:.3f}s")
 
     print("6. VAE")
     vae_start = time.perf_counter()
-    from diffusers import AutoencoderKLFlux2
     from diffusers.pipelines.flux2.image_processor import Flux2ImageProcessor
 
     if vae is None:
-        print("  * loading vae ...")
-        vae = AutoencoderKLFlux2.from_pretrained(str(vae_path), local_files_only=True)
-        vae = vae.to(device, dtype=torch.float16)
+        vae = _load_vae(vae_path)
+    elif not owns_vae and not image:
+        print("  * using caller-provided vae")
 
     image_processor = Flux2ImageProcessor(vae_scale_factor=vae_scale_factor * 2)
 
     torch.cuda.synchronize(device)
-    with torch.inference_mode():
-        latents = _unpack_latents_with_ids(torch, latents, latent_ids)
+    with _on_device(vae, device, dtype=torch.float16, restore=not owns_vae):
+        with torch.inference_mode():
+            latents = _unpack_latents_with_ids(torch, latents, latent_ids)
 
-        latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
-        latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
-            latents.device, latents.dtype
-        )
-        latents = latents * latents_bn_std + latents_bn_mean
-        latents = _unpatchify_latents(latents)
-        decoded = vae.decode(latents.to(dtype=vae.dtype), return_dict=False)[0]
-        image = image_processor.postprocess(decoded, output_type="pil")[0]
-    torch.cuda.synchronize(device)
+            latents_bn_mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents.device, latents.dtype)
+            latents_bn_std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(
+                latents.device, latents.dtype
+            )
+            latents = latents * latents_bn_std + latents_bn_mean
+            latents = _unpatchify_latents(latents)
+            decoded = vae.decode(latents.to(dtype=vae.dtype), return_dict=False)[0]
+            image = image_processor.postprocess(decoded, output_type="pil")[0]
+        torch.cuda.synchronize(device)
 
     vae_seconds = time.perf_counter() - vae_start
     print(f"  * done in {vae_seconds:.3f}s")
