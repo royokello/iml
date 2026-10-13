@@ -18,7 +18,7 @@ from flux2.train.dataset import Flux2Dataset
 from safetensors.torch import load_file as safe_load_file
 from safetensors.torch import save_file
 
-CHECKPOINT_AFTER_STEPS = 128
+CHECKPOINT_AFTER_STEPS = 256
 LOSS_LOG_FLUSH_STEPS = 8
 
 from flux2.train.fork import STEP_CSV_HEADER, Step
@@ -46,6 +46,7 @@ def main(
     pose_res: int = 256,
     seed: int = 19930625,
     ma_windows: list[int] = [32],
+    checkpoint_steps: int = 256,
 ):
     print("Training Started ...")
     print(f"  * seed: {seed}")
@@ -343,7 +344,7 @@ def main(
                 f"bck={backward_duration:.2f}s, total={sample_total_duration:.2f}s)"
             )
 
-            if current_step % CHECKPOINT_AFTER_STEPS == 0:
+            if current_step % checkpoint_steps == 0:
                 flush_pending_loss_logs()
                 checkpoint_filepath = models_dirpath / f"{current_step:06d}.safetensors"
                 lora_state_dict = build_lora_state_dict(transformer)
@@ -517,6 +518,8 @@ def parse_args() -> argparse.Namespace:
         default="32",
         help="Comma-separated moving average window sizes for the loss plot, up to 3 values (default: 32).",
     )
+    parser.add_argument("--checkpoint-steps", type=int, default=256,
+        help="Save checkpoint every N steps (default: 256)")
     return parser.parse_args()
 
 def _parse_ma_windows(raw: str) -> list[int]:
@@ -571,6 +574,7 @@ if __name__ == "__main__":
         pose_res=args.pose_res,
         seed=args.seed,
         ma_windows=ma_windows,
+        checkpoint_steps=args.checkpoint_steps,
     )
 
     print(f"  * training done in {time.perf_counter() - training_start:.3f}s")
