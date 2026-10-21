@@ -17,6 +17,7 @@ from diffusers.utils import apply_lora_scale
 from flux2.models.denoiser.embeddings.positional import Flux2PosEmbed
 
 from .modulation import Flux3AdaLayerNorm, Flux3Modulation
+from .precision import linear_fp32
 from .mode_block import Flux3ModeTransformerBlock
 from .single_block import Flux3SingleTransformerBlock
 
@@ -265,7 +266,9 @@ class Flux3Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOri
         txt_temb_act = zero_temb_act.expand(batch_size, encoder_hidden_states.shape[1], -1)
         txt_early_mod = self.early_stream_modulations["txt"](txt_temb_act)
         txt_single_mod = self.single_stream_modulations["txt"](txt_temb_act)
-        encoder_hidden_states = self.context_embedder(encoder_hidden_states)
+        # The text stream runs in fp32. The Qwen hidden states hold large outliers, and the
+        # fp16 sum over 20480 channels overflows. The blocks keep this stream in fp32.
+        encoder_hidden_states = linear_fp32(self.context_embedder, encoder_hidden_states)
         txt_rotary_emb = self.pos_embed(txt_ids)
 
         # 3. Image tokens.
