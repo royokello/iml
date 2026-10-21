@@ -67,19 +67,27 @@
     },
   };
 
+  // ─── Model helpers ────────────────────────────────────
+
+  function isFlux2(m) { return m === 'flux-4b' || m === 'flux-9b'; }
+  function hasFluxVariants(m) { return isFlux2(m) || m === 'flux3'; }
+  function usesNegativePrompt(m, variant) {
+    return m === 'anima' || (m === 'flux3' && variant === 'base');
+  }
+
   // ─── Model / variant setters ──────────────────────────
 
   function setCurrentModel(model) {
     current_model = model;
 
-    el.variantSection.style.display = ['flux-4b', 'flux-9b', 'anima'].indexOf(model) > -1 ? 'block' : 'none';
+    el.variantSection.style.display = (hasFluxVariants(model) || model === 'anima') ? 'block' : 'none';
     el.variantFlux.style.display = model.indexOf('flux') === 0 ? 'block' : 'none';
     el.variantAnima.style.display = model === 'anima' ? 'block' : 'none';
-    el.loraSection.style.display = ['flux-4b', 'flux-9b'].indexOf(model) > -1 ? 'block' : 'none';
-    el.refSection.style.display = ['flux-4b', 'flux-9b'].indexOf(model) > -1 ? 'block' : 'none';
-    el.negativePromptField.style.display = ['anima'].indexOf(model) > -1 ? 'block' : 'none';
+    el.loraSection.style.display = hasFluxVariants(model) ? 'block' : 'none';
+    el.refSection.style.display = hasFluxVariants(model) ? 'block' : 'none';
+    el.negativePromptField.style.display = usesNegativePrompt(model, current_variant) ? 'block' : 'none';
 
-    if (['flux-4b', 'flux-9b'].indexOf(model) > -1) {
+    if (hasFluxVariants(model)) {
       if (['distill', 'base'].indexOf(current_variant) === -1) current_variant = 'distill';
       setCurrentVariant(current_variant);
     } else if (model === 'anima') {
@@ -102,11 +110,17 @@
 
   function setCurrentVariant(variant) {
     current_variant = variant;
-    if (['flux-4b', 'flux-9b'].indexOf(current_model) > -1) {
+    if (hasFluxVariants(current_model)) {
       el.variantDistill.classList.toggle('active', variant === 'distill');
       el.variantBase.classList.toggle('active', variant === 'base');
-      el.steps.value = variant === 'distill' ? 4 : 50;
-      el.guidance.value = variant === 'distill' ? 1.0 : 4.0;
+      if (current_model === 'flux3') {
+        el.steps.value = variant === 'distill' ? 16 : 50;
+        el.guidance.value = variant === 'distill' ? 1.0 : 3.5;
+      } else {
+        el.steps.value = variant === 'distill' ? 4 : 50;
+        el.guidance.value = variant === 'distill' ? 1.0 : 4.0;
+      }
+      el.negativePromptField.style.display = usesNegativePrompt(current_model, variant) ? 'block' : 'none';
     } else if (current_model === 'anima') {
       el.animaVariant.value = variant;
       el.steps.value = variant === 'turbo' ? 15 : variant === 'preview' ? 50 : 30;
@@ -144,7 +158,7 @@
   function loadQuantMethods() {
     var params = new URLSearchParams();
     params.set('model', current_model);
-    if (['flux-4b', 'flux-9b'].indexOf(current_model) > -1) {
+    if (hasFluxVariants(current_model)) {
       params.set('variant', current_variant);
     } else if (current_model === 'anima') {
       params.set('variant', el.animaVariant ? el.animaVariant.value : 'base');
@@ -542,7 +556,7 @@
       reference_images: refImages.map(function (r) { return r.serverPath; }),
       loras: loras.map(function (l) { return { path: l.path, weight: l.weight }; }),
       offloading: el.offloadingValue() === 'on',
-      negative_prompt: current_model === 'anima' ? (el.negativePrompt.value || null) : null,
+      negative_prompt: usesNegativePrompt(current_model, current_variant) ? (el.negativePrompt.value || null) : null,
     };
 
     showProgress('Submitting...', 10);
@@ -712,13 +726,13 @@
         if (entry.model) {
           var modelType = entry.model;
           var fluxVersion = entry.flux_version || '4b';
-          var newModel = modelType === 'ideogram' ? 'ideogram' : modelType === 'anima' ? 'anima' : 'flux-' + fluxVersion;
+          var newModel = modelType === 'ideogram' ? 'ideogram' : modelType === 'anima' ? 'anima' : modelType === 'flux3' ? 'flux3' : 'flux-' + fluxVersion;
           el.modelSelect.value = newModel;
           setCurrentModel(newModel);
         }
 
         // Restore variant
-        if (['flux-4b', 'flux-9b'].indexOf(current_model) > -1) {
+        if (hasFluxVariants(current_model)) {
           var baseFlag = entry.flux_base === true;
           var variant = baseFlag ? 'base' : 'distill';
           setCurrentVariant(variant);
@@ -754,7 +768,7 @@
           var off = document.querySelector('input[name="offloading"][value="' + (s.offloading ? 'on' : 'off') + '"]');
           if (off) off.checked = true;
         }
-        if (current_model === 'anima' && el.negativePrompt) {
+        if (usesNegativePrompt(current_model, current_variant) && el.negativePrompt) {
           el.negativePrompt.value = entry.negative_prompt || s.negative_prompt || '';
         }
 

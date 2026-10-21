@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import time
 from pathlib import Path
 
@@ -133,7 +134,7 @@ def generate_images(
     pnginfo = PngImagePlugin.PngInfo()
     pnginfo.add_text("iml_generate", metadata_str)
 
-    if "flux" in model:
+    if model == "flux":
         from flux2.gen import generate_image as flux_generate
 
         flux_ver = version or config.DEFAULT_FLUX_VERSION
@@ -161,6 +162,36 @@ def generate_images(
 
         if not images:
             raise RuntimeError("Flux generation produced no output")
+
+        saved_paths = _save_with_metadata(images, output_dir, pnginfo)
+
+    elif model == "flux3":
+        from flux3.gen import generate_image as flux3_generate
+
+        loras_dict3: dict[str, float] | None = None
+        if loras:
+            loras_dict3 = {l["path"]: l.get("weight", 1.0) for l in loras}
+
+        images = flux3_generate(
+            root,
+            base=base,
+            image=",".join(reference_images) if reference_images else None,
+            prompt=prompt if isinstance(prompt, str) else json.dumps(prompt),
+            width=width,
+            height=height,
+            num_inference_steps=steps,
+            seed=seed if seed is not None else random.randrange(2**32),
+            guidance_scale=guidance_scale,
+            ref_size=reference_size,
+            negative_prompt=negative_prompt or "",
+            text_quant_method=text_quant_method,
+            denoiser_quant_method=denoiser_quant_method,
+            loras=loras_dict3,
+            offloading=offloading,
+        )
+
+        if not images:
+            raise RuntimeError("Flux 3 generation produced no output")
 
         saved_paths = _save_with_metadata(images, output_dir, pnginfo)
 

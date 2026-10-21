@@ -35,8 +35,11 @@ def _entry_from_metadata(meta: dict, outputs: list[str]) -> dict[str, Any]:
     }
 
 
-def _scan_lora_checkpoints(root_dir: Path, version: str) -> dict[str, list[dict[str, Any]]]:
-    lora_root = root_dir / "flux2" / version / "loras"
+def _scan_lora_checkpoints(root_dir: Path, model_type: str, version: str | None) -> dict[str, list[dict[str, Any]]]:
+    if model_type == "flux3":
+        lora_root = root_dir / "flux3" / "loras"
+    else:
+        lora_root = root_dir / "flux2" / (version or config.DEFAULT_FLUX_VERSION) / "loras"
     if not lora_root.is_dir():
         return {}
     projects: dict[str, list[dict[str, Any]]] = {}
@@ -114,6 +117,8 @@ def _job_history_entry(root: Path, job_id: str) -> dict[str, Any] | None:
 
 def _parse_model(value: str) -> tuple[str, str | None]:
     value = value.strip().lower()
+    if value == "flux3":
+        return "flux3", None
     if value.startswith("flux"):
         parts = value.split("-", 1)
         return "flux", parts[1] if len(parts) > 1 else config.DEFAULT_FLUX_VERSION
@@ -161,9 +166,8 @@ def init_app(app, root_dir: Path) -> None:
     @app.route("/api/lora-projects")
     def api_lora_projects():
         model = request.args.get("model", "flux-4b")
-        _, version = _parse_model(model)
-        ver = version or config.DEFAULT_FLUX_VERSION
-        projects = _scan_lora_checkpoints(root_dir, ver)
+        model_type, version = _parse_model(model)
+        projects = _scan_lora_checkpoints(root_dir, model_type, version)
         return jsonify({"projects": projects})
 
     @app.route("/api/quant-methods")
@@ -220,7 +224,7 @@ def init_app(app, root_dir: Path) -> None:
         width = int(data.get("width", 1024))
         height = int(data.get("height", 1024))
         steps = int(data.get("steps", 50))
-        guidance_scale = float(data.get("guidance_scale", 4.0 if model_type in ("flux", "anima") else 7.0))
+        guidance_scale = float(data.get("guidance_scale", 3.5 if model_type == "flux3" else 4.0 if model_type in ("flux", "anima") else 7.0))
         seed_raw = data.get("seed")
         seed = int(seed_raw) if seed_raw is not None else None
         text_quant = data.get("text_quant_method")

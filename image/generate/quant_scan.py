@@ -20,7 +20,9 @@ def scan_text_encoder(root: Path, model: str, version: str | None = None) -> lis
     root = root.expanduser().resolve()
     if model == "ideogram":
         return _extract_methods(root / "ideogram" / "text_encoder")
-    if "flux" in model:
+    if model == "flux3":
+        return _extract_methods(root / "flux3" / "model" / "text_encoder")
+    if model == "flux":
         v = version or "4b"
         return _extract_methods(root / "flux2" / v / "model" / "text_encoder")
     if model == "anima":
@@ -35,7 +37,9 @@ def scan_denoiser(root: Path, model: str, version: str | None = None, variant: s
         uncond = _extract_methods(root / "ideogram" / "transformer" / "uncond")
         # A method is usable only if quant files exist in BOTH directories
         return sorted(set(cond) & set(uncond))
-    if "flux" in model:
+    if model == "flux3":
+        return _extract_methods(root / "flux3" / "model" / "transformer" / (variant or "distill"))
+    if model == "flux":
         v = version or "4b"
         var = variant or "distill"
         return _extract_methods(root / "flux2" / v / "model" / "transformer" / var)

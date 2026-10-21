@@ -258,11 +258,12 @@ Notes:
 
 #### `image.generate` — Web GUI
 
-A Flask-based web interface for generating images, supporting Flux 2 (4b/9b, distilled/base) and Ideogram models.
+A Flask-based web interface for generating images, supporting Flux 2 (4b/9b, distilled/base), Flux 3 Klein (distill/base), Anima and Ideogram models.
 
 - **Features**
   - Prompt-based generation with configurable width, height, steps, guidance scale, and seed
   - Image-conditioned generation via reference image upload
+  - Flux 3 Klein reads LoRA checkpoints from `<root>/flux3/loras/<project>/models/*.safetensors`, and quantized weights from `<root>/flux3/model`. The base variant also shows a negative prompt
   - Quantization method selection for text encoder and denoiser
   - Async job queue with live status tracking
   - Job history panel showing past generations with embedded metadata in PNG outputs
