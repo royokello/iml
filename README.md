@@ -48,6 +48,7 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
     - [`flux3.denoiser.quant`](#flux3denoiserquant)
     - [`flux3.text_encoder.quant`](#flux3text_encoderquant)
     - [`flux3.gen`](#flux3gen)
+    - [`flux3.train.main`](#flux3trainmain)
   - [Ideogram 4](#ideogram-4)
     - [`ideogram.gen`](#ideogramgen)
     - [`ideogram.text_encoder.quant`](#ideogramtext_encoderquant)
@@ -711,6 +712,42 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--loras`
   - `--max-length`
   - `--offload`
+
+#### `flux3.train.main`
+- Features
+  - Trains a LoRA on the Flux 3 Klein base denoiser. CUDA-only
+  - Uses `--project` as the dataset and run folder. The layout is the same as `flux2.train.main`
+    - Targets: `<project>/images/<name>.<ext>`. Captions: `<name>.txt`
+    - References: `<project>/images/<name>/<ref>.<ext>`
+  - Samples are sorted by name. A target or reference below its resolution is skipped, unless `--target-upscale` or `--ref-upscale` is set
+  - A sample without a caption uses the `--trigger` text
+  - Samples sigma with the Flux 3 shift (6.93). Stops with an error when the loss or the gradient is inf or NaN
+  - Writes LoRA checkpoints to `<project>/models/<step>.safetensors`, the step log to `<project>/models/steps.csv`, and the loss plot to `<project>/models/loss.png`
+  - Delete `<project>/models/stop.txt` to stop cleanly after the current step
+  - `--cache-images` and `--cache-text` read and write caches next to the images. The cache names carry a `flux3` tag, so Flux 2 caches stay untouched
+  - `--text-quant` and `--denoiser-quant` pick a saved quant file. `none` loads the fp16 weights
+  - The checkpoints load with `flux3.gen --loras`
+- Examples
+  - `python -m flux3.train.main --root "/iml_root" --project "/data/flux3_dataset" --trigger "TOK"`
+  - `python -m flux3.train.main --root "/iml_root" --project "/data/flux3_dataset" --trigger "TOK" --resume --steps 2048`
+- Useful args
+  - `--root`
+  - `--project`
+  - `--trigger`
+  - `--steps` (default: `1024`)
+  - `--resume`
+  - `--model` (LoRA start checkpoint)
+  - `--text-quant` (default: `sym-high-mini`)
+  - `--denoiser-quant` (default: `sym-med-nano`)
+  - `--cache-text`, `--cache-images`
+  - `--rank`, `--alpha` (default: `32`, `32`)
+  - `--target-res`, `--ref-res` (default: `512`, `512`)
+  - `--target-upscale`, `--ref-upscale`
+  - `--lr` (default: `1e-4`)
+  - `--seed`
+  - `--moving-averages`
+  - `--checkpoint-steps` (default: `256`)
+  - `--max-length` (default: `512`)
 
 ### Ideogram 4
 
