@@ -49,6 +49,7 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
     - [`flux3.text_encoder.quant`](#flux3text_encoderquant)
     - [`flux3.gen`](#flux3gen)
     - [`flux3.train.main`](#flux3trainmain)
+    - [`flux3.sample`](#flux3sample)
   - [Ideogram 4](#ideogram-4)
     - [`ideogram.gen`](#ideogramgen)
     - [`ideogram.text_encoder.quant`](#ideogramtext_encoderquant)
@@ -748,6 +749,42 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--moving-averages`
   - `--checkpoint-steps` (default: `256`)
   - `--max-length` (default: `512`)
+
+#### `flux3.sample`
+- Features
+  - Renders sample images for the LoRA step checkpoints that `flux3.train.main` saves. CUDA-only
+  - Scans `<project>/models` for numeric `<step>.safetensors` files and writes images to `<project>/samples`
+  - `--start` skips earlier steps
+  - Skips a sample whose output file already exists. Two samples with the same name in one run get the suffix `_2`, `_3`
+  - Dataset-backed mode uses the captions in `<project>/images`. A sample without a caption needs `--trigger`
+  - `--prompt` replaces the captions. Without `--sample-indices`, it renders `--width` x `--height`
+  - `--sample-indices "1,25,100"` picks 1-based dataset positions. The output size comes from the aspect ratio of each target and `--target-res`, rounded down to a multiple of 16
+  - The noise is deterministic per sample name: `--sample-seed` and the file stem
+  - The base denoiser is the default and uses CFG with an empty negative prompt (`--guidance-scale`, default `3.5`). `1.0` turns the negative pass off
+  - `--distill` loads the distill denoiser, with no guidance
+  - Reads existing latent and text caches from the project. It does not write caches
+  - `--offload` streams the denoiser blocks to the GPU one at a time
+- Examples
+  - `python -m flux3.sample --root "/iml_root" --project "/data/flux3_dataset" --denoiser-quant-method aff-med --sample-indices "1,2"`
+  - `python -m flux3.sample --root "/iml_root" --project "/data/flux3_dataset" --prompt "TOK on a beach" --steps 30`
+- Useful args
+  - `--root`
+  - `--project`
+  - `--prompt`
+  - `--width`, `--height`
+  - `--target-res`, `--ref-res` (default: `512`, `512`)
+  - `--target-upscale`, `--ref-upscale`
+  - `--start`
+  - `--steps` (default: `16`)
+  - `--distill`
+  - `--guidance-scale`
+  - `--sample-seed`
+  - `--sample-indices`
+  - `--trigger`
+  - `--text-quant-method` (default: `sym-high-mini`)
+  - `--denoiser-quant-method` (default: `sym-med-nano`)
+  - `--max-length`
+  - `--offload`
 
 ### Ideogram 4
 

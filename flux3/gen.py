@@ -110,6 +110,83 @@ def _denoiser_on_device(denoiser, device, *, offloading: bool):
             denoiser.to(original_device)
 
 
+def denoise(
+    denoiser,
+    latents,
+    sigmas,
+    *,
+    embeds,
+    txt_ids,
+    img_ids,
+    cond=None,
+    cond_ids=None,
+    neg=None,
+    guidance_scale: float = 1.0,
+):
+    """Run the Euler denoise loop of Flux 3 Klein.
+
+    Gen and sample use this function, so both use the same sigmas, Euler step,
+    and CFG formula. The denoiser must be on the CUDA device, or must have
+    block offload on. The function reads `flow_map` from the denoiser config.
+    A flow-map denoiser gets the next sigma as `target_timestep`.
+
+    Args:
+        denoiser: The Flux 3 denoiser.
+        latents: The noise tokens with shape `(1, h * w, 128)`, on the device.
+        sigmas: The sigmas from `build_sigmas`, on the device. It has one more
+            value than the number of steps.
+        embeds: The text embeddings with shape `(1, S, 20480)`.
+        txt_ids: The text position ids.
+        img_ids: The position ids of the output tokens.
+        cond: The reference tokens with shape `(1, C, 128)`, or None.
+        cond_ids: The position ids of the reference tokens, or None.
+        neg: A tuple of the negative embeddings and the negative text ids, or
+            None. Pass it to turn on CFG.
+        guidance_scale: The CFG scale. Used only when `neg` is not None.
+
+    Returns:
+        The denoised tokens in fp32 with the shape of `latents`.
+
+    Raises:
+        RuntimeError: If a step produces inf or NaN values.
+    """
+    import torch
+
+    device = latents.device
+    flow_map = bool(denoiser.config.flow_map)
+    steps = len(sigmas) - 1
+    embeds = embeds.to(device=device, dtype=torch.float16)
+    txt_ids = txt_ids.to(device)
+    if neg is not None:
+        neg = (neg[0].to(device=device, dtype=torch.float16), neg[1].to(device))
+
+    with torch.inference_mode():
+        for step_index in range(steps):
+            print(f"  * {step_index + 1}/{steps} steps", flush=True)
+            step_start = time.perf_counter()
+            sigma, sigma_next = sigmas[step_index], sigmas[step_index + 1]
+            kwargs = {
+                "img_ids": img_ids,
+                "image_cond_hidden_states": cond,
+                "image_cond_ids": cond_ids,
+                "timestep": sigma.expand(1),
+                "target_timestep": sigma_next.expand(1) if flow_map else None,
+                "return_dict": False,
+            }
+            velocity = denoiser(latents.half(), encoder_hidden_states=embeds, txt_ids=txt_ids, **kwargs)[0]
+            if neg is not None:
+                velocity_uncond = denoiser(latents.half(), encoder_hidden_states=neg[0], txt_ids=neg[1], **kwargs)[0]
+                velocity = velocity_uncond + guidance_scale * (velocity - velocity_uncond)
+            latents = latents + (sigma_next - sigma) * velocity.float()
+            if not torch.isfinite(latents).all():
+                raise RuntimeError(
+                    f"Flux 3 denoise produced inf or NaN values in fp16 at step {step_index + 1}/{steps}."
+                )
+            torch.cuda.synchronize(device)
+            print(f"    * done in {time.perf_counter() - step_start:.3f}s", flush=True)
+    return latents
+
+
 def generate_image(
     root: str | Path,
     *,
@@ -346,10 +423,6 @@ def generate_image(
                         module.lora_A.data.mul_(scale)
                         module.lora_B.data.mul_(scale)
 
-    embeds = embeds.to(device=device, dtype=torch.float16)
-    if negative_embeds is not None:
-        negative_embeds = negative_embeds.to(device=device, dtype=torch.float16)
-
     torch.cuda.synchronize(device)
     placement = (
         contextlib.nullcontext()
@@ -357,34 +430,18 @@ def generate_image(
         else _denoiser_on_device(denoiser, device, offloading=offloading)
     )
     with placement:
-        with torch.inference_mode():
-            for step_index in range(steps):
-                print(f"  * {step_index + 1}/{steps} steps", flush=True)
-                step_start = time.perf_counter()
-                sigma, sigma_next = sigmas[step_index], sigmas[step_index + 1]
-                kwargs = {
-                    "img_ids": img_ids,
-                    "image_cond_hidden_states": cond,
-                    "image_cond_ids": cond_ids,
-                    "timestep": sigma.expand(1),
-                    "target_timestep": None if base else sigma_next.expand(1),
-                    "return_dict": False,
-                }
-                velocity = transformer(
-                    latents.half(), encoder_hidden_states=embeds, txt_ids=txt_ids, **kwargs
-                )[0]
-                if use_cfg:
-                    velocity_uncond = transformer(
-                        latents.half(), encoder_hidden_states=negative_embeds, txt_ids=negative_txt_ids, **kwargs
-                    )[0]
-                    velocity = velocity_uncond + cfg * (velocity - velocity_uncond)
-                latents = latents + (sigma_next - sigma) * velocity.float()
-                if not torch.isfinite(latents).all():
-                    raise RuntimeError(
-                        f"Flux 3 denoise produced inf or NaN values in fp16 at step {step_index + 1}/{steps}."
-                    )
-                torch.cuda.synchronize(device)
-                print(f"    * done in {time.perf_counter() - step_start:.3f}s", flush=True)
+        latents = denoise(
+            transformer,
+            latents,
+            sigmas,
+            embeds=embeds,
+            txt_ids=txt_ids,
+            img_ids=img_ids,
+            cond=cond,
+            cond_ids=cond_ids,
+            neg=(negative_embeds, negative_txt_ids) if use_cfg else None,
+            guidance_scale=cfg,
+        )
 
     torch.cuda.synchronize(device)
     if owns_denoiser:

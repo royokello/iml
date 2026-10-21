@@ -131,7 +131,7 @@ def _load_tokens(
     short_side: int,
     cache_path: Path,
     *,
-    use_cache: bool,
+    write_cache: bool,
     vae_holder: _VaeHolder,
     label: str,
     layer: int = 0,
@@ -140,7 +140,7 @@ def _load_tokens(
 
     `layer` is the `l` coordinate of the ids: 0 for a target, -1, -2, ... for references.
     """
-    if use_cache and cache_path.is_file():
+    if cache_path.is_file():
         tokens, height, width = _cache_to_tokens(load_file(str(cache_path), device="cpu")["latent"])
         print(f"   * {label} ({image_path.name}) loaded cache")
         return tokens, prepare_image_ids(height, width, layer=layer)
@@ -150,7 +150,7 @@ def _load_tokens(
         resized = resize_reference(image.convert("RGB"), short_side)
     tokens, height, width = encode_image_latent(vae_holder.get(), resized, torch.device("cuda"))
     tokens = tokens.to("cpu", torch.float16).contiguous()
-    if use_cache:
+    if write_cache:
         save_file({"latent": _tokens_to_cache(tokens, height, width)}, str(cache_path))
     print(f"   * {label} ({image_path.name}) encoded in {time.perf_counter() - start:.3f}s at {resized.size}")
     return tokens, prepare_image_ids(height, width, layer=layer)
@@ -228,8 +228,8 @@ class Flux3Dataset:
             target_resolution: The short side of the targets in pixels.
             reference_resolution: The short side of the references in pixels.
             indices: The positions in the sorted target list to keep. None keeps all.
-            cache_text: Read and write the text caches.
-            cache_images: Read and write the latent caches.
+            cache_text: Write the text caches. An existing cache is always read.
+            cache_images: Write the latent caches. An existing cache is always read.
             load_captions: Read the caption files. If False, every sample uses the trigger.
             load_target_images: Encode the targets. If False, `target_latents[i]` is None.
             load_reference_images: Encode the references. If False, `ref_latents[i]` is None.
@@ -278,7 +278,7 @@ class Flux3Dataset:
                         sample.target_path,
                         target_resolution,
                         dataset_dirpath / f"{sample.name}.flux3.{target_resolution}.safetensors",
-                        use_cache=cache_images,
+                        write_cache=cache_images,
                         vae_holder=vae_holder,
                         label="target",
                     )
@@ -293,7 +293,7 @@ class Flux3Dataset:
                         ref_path,
                         reference_resolution,
                         ref_path.parent / f"{ref_path.stem}.flux3.{reference_resolution}.safetensors",
-                        use_cache=cache_images,
+                        write_cache=cache_images,
                         vae_holder=vae_holder,
                         label="ref",
                         layer=-(1 + len(refs)),
@@ -317,14 +317,14 @@ class Flux3Dataset:
             if load_captions and caption_path.is_file():
                 caption = caption_path.read_text(encoding="utf-8").strip()
                 captions.append(caption)
-                cached = _read_text_cache(text_cache_paths[-1], caption, max_length) if cache_text else None
+                cached = _read_text_cache(text_cache_paths[-1], caption, max_length)
                 text_embeddings.append(cached)
             else:
                 captions.append(None)
                 text_embeddings.append(None)
 
         trigger_cache_path = dataset_dirpath / _TRIGGER_CACHE_NAME
-        trigger_embedding = _read_text_cache(trigger_cache_path, trigger_str, max_length) if cache_text else None
+        trigger_embedding = _read_text_cache(trigger_cache_path, trigger_str, max_length)
 
         pending = [i for i, caption in enumerate(captions) if caption is not None and text_embeddings[i] is None]
         if pending or trigger_embedding is None:
