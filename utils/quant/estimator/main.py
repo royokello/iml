@@ -10,7 +10,11 @@ from flux2.denoiser.targets import (
 )
 from flux2.text_encoder.target import _build_target_tensors as _build_flux2_text_encoder_targets
 from flux3.denoiser.targets import _build_flux3_denoiser_target_tensors
-from flux3.text_encoder.target import _build_flux3_text_encoder_target_tensors
+from flux3.text_encoder.target import (
+    _FLUX3_TEXT_ENCODER_EXCLUSION_PREFIXES,
+    _FLUX3_TEXT_ENCODER_INCLUSION_PREFIX,
+    _build_flux3_text_encoder_target_tensors,
+)
 from ideogram.text_encoder.target import _build_ideogram_text_encoder_targets
 from ideogram.denoiser.targets import _build_ideogram_denoiser_target_tensors
 from krea_2.text_encoder.target import _build_krea2_text_encoder_targets
@@ -45,12 +49,6 @@ _VISION_PREFIXES = (
 )
 _LANGUAGE_PREFIXES = (
     "model.language_model.",
-)
-_FLUX3_TEXT_ENCODER_EXCLUSION_PREFIXES = (
-    "model.language_model.layers.33.",
-    "model.language_model.layers.34.",
-    "model.language_model.layers.35.",
-    "model.language_model.norm.",
 )
 _WAN22_TEXT_ENCODER_CHECKPOINT_NAME = "t5_umt5-xxl-enc-bf16.pth"
 _WAN22_DENOISER_SHARDS = 3
@@ -288,7 +286,7 @@ def _model_specs() -> dict[str, dict[str, object]]:
         "flux3_text_encoder": {
             "files": _build_flux3_text_encoder_files,
             "target_configs": _flux3_text_target_configs,
-            "inclusion_prefix": "model.language_model.",
+            "inclusion_prefix": _FLUX3_TEXT_ENCODER_INCLUSION_PREFIX,
             "exclusion_prefix": _FLUX3_TEXT_ENCODER_EXCLUSION_PREFIXES,
         },
         "flux3_denoiser": {
