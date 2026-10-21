@@ -43,6 +43,11 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
     - [Flux 2 Fine-Tuning Guidance](#flux-2-fine-tuning-guidance)
     - [Flux 2 Dataset](#flux-2-dataset)
     - [Flux 2 Dataset Guidance](#flux-2-dataset-guidance)
+  - [Flux 3 Klein](#flux-3-klein)
+    - [`flux3.*.copy_files`](#flux3text_encodercopy_files-flux3denoisercopy_files-flux3vaecopy_files)
+    - [`flux3.denoiser.quant`](#flux3denoiserquant)
+    - [`flux3.text_encoder.quant`](#flux3text_encoderquant)
+    - [`flux3.gen`](#flux3gen)
   - [Ideogram 4](#ideogram-4)
     - [`ideogram.gen`](#ideogramgen)
     - [`ideogram.text_encoder.quant`](#ideogramtext_encoderquant)
@@ -617,6 +622,95 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Caption stable identity traits directly: hair, face, outfit, body features, accessories, and other distinguishing details
   - Vary pose, camera angle, framing, background, and lighting across the dataset
   - Keep the identity consistent across images so the captions map to one character rather than a mixed concept
+
+### Flux 3 Klein
+
+The `flux3` package runs the Flux 3 Klein base and distill models. The model folder is `<root>/flux3/model`:
+
+```
+<root>/flux3/model/
+  text_encoder/          config, tokenizer files, model-*.safetensors
+  transformer/
+    config.json
+    base/                diffusion_pytorch_model-*.safetensors
+    distill/             diffusion_pytorch_model-*.safetensors
+  vae/
+```
+
+The quant CLIs write only the quant file. They create the missing folders in `<root>/flux3/model`. The copy modules below put the config, tokenizer, and VAE files there. A loader never quantizes on the fly. It raises `FileNotFoundError` when the `<method>_quant.safetensors` file is missing.
+
+#### `flux3.text_encoder.copy_files`, `flux3.denoiser.copy_files`, `flux3.vae.copy_files`
+- Features
+  - Copy the small files that `flux3.gen` reads, from the source model folders into `<root>/flux3/model`
+  - Text encoder: `config.json`, `tokenizer.json`, `tokenizer_config.json`, `vocab.json`, `merges.txt`, `chat_template.json`
+  - Denoiser: `transformer/config.json`. `--input` is the `transformer` folder, the parent of `base` and `distill`
+  - VAE: `config.json` and `diffusion_pytorch_model.safetensors` (the VAE is not quantized)
+  - Never copy the text encoder or denoiser weight shards
+  - Skip a file that is already in the target with the same size. Raise `FileNotFoundError` if a listed file is missing
+- Examples
+  - `python -m flux3.text_encoder.copy_files --root "/iml_root" --input "/models/Flux 3 Image Klein/text_encoder"`
+  - `python -m flux3.denoiser.copy_files --root "/iml_root" --input "/models/Flux 3 Image Klein/transformer"`
+  - `python -m flux3.vae.copy_files --root "/iml_root" --input "/models/Flux 3 Image Klein/vae"`
+- Useful args
+  - `--root`
+  - `--input`
+
+#### `flux3.denoiser.quant`
+- Features
+  - Quantizes the Flux 3 denoiser for the `base` or `distill` variant
+  - `--input` is optional; it defaults to `<root>/flux3/model/transformer/<variant>`
+  - Saves `<root>/flux3/model/transformer/<variant>/<method>_quant.safetensors`
+- Examples
+  - `python -m flux3.denoiser.quant --root "/iml_root" --input "/models/Flux 3 Image Klein/transformer/distill" --variant distill --method sym-med-nano`
+- Useful args
+  - `--root`
+  - `--input`
+  - `--variant`
+  - `--method`
+
+#### `flux3.text_encoder.quant`
+- Features
+  - Quantizes the Flux 3 text encoder (Qwen3-VL-4B language model, layers 0 to 32)
+  - Skips the visual tower, layers 33 to 35, and the final norm
+  - `--input` is optional; it defaults to `<root>/flux3/model/text_encoder`
+  - Saves `<root>/flux3/model/text_encoder/<method>_quant.safetensors`
+- Examples
+  - `python -m flux3.text_encoder.quant --root "/iml_root" --input "/models/Flux 3 Image Klein/text_encoder" --method sym-high-mini`
+- Useful args
+  - `--root`
+  - `--input`
+  - `--method`
+
+#### `flux3.gen`
+- Features
+  - Generates one image from a prompt and saves it to `<root>/flux3/outputs`
+  - CUDA-only runtime; exits if CUDA is unavailable
+  - Distill is the default: `16` steps, no guidance
+  - `--base` uses the base model: `50` steps, CFG `3.5`, and a negative prompt
+  - `--images "a.png, b.png"` adds reference images. Their short side is resized to `--ref-size`
+  - `--text-quant-method` and `--denoiser-quant-method` pick a saved quant file. `none` loads the fp16 weights
+  - `--offload` streams the denoiser blocks to the GPU one at a time
+  - `--loras "path1:1.0,path2:0.7"` applies LoRA checkpoints
+- Examples
+  - `python -m flux3.gen --root "/iml_root" --prompt "a cat holding a sign that says hello world"`
+  - `python -m flux3.gen --root "/iml_root" --base --steps 30 --negative-prompt "blurry"`
+  - `python -m flux3.gen --root "/iml_root" --images "/data/ref.png" --prompt "same character, new pose"`
+- Useful args
+  - `--root`
+  - `--prompt`
+  - `--images`
+  - `--width`, `--height`
+  - `--steps`
+  - `--seed`
+  - `--base`
+  - `--guidance-scale`
+  - `--negative-prompt`
+  - `--ref-size`
+  - `--text-quant-method`
+  - `--denoiser-quant-method`
+  - `--loras`
+  - `--max-length`
+  - `--offload`
 
 ### Ideogram 4
 
