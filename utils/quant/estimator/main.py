@@ -9,6 +9,8 @@ from flux2.denoiser.targets import (
     _build_flux2_denoiser_target_tensors as _build_flux2_denoiser_targets,
 )
 from flux2.text_encoder.target import _build_target_tensors as _build_flux2_text_encoder_targets
+from flux3.denoiser.targets import _build_flux3_denoiser_target_tensors
+from flux3.text_encoder.target import _build_flux3_text_encoder_target_tensors
 from ideogram.text_encoder.target import _build_ideogram_text_encoder_targets
 from ideogram.denoiser.targets import _build_ideogram_denoiser_target_tensors
 from krea_2.text_encoder.target import _build_krea2_text_encoder_targets
@@ -44,6 +46,12 @@ _VISION_PREFIXES = (
 _LANGUAGE_PREFIXES = (
     "model.language_model.",
 )
+_FLUX3_TEXT_ENCODER_EXCLUSION_PREFIXES = (
+    "model.language_model.layers.33.",
+    "model.language_model.layers.34.",
+    "model.language_model.layers.35.",
+    "model.language_model.norm.",
+)
 _WAN22_TEXT_ENCODER_CHECKPOINT_NAME = "t5_umt5-xxl-enc-bf16.pth"
 _WAN22_DENOISER_SHARDS = 3
 
@@ -66,6 +74,14 @@ def _build_flux2_denoiser_files(source: Path, version: str) -> list[Path]:
         source / "diffusion_pytorch_model-00001-of-00002.safetensors",
         source / "diffusion_pytorch_model-00002-of-00002.safetensors",
     ]
+
+
+def _build_flux3_text_encoder_files(source: Path) -> list[Path]:
+    return [source / f"model-{index:05d}-of-00002.safetensors" for index in (1, 2)]
+
+
+def _build_flux3_denoiser_files(source: Path) -> list[Path]:
+    return [source / f"diffusion_pytorch_model-{index:05d}-of-00002.safetensors" for index in (1, 2)]
 
 
 def _build_ideogram_text_encoder_files(source: Path) -> list[Path]:
@@ -184,6 +200,14 @@ def _flux2_9b_denoiser_target_configs() -> dict[str, dict[str, list[str]]]:
     return _mixed_target_configs(lambda: _build_flux2_denoiser_targets("9b"))
 
 
+def _flux3_text_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(_build_flux3_text_encoder_target_tensors)
+
+
+def _flux3_denoiser_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(_build_flux3_denoiser_target_tensors)
+
+
 def _wan22_text_encoder_target_configs() -> dict[str, dict[str, list[str]]]:
     return _mixed_target_configs(_build_wan22_text_encoder_mixed_target_tensors)
 
@@ -260,6 +284,16 @@ def _model_specs() -> dict[str, dict[str, object]]:
         "flux2_9b_denoiser": {
             "files": lambda source: _build_flux2_denoiser_files(source, "9b"),
             "target_configs": _flux2_9b_denoiser_target_configs,
+        },
+        "flux3_text_encoder": {
+            "files": _build_flux3_text_encoder_files,
+            "target_configs": _flux3_text_target_configs,
+            "inclusion_prefix": "model.language_model.",
+            "exclusion_prefix": _FLUX3_TEXT_ENCODER_EXCLUSION_PREFIXES,
+        },
+        "flux3_denoiser": {
+            "files": _build_flux3_denoiser_files,
+            "target_configs": _flux3_denoiser_target_configs,
         },
         "gemma4_2b": {
             "files": _single_file("model.safetensors"),
