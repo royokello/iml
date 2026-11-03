@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from collections import deque
 from pathlib import Path
 
 import torch
@@ -13,15 +14,34 @@ from torch.utils.checkpoint import checkpoint as checkpoint_fn
 
 from flux2.lora.loader import load_checkpoint as load_lora_checkpoint
 from flux2.lora.model import build_lora_state_dict, inject_trainable_lora_modules
-from flux2.train.fork import STEP_CSV_HEADER, Step
-from flux2.train.main import _parse_ma_windows, _plot_loss, _truncate_logs_to_step
+from flux2.train.fork import DEFAULT_MAX_GRAD_NORM, STEP_CSV_HEADER, Step
+from flux2.train.main import _ensure_grad_norm_column, _parse_ma_windows, _plot_loss, _truncate_logs_to_step
 from flux3.config import SCHEDULER_SHIFT, resolve_model_root
 from flux3.denoiser.loader import load_flux3_denoiser
 from flux3.lora.config import FLUX3_LORA_ALPHA, FLUX3_LORA_RANK, FLUX3_LORA_TARGETS
 from flux3.train.dataset import Flux3Dataset
 
 LOSS_LOG_FLUSH_STEPS = 8
+ETA_WINDOW_STEPS = 32
 MODEL_METADATA_NAME = "flux 3 klein"
+
+
+def format_duration(seconds: float) -> str:
+    """Format a duration as `H:MM:SS`, or `D:HH:MM:SS` from 24 hours.
+
+    Args:
+        seconds: The duration in seconds.
+
+    Returns:
+        The formatted duration.
+    """
+    total = int(round(seconds))
+    days, rest = divmod(total, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, secs = divmod(rest, 60)
+    if days:
+        return f"{days}:{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{hours}:{minutes:02d}:{secs:02d}"
 
 
 def sample_sigma(uniform: torch.Tensor) -> torch.Tensor:
@@ -59,13 +79,16 @@ def main(
     ma_windows: list[int] | None = None,
     checkpoint_steps: int = 256,
     max_length: int = 512,
+    max_grad_norm: float = DEFAULT_MAX_GRAD_NORM,
 ) -> None:
     ma_windows = ma_windows or [32]
     print("Training Started ...")
     print(f"  * seed: {seed}")
+    print(f"  * max grad norm: {max_grad_norm}")
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    pending_loss_logs: list[tuple[int, int, int, str, float, torch.Tensor]] = []
+    pending_loss_logs: list[tuple[int, int, int, str, float, torch.Tensor, torch.Tensor]] = []
+    recent_step_durations: deque[float] = deque(maxlen=ETA_WINDOW_STEPS)
 
     current_step = 0
     current_epoch = 1
@@ -99,6 +122,7 @@ def main(
         resume_optimizer_filepath = resume_checkpoint_path.with_suffix(".optimizer.pt")
         print(f"  * resuming from checkpoint: {resume_checkpoint_path}")
         print(f"  * resume step: {current_step}")
+        _ensure_grad_norm_column(logs_filepath)
         _truncate_logs_to_step(logs_filepath, current_step)
     else:
         with logs_filepath.open("w", encoding="utf-8", newline="") as logs_handle:
@@ -215,6 +239,7 @@ def main(
             log_sample_name,
             log_learning_rate,
             pending_loss,
+            pending_grad_norm,
         ) in pending_loss_logs:
             step = Step()
             step.step = log_total_step
@@ -223,11 +248,12 @@ def main(
             step.sample_name = log_sample_name
             step.learning_rate = float(log_learning_rate)
             step.loss = float(pending_loss.item())
+            step.grad_norm = float(pending_grad_norm.item())
 
             new_steps.append(step)
             print(
                 f"      logged epoch {step.epoch} sample {step.sample_index} ({step.sample_name}): "
-                f"loss {step.loss:.6f}"
+                f"loss {step.loss:.6f}, grad_norm {step.grad_norm:.4f}"
             )
 
         with logs_filepath.open("a", encoding="utf-8", newline="") as logs_handle:
@@ -302,7 +328,7 @@ def main(
             backward_start = time.perf_counter()
             forward_duration = backward_start - forward_start
             loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(lora_parameters, float("inf"))
+            grad_norm = torch.nn.utils.clip_grad_norm_(lora_parameters, max_grad_norm)
             if not torch.isfinite(grad_norm):
                 raise RuntimeError(f"Flux 3 training gradient is inf or NaN at step {current_step + 1}.")
             backward_duration = time.perf_counter() - backward_start
@@ -311,6 +337,8 @@ def main(
             sample_total_duration = time.perf_counter() - sample_start
 
             current_step += 1
+            recent_step_durations.append(sample_total_duration)
+            eta_seconds = sum(recent_step_durations) / len(recent_step_durations) * (steps - current_step)
 
             pending_loss_logs.append((
                 current_step,
@@ -319,6 +347,7 @@ def main(
                 dataset.sample_names[sample_index],
                 learning_rate,
                 loss.detach(),
+                grad_norm.detach(),
             ))
 
             if len(pending_loss_logs) >= LOSS_LOG_FLUSH_STEPS:
@@ -328,7 +357,8 @@ def main(
                 f"    * [{current_step}/{steps}]: Epoch {current_epoch}, "
                 f"Step {current_step} done in {sample_total_duration:.3f}s "
                 f"(load={load_duration:.2f}s, fwd={forward_duration:.2f}s, "
-                f"bck={backward_duration:.2f}s, grad_norm={grad_norm.item():.4f})"
+                f"bck={backward_duration:.2f}s, grad_norm={grad_norm.item():.4f}) "
+                f"| eta {format_duration(eta_seconds)}"
             )
 
             if current_step % checkpoint_steps == 0:
@@ -411,6 +441,12 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint-steps", type=int, default=256, help="Save checkpoint every N steps (default: 256)"
     )
     parser.add_argument("--max-length", type=int, default=512, help="Maximum text tokens (default: 512)")
+    parser.add_argument(
+        "--max-grad-norm",
+        type=float,
+        default=DEFAULT_MAX_GRAD_NORM,
+        help=f"Clip the gradient norm to this value. Use inf to disable (default: {DEFAULT_MAX_GRAD_NORM})",
+    )
     return parser.parse_args()
 
 
@@ -453,6 +489,7 @@ if __name__ == "__main__":
         ma_windows=ma_windows,
         checkpoint_steps=args.checkpoint_steps,
         max_length=args.max_length,
+        max_grad_norm=args.max_grad_norm,
     )
 
     print(f"  * training done in {time.perf_counter() - training_start:.3f}s")
