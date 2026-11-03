@@ -195,7 +195,7 @@ def _estimate_output_tensors(
     if method == "fp32":
         return [(name, "F32", shape)]
 
-    if method == "keep":
+    if method == "bf16":
         return [(name, dtype, shape)]
 
     if method is None:

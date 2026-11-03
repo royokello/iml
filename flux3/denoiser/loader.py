@@ -92,9 +92,9 @@ def _check_shard_keys(model: torch.nn.Module, checkpoint_dir: Path) -> None:
         )
 
 
-def _keep_modules(model: torch.nn.Module, keep_names: list[str]) -> list[torch.nn.Module]:
+def _bf16_modules(model: torch.nn.Module, bf16_names: list[str]) -> list[torch.nn.Module]:
     modules = []
-    for name in keep_names:
+    for name in bf16_names:
         try:
             modules.append(model.get_submodule(name.rsplit(".", 1)[0]))
         except AttributeError:
@@ -148,7 +148,7 @@ def load_flux3_denoiser(
 
     Returns:
         The denoiser in eval mode. Float weights are fp16. The weights in the
-        `keep` target group (QK norms, embedders, `norm_out`, `proj_out`) are
+        `bf16` target group (QK norms, embedders, `norm_out`, `proj_out`) are
         bf16. `QuantizedLinear` layers keep their own dtypes.
 
     Raises:
@@ -197,9 +197,9 @@ def load_flux3_denoiser(
 
     build_device = "cpu" if offloading else "meta"
     model = _build_model_from_config(model_dir, variant, device=build_device)
-    # The keep tensors stay bf16, as in the source. The model casts them to fp32 when it uses them.
-    keep_modules = _keep_modules(model, target_tensors["keep"])
-    for module in keep_modules:
+    # The bf16 tensors stay bf16, as in the source. The model casts them to fp32 when it uses them.
+    bf16_modules = _bf16_modules(model, target_tensors["bf16"])
+    for module in bf16_modules:
         module.to(dtype=torch.bfloat16)
     if stream_load is None:
         stream_load = offloading
@@ -280,7 +280,7 @@ def load_flux3_denoiser(
             _materialize_meta_tensors(model)
 
     # ---- Final dtypes ----
-    _cast_float_tensors_except(model, torch.float16, set(keep_modules))
+    _cast_float_tensors_except(model, torch.float16, set(bf16_modules))
 
     model.eval()
     return model

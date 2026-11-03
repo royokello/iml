@@ -14,7 +14,7 @@ def build_mixed_target_config(
     low_targets = list(target_tensors.get("low", []))
     fp32_targets = list(target_tensors.get("fp32", []))
     fp16_targets = list(target_tensors.get("fp16", []))
-    keep_targets = list(target_tensors.get("keep", []))
+    bf16_targets = list(target_tensors.get("bf16", []))
 
     # fp16: high and low targets cast to fp16; fp32/fp16 targets left as-is
     if high_method == "fp16":
@@ -24,8 +24,8 @@ def build_mixed_target_config(
             config["fp16"] = all_fp16
         if fp32_targets:
             config["fp32"] = fp32_targets
-        if keep_targets:
-            config["keep"] = keep_targets
+        if bf16_targets:
+            config["bf16"] = bf16_targets
         return config
 
     config: dict[str, list[str]] = {}
@@ -38,8 +38,8 @@ def build_mixed_target_config(
         config["fp32"] = fp32_targets
     if fp16_targets:
         config["fp16"] = fp16_targets
-    if keep_targets:
-        config["keep"] = keep_targets
+    if bf16_targets:
+        config["bf16"] = bf16_targets
     return config
 
 

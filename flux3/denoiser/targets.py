@@ -19,7 +19,7 @@ _LOW_SUFFIXES = (
     "ff.linear_in.weight",
 )
 
-_KEEP_SUFFIXES = (
+_BF16_SUFFIXES = (
     "attn.norm_q.weight",
     "attn.norm_k.weight",
 )
@@ -28,7 +28,7 @@ _GLOBAL_LOW = (
     "context_embedder.weight",
 )
 
-_GLOBAL_KEEP = (
+_GLOBAL_BF16 = (
     "x_embedders.image.weight",
     "x_embedders.image_cond.weight",
     "timestep_embedder.linear_1.weight",
@@ -52,7 +52,7 @@ _GLOBAL_FP16 = (
 def _build_flux3_denoiser_target_tensors() -> dict[str, list[str]]:
     high: list[str] = []
     low: list[str] = []
-    keep: list[str] = []
+    bf16: list[str] = []
     fp16: list[str] = []
 
     for group, count in _BLOCK_COUNTS.items():
@@ -62,11 +62,11 @@ def _build_flux3_denoiser_target_tensors() -> dict[str, list[str]]:
                 high.append(prefix + suffix)
             for suffix in _LOW_SUFFIXES:
                 low.append(prefix + suffix)
-            for suffix in _KEEP_SUFFIXES:
-                keep.append(prefix + suffix)
+            for suffix in _BF16_SUFFIXES:
+                bf16.append(prefix + suffix)
 
     low.extend(_GLOBAL_LOW)
-    keep.extend(_GLOBAL_KEEP)
+    bf16.extend(_GLOBAL_BF16)
     fp16.extend(_GLOBAL_FP16)
 
-    return {"high": high, "low": low, "keep": keep, "fp16": fp16}
+    return {"high": high, "low": low, "bf16": bf16, "fp16": fp16}
