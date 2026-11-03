@@ -32,6 +32,34 @@ def linear_fp32(layer: nn.Module, x: torch.Tensor) -> torch.Tensor:
     return layer(x)
 
 
+def rms_norm_fp32(norm: nn.RMSNorm, x: torch.Tensor) -> torch.Tensor:
+    """Apply an RMSNorm in fp32.
+
+    The weight can be bf16 or fp16. It is cast to fp32 for this call.
+
+    Args:
+        norm: The RMSNorm layer.
+        x: The input. It is cast to fp32.
+
+    Returns:
+        The fp32 output.
+    """
+    return F.rms_norm(x.float(), norm.normalized_shape, norm.weight.float(), norm.eps)
+
+
+def timestep_embedding_fp32(embedder: nn.Module, x: torch.Tensor) -> torch.Tensor:
+    """Apply a diffusers `TimestepEmbedding` (linear, SiLU, linear) in fp32.
+
+    Args:
+        embedder: The `TimestepEmbedding` module.
+        x: The sinusoidal timestep features. They are cast to fp32.
+
+    Returns:
+        The fp32 embedding.
+    """
+    return linear_fp32(embedder.linear_2, F.silu(linear_fp32(embedder.linear_1, x)))
+
+
 def feed_forward_fp32_out(ff: nn.Module, x: torch.Tensor) -> torch.Tensor:
     """Run a feed-forward block with an fp32 output projection.
 

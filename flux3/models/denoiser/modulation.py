@@ -3,6 +3,8 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+from flux3.models.denoiser.precision import linear_fp32
+
 
 class Flux3Modulation(nn.Module):
     """One set of per-token shift, scale and gate values.
@@ -33,6 +35,6 @@ class Flux3AdaLayerNorm(nn.Module):
         self.norm = nn.LayerNorm(dim, elementwise_affine=False, eps=eps)
 
     def forward(self, hidden_states: torch.Tensor, temb: torch.Tensor) -> torch.Tensor:
-        emb = self.linear(self.act_fn(temb))
+        emb = linear_fp32(self.linear, self.act_fn(temb))
         scale, shift = torch.chunk(emb, 2, dim=-1)
         return self.norm(hidden_states) * (1 + scale) + shift

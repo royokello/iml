@@ -17,7 +17,7 @@ from diffusers.utils import apply_lora_scale
 from flux2.models.denoiser.embeddings.positional import Flux2PosEmbed
 
 from .modulation import Flux3AdaLayerNorm, Flux3Modulation
-from .precision import linear_fp32
+from .precision import linear_fp32, timestep_embedding_fp32
 from .mode_block import Flux3ModeTransformerBlock
 from .single_block import Flux3SingleTransformerBlock
 
@@ -251,12 +251,12 @@ class Flux3Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOri
         # 1. Timestep embeddings. The image tokens use `timestep`. The text and
         #    reference tokens use 0.
         image_temb = self.time_proj(timestep.to(dtype) * 1000)
-        image_temb = self.timestep_embedder(image_temb.to(dtype))[:, None, :]
+        image_temb = timestep_embedding_fp32(self.timestep_embedder, image_temb)[:, None, :].to(dtype)
         zero_temb = self.time_proj(torch.zeros(batch_size, device=hidden_states.device, dtype=dtype))
-        zero_temb = self.timestep_embedder(zero_temb.to(dtype))[:, None, :]
+        zero_temb = timestep_embedding_fp32(self.timestep_embedder, zero_temb)[:, None, :].to(dtype)
         if target_timestep is not None:
             target_temb = self.time_proj(target_timestep.to(dtype) * 1000)
-            target_temb = self.target_timestep_embedder(target_temb.to(dtype))[:, None, :]
+            target_temb = timestep_embedding_fp32(self.target_timestep_embedder, target_temb)[:, None, :].to(dtype)
             image_temb = image_temb + target_temb
             zero_temb = zero_temb + target_temb
         image_temb = image_temb.expand(batch_size, image_seq_len, -1)
@@ -275,7 +275,7 @@ class Flux3Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOri
         image_temb_act = F.silu(image_temb)
         image_early_mod = self.early_stream_modulations["image"](image_temb_act)
         image_single_mod = self.single_stream_modulations["image"](image_temb_act)
-        hidden_states = self.x_embedders["image"](hidden_states)
+        hidden_states = linear_fp32(self.x_embedders["image"], hidden_states).to(dtype)
         image_rotary_emb = self.pos_embed(img_ids)
 
         # 4. Reference image tokens. Optional.
@@ -283,7 +283,7 @@ class Flux3Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOri
             cond_temb_act = zero_temb_act.expand(batch_size, image_cond_hidden_states.shape[1], -1)
             cond_early_mod = self.early_stream_modulations["image_cond"](cond_temb_act)
             cond_single_mod = self.single_stream_modulations["image_cond"](cond_temb_act)
-            image_cond_hidden_states = self.x_embedders["image_cond"](image_cond_hidden_states)
+            image_cond_hidden_states = linear_fp32(self.x_embedders["image_cond"], image_cond_hidden_states).to(dtype)
             cond_rotary_emb = self.pos_embed(image_cond_ids)
 
         # 5. Mode blocks. Each mode attends to itself only.
@@ -315,6 +315,9 @@ class Flux3Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOri
                 torch.cat([txt_rotary_emb[1], image_rotary_emb[1]], dim=0),
             )
 
+        # The last single blocks hold image values near the fp16 limit (65504). The content
+        # stream runs in fp32 through them. The mode blocks stay below 5000 and stay in fp16.
+        content_states = content_states.float()
         for block in self.single_transformer_blocks:
             encoder_hidden_states, content_states = self._run_block(
                 block, content_states, encoder_hidden_states, content_mod, txt_single_mod, joint_rotary_emb
@@ -323,7 +326,7 @@ class Flux3Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOri
         # 7. Output layers. The image tokens come first in the content sequence.
         hidden_states = content_states[:, :image_seq_len]
         hidden_states = self.norm_out(hidden_states, image_temb)
-        output = self.proj_out(hidden_states)
+        output = linear_fp32(self.proj_out, hidden_states).to(dtype)
 
         if not return_dict:
             return (output,)

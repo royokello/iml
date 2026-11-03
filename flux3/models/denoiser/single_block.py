@@ -45,14 +45,15 @@ class Flux3SingleTransformerBlock(nn.Module):
         mod_shift, mod_scale, mod_gate = torch.chunk(temb_mod, 3, dim=-1)
         c_mod_shift, c_mod_scale, c_mod_gate = torch.chunk(temb_mod_context, 3, dim=-1)
 
-        # The text stream can be fp32. Its norm, modulation, residual add, and feed-forward
-        # output projection run in fp32. The attention and the other layers run in the dtype
-        # of the modulation.
+        # The text stream is fp32 and the content stream (image and reference tokens) can be fp32.
+        # Their norm, modulation, residual add, and feed-forward output projection run in that
+        # dtype. The attention and the other layers run in the dtype of the modulation.
         compute_dtype = temb_mod.dtype
         text_dtype = encoder_hidden_states.dtype
+        content_dtype = hidden_states.dtype
 
         norm_hidden_states = self.norm(hidden_states)
-        norm_hidden_states = (1 + mod_scale) * norm_hidden_states + mod_shift
+        norm_hidden_states = ((1 + mod_scale) * norm_hidden_states + mod_shift).to(compute_dtype)
 
         norm_encoder_hidden_states = self.norm(encoder_hidden_states)
         norm_encoder_hidden_states = (1 + c_mod_scale.to(text_dtype)) * norm_encoder_hidden_states + c_mod_shift.to(
@@ -73,8 +74,12 @@ class Flux3SingleTransformerBlock(nn.Module):
             context_output = attn_context.float() + linear_fp32(self.ff.linear_out, ff_context)
         else:
             context_output = attn_context + self.ff.linear_out(ff_context)
-        content_output = attn_content + self.ff.linear_out(ff_content)
+        if content_dtype == torch.float32:
+            # The fp16 output projection of the content tokens overflows in the last blocks.
+            content_output = attn_content.float() + linear_fp32(self.ff.linear_out, ff_content)
+        else:
+            content_output = attn_content + self.ff.linear_out(ff_content)
         encoder_hidden_states = encoder_hidden_states + c_mod_gate.to(text_dtype) * context_output.to(text_dtype)
-        hidden_states = hidden_states + mod_gate * content_output
+        hidden_states = hidden_states + mod_gate.to(content_dtype) * content_output.to(content_dtype)
 
         return encoder_hidden_states, hidden_states

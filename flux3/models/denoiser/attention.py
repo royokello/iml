@@ -7,6 +7,8 @@ from diffusers.models.attention import AttentionModuleMixin
 from diffusers.models.attention_dispatch import dispatch_attention_fn
 from diffusers.models.embeddings import apply_rotary_emb
 
+from flux3.models.denoiser.precision import rms_norm_fp32
+
 
 def _get_projections(attn: "Flux3Attention", hidden_states: torch.Tensor):
     return attn.to_q(hidden_states), attn.to_k(hidden_states), attn.to_v(hidden_states)
@@ -43,9 +45,9 @@ class Flux3AttnProcessor:
         key = key.unflatten(-1, (attn.heads, -1))
         value = value.unflatten(-1, (attn.heads, -1))
 
-        # QK norm and RoPE run in fp32 and are cast back once.
-        query = attn.norm_q(query.float())
-        key = attn.norm_k(key.float())
+        # QK norm and RoPE run in fp32 and are cast back once. The norm weights are bf16.
+        query = rms_norm_fp32(attn.norm_q, query)
+        key = rms_norm_fp32(attn.norm_k, key)
 
         if image_rotary_emb is not None:
             query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
