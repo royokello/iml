@@ -6,10 +6,8 @@ from pathlib import Path
 
 import torch
 from safetensors import safe_open
-from torch.nn import RMSNorm
 
 from flux2.denoiser.loader import (
-    _cast_float_tensors_except_quantized_linear,
     _list_checkpoint_keys,
     _materialize_meta_tensors,
     pin_module_parameters,
@@ -18,6 +16,7 @@ from flux3.denoiser.targets import _build_flux3_denoiser_target_tensors
 from flux3.models.denoiser.transformer import Flux3Transformer2DModel
 from utils.loaders.sharded import load_local_sharded_checkpoint, stream_local_sharded_checkpoint
 from utils.loaders.single import load_local_single_checkpoint, stream_local_single_checkpoint
+from utils.quant.linear import QuantizedLinear
 from utils.quant.name import convert_quant_name
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
 
@@ -93,10 +92,40 @@ def _check_shard_keys(model: torch.nn.Module, checkpoint_dir: Path) -> None:
         )
 
 
-def _cast_qk_norms_to_fp32(model: torch.nn.Module) -> None:
-    for module in model.modules():
-        if isinstance(module, RMSNorm):
-            module.to(dtype=torch.float32)
+def _keep_modules(model: torch.nn.Module, keep_names: list[str]) -> list[torch.nn.Module]:
+    modules = []
+    for name in keep_names:
+        try:
+            modules.append(model.get_submodule(name.rsplit(".", 1)[0]))
+        except AttributeError:
+            # The base checkpoint has no target_timestep_embedder.
+            continue
+    return modules
+
+
+def _cast_float_tensors_except(
+    module: torch.nn.Module,
+    dtype: torch.dtype,
+    skip: set[torch.nn.Module],
+) -> None:
+    if module in skip:
+        return
+
+    for parameter_name, parameter in module.named_parameters(recurse=False):
+        if parameter is not None and parameter.is_floating_point() and parameter.dtype != dtype:
+            module._parameters[parameter_name] = torch.nn.Parameter(
+                parameter.to(dtype=dtype),
+                requires_grad=parameter.requires_grad,
+            )
+
+    for buffer_name, buffer in module.named_buffers(recurse=False):
+        if buffer is not None and buffer.is_floating_point() and buffer.dtype != dtype:
+            module._buffers[buffer_name] = buffer.to(dtype=dtype)
+
+    for child in module.children():
+        if isinstance(child, QuantizedLinear):
+            continue
+        _cast_float_tensors_except(child, dtype, skip)
 
 
 def load_flux3_denoiser(
@@ -118,8 +147,9 @@ def load_flux3_denoiser(
             to the value of `offloading`.
 
     Returns:
-        The denoiser in eval mode. Float weights are fp16. The QK norm weights
-        are fp32. `QuantizedLinear` layers keep their own dtypes.
+        The denoiser in eval mode. Float weights are fp16. The weights in the
+        `keep` target group (QK norms, embedders, `norm_out`, `proj_out`) are
+        bf16. `QuantizedLinear` layers keep their own dtypes.
 
     Raises:
         ValueError: If `variant` is not `base` or `distill`, or if `path` points
@@ -167,6 +197,10 @@ def load_flux3_denoiser(
 
     build_device = "cpu" if offloading else "meta"
     model = _build_model_from_config(model_dir, variant, device=build_device)
+    # The keep tensors stay bf16, as in the source. The model casts them to fp32 when it uses them.
+    keep_modules = _keep_modules(model, target_tensors["keep"])
+    for module in keep_modules:
+        module.to(dtype=torch.bfloat16)
     if stream_load is None:
         stream_load = offloading
 
@@ -246,11 +280,7 @@ def load_flux3_denoiser(
             _materialize_meta_tensors(model)
 
     # ---- Final dtypes ----
-    if quant_method is None and not offloading:
-        model = model.to(dtype=torch.float16)
-    else:
-        _cast_float_tensors_except_quantized_linear(model, torch.float16)
-    _cast_qk_norms_to_fp32(model)
+    _cast_float_tensors_except(model, torch.float16, set(keep_modules))
 
     model.eval()
     return model
