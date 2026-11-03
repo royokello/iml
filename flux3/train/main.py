@@ -406,7 +406,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=1024)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--text-quant", default="sym-high-mini", help='Text encoder quantization. "none" loads fp16.')
-    parser.add_argument("--denoiser-quant", default="sym-med-nano", help='Denoiser quantization. "none" loads fp16.')
+    parser.add_argument("--denoiser-quant", default="sym-low-mini", help='Denoiser quantization. "none" loads fp16.')
     parser.add_argument("--cache-text", action="store_true")
     parser.add_argument("--cache-images", action="store_true")
     parser.add_argument("--trigger", type=str, required=True)

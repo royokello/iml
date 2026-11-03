@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-indices", dest="sample_indices", type=str, default=None)
     parser.add_argument("--trigger", type=str, help="Required for captionless datasets.")
     parser.add_argument("--text-quant-method", default="sym-high-mini", help='"none" loads the fp16 weights.')
-    parser.add_argument("--denoiser-quant-method", default="sym-med-nano", help='"none" loads the fp16 weights.')
+    parser.add_argument("--denoiser-quant-method", default="sym-low-mini", help='"none" loads the fp16 weights.')
     parser.add_argument("--max-length", type=int, default=512, help="Maximum text tokens.")
     parser.add_argument(
         "--offload",

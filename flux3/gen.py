@@ -508,7 +508,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--denoiser-quant-method",
-        default="sym-med-nano",
+        default="sym-low-mini",
         help='Denoiser quantization method. "none" loads the fp16 weights.',
     )
     parser.add_argument(
