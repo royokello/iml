@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import shutil
 import time
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from safetensors.torch import save_file
 CHECKPOINT_AFTER_STEPS = 256
 LOSS_LOG_FLUSH_STEPS = 8
 
-from flux2.train.fork import STEP_CSV_HEADER, Step
+from flux2.train.fork import DEFAULT_MAX_GRAD_NORM, STEP_CSV_HEADER, Step
 
 def main(
     project_dir: Path,
@@ -47,12 +48,14 @@ def main(
     seed: int = 19930625,
     ma_windows: list[int] = [32],
     checkpoint_steps: int = 256,
+    max_grad_norm: float = DEFAULT_MAX_GRAD_NORM,
 ):
     print("Training Started ...")
     print(f"  * seed: {seed}")
+    print(f"  * max grad norm: {max_grad_norm}")
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    pending_loss_logs: list[tuple[int, int, int, str, float, torch.Tensor]] = []
+    pending_loss_logs: list[tuple[int, int, int, str, float, torch.Tensor, torch.Tensor]] = []
 
     current_step = 0
     current_epoch = 1
@@ -86,6 +89,7 @@ def main(
         resume_optimizer_filepath = resume_checkpoint_path.with_suffix(".optimizer.pt")
         print(f"  * resuming from checkpoint: {resume_checkpoint_path}")
         print(f"  * resume step: {current_step}")
+        _ensure_grad_norm_column(logs_filepath)
         _truncate_logs_to_step(logs_filepath, current_step)
     else:
         with logs_filepath.open("w", encoding="utf-8", newline="") as logs_handle:
@@ -226,6 +230,7 @@ def main(
             log_sample_name,
             log_learning_rate,
             pending_loss,
+            pending_grad_norm,
         ) in pending_loss_logs:
             loss_value = pending_loss.item()
             step = Step()
@@ -235,11 +240,12 @@ def main(
             step.sample_name = log_sample_name
             step.learning_rate = float(log_learning_rate)
             step.loss = float(loss_value)
+            step.grad_norm = float(pending_grad_norm.item())
 
             new_steps.append(step)
             print(
                 f"      logged epoch {step.epoch} sample {step.sample_index} ({step.sample_name}): "
-                f"loss {step.loss:.6f}"
+                f"loss {step.loss:.6f}, grad_norm {step.grad_norm:.4f}"
             )
 
         with logs_filepath.open("a", encoding="utf-8", newline="") as logs_handle:
@@ -318,6 +324,9 @@ def main(
             backward_start = time.perf_counter()
             forward_duration = backward_start - forward_start
             loss.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(lora_parameters, max_grad_norm)
+            if not torch.isfinite(grad_norm):
+                raise RuntimeError(f"Flux 2 training gradient is inf or NaN at step {current_step + 1}.")
             backward_duration = time.perf_counter() - backward_start
 
             optimizer.step()
@@ -332,6 +341,7 @@ def main(
                 dataset.sample_names[sample_index],
                 learning_rate,
                 loss.detach(),
+                grad_norm.detach(),
             ))
 
             if len(pending_loss_logs) >= LOSS_LOG_FLUSH_STEPS:
@@ -341,7 +351,8 @@ def main(
                 f"    * [{current_step}/{steps}]: Epoch {current_epoch}, "
                 f"Step {current_step} done in {sample_total_duration:.3f}s "
                 f"(load={load_duration:.2f}s, fwd={forward_duration:.2f}s, "
-                f"bck={backward_duration:.2f}s, total={sample_total_duration:.2f}s)"
+                f"bck={backward_duration:.2f}s, total={sample_total_duration:.2f}s, "
+                f"grad_norm={grad_norm.item():.4f})"
             )
 
             if current_step % checkpoint_steps == 0:
@@ -385,6 +396,7 @@ def main(
                 target,
                 noise_pred,
                 loss,
+                grad_norm,
             )
 
             if current_step >= steps:
@@ -425,9 +437,42 @@ def _truncate_logs_to_step(csv_path: Path, current_step: int) -> None:
         for row in kept_rows.values():
             logs_handle.write(
                 f"{row['datetime']},{row['step']},{row['epoch']},{row['sample_index']},"
-                f"{row['sample_name']},{row['learning rate']},{row['loss']}\n"
+                f"{row['sample_name']},{row['learning rate']},{row['loss']},{row.get('grad_norm') or ''}\n"
             )
     print(f"  * truncated steps.csv: removed {removed} stale/duplicate row(s) at or after step {current_step}")
+
+
+def _ensure_grad_norm_column(csv_path: Path) -> None:
+    """Add the empty `grad_norm` column to a steps.csv that has the old 7-column header.
+
+    The old file is copied to a backup name that does not exist yet before the rewrite.
+    """
+    if not csv_path.is_file():
+        return
+
+    with csv_path.open(encoding="utf-8", newline="") as logs_handle:
+        header = logs_handle.readline().rstrip("\r\n")
+    if header == STEP_CSV_HEADER:
+        return
+    old_header = STEP_CSV_HEADER.rsplit(",", 1)[0]
+    if header != old_header:
+        raise ValueError(f"{csv_path} has an unknown header: {header!r}")
+
+    backup_path = csv_path.with_name(f"{csv_path.name}.bak")
+    suffix = 0
+    while backup_path.exists():
+        suffix += 1
+        backup_path = csv_path.with_name(f"{csv_path.name}.bak.{suffix}")
+    shutil.copy2(csv_path, backup_path)
+
+    with csv_path.open(encoding="utf-8", newline="") as logs_handle:
+        lines = logs_handle.read().splitlines()
+    with csv_path.open("w", encoding="utf-8", newline="") as logs_handle:
+        logs_handle.write(f"{STEP_CSV_HEADER}\n")
+        for line in lines[1:]:
+            if line:
+                logs_handle.write(f"{line},\n")
+    print(f"  * added grad_norm column to steps.csv (backup: {backup_path.name})")
 
 
 def _plot_loss(csv_path: Path, output_path: Path, ma_windows: list[int]) -> None:
@@ -520,6 +565,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--checkpoint-steps", type=int, default=256,
         help="Save checkpoint every N steps (default: 256)")
+    parser.add_argument("--max-grad-norm", type=float, default=DEFAULT_MAX_GRAD_NORM,
+        help=f"Clip the gradient norm to this value. Use inf to disable (default: {DEFAULT_MAX_GRAD_NORM})")
     return parser.parse_args()
 
 def _parse_ma_windows(raw: str) -> list[int]:
@@ -575,6 +622,7 @@ if __name__ == "__main__":
         seed=args.seed,
         ma_windows=ma_windows,
         checkpoint_steps=args.checkpoint_steps,
+        max_grad_norm=args.max_grad_norm,
     )
 
     print(f"  * training done in {time.perf_counter() - training_start:.3f}s")
