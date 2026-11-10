@@ -475,6 +475,63 @@ def _ensure_grad_norm_column(csv_path: Path) -> None:
     print(f"  * added grad_norm column to steps.csv (backup: {backup_path.name})")
 
 
+PLOT_CLIP_QUANTILE = 0.995
+PLOT_MAX_SPIKE_LABELS = 5
+
+
+def _plot_series(ax, steps, values, ma_windows, np, title, ylabel, floor=None) -> None:
+    ax.plot(steps, values, color="gray", linewidth=1.0, alpha=0.3, label=ylabel)
+
+    ma_peak = 0.0
+    if np is not None and ma_windows:
+        ma_colors = ("lightcoral", "lightgreen", "lightskyblue")
+        for color, window in zip(ma_colors, ma_windows):
+            if len(values) < window:
+                continue
+            ma = np.convolve(values, np.ones(window) / window, mode="valid")
+            ma_peak = max(ma_peak, float(ma.max()))
+            ax.plot(steps[window - 1:], ma, color=color, linewidth=1.5, label=f"MA-{window}")
+
+    ordered = sorted(values)
+    clip_value = ordered[int(PLOT_CLIP_QUANTILE * (len(ordered) - 1))]
+    top = max(clip_value, ma_peak)
+    bottom = floor if floor is not None else ordered[0]
+    margin = (top - bottom) * 0.08 or 0.01
+    top += margin
+    if floor is None:
+        bottom -= margin
+    ax.set_ylim(bottom, top)
+
+    spikes = [(value, step) for step, value in zip(steps, values) if value > top]
+    spikes.sort(reverse=True)
+    if spikes:
+        ax.plot(
+            [step for _, step in spikes],
+            [top] * len(spikes),
+            linestyle="none",
+            marker="^",
+            color="red",
+            markersize=6,
+            clip_on=False,
+            label=f"Off-scale ({len(spikes)})",
+        )
+        for value, step in spikes[:PLOT_MAX_SPIKE_LABELS]:
+            ax.annotate(
+                f"{step}: {value:.2f}",
+                (step, top),
+                textcoords="offset points",
+                xytext=(0, 6),
+                ha="center",
+                fontsize=7,
+                color="red",
+            )
+
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    ax.legend(loc="upper right")
+    ax.grid(True, alpha=0.3)
+
+
 def _plot_loss(csv_path: Path, output_path: Path, ma_windows: list[int]) -> None:
     try:
         import matplotlib
@@ -485,11 +542,17 @@ def _plot_loss(csv_path: Path, output_path: Path, ma_windows: list[int]) -> None
 
     import csv
     steps, losses = [], []
+    grad_steps, grad_norms = [], []
     with csv_path.open() as f:
         reader = csv.DictReader(f)
         for row in reader:
-            steps.append(int(row["step"]))
+            step = int(row["step"])
+            steps.append(step)
             losses.append(float(row["loss"]))
+            grad_text = row.get("grad_norm")
+            if grad_text:
+                grad_steps.append(step)
+                grad_norms.append(float(grad_text))
 
     if not steps:
         return
@@ -499,23 +562,22 @@ def _plot_loss(csv_path: Path, output_path: Path, ma_windows: list[int]) -> None
     except ImportError:
         np = None
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(steps, losses, color="gray", linewidth=1.0, alpha=0.3, label="Loss")
+    if grad_norms:
+        fig, (loss_ax, grad_ax) = plt.subplots(
+            2, 1, figsize=(10, 9), sharex=True, gridspec_kw={"height_ratios": [3, 2]}
+        )
+    else:
+        fig, loss_ax = plt.subplots(figsize=(10, 6))
+        grad_ax = None
 
-    if np is not None and ma_windows:
-        ma_colors = ("lightcoral", "lightgreen", "lightskyblue")
-        for color, window in zip(ma_colors, ma_windows):
-            if len(losses) < window:
-                continue
-            ma = np.convolve(losses, np.ones(window) / window, mode="valid")
-            ma_steps = steps[window - 1:]
-            ax.plot(ma_steps, ma, color=color, linewidth=1.5, label=f"MA-{window}")
+    _plot_series(loss_ax, steps, losses, ma_windows, np, "Training Loss", "Loss")
+    if grad_ax is not None:
+        _plot_series(grad_ax, grad_steps, grad_norms, ma_windows, np, "Gradient Norm", "Grad norm", floor=0.0)
+        grad_ax.set_xlabel("Step")
+    else:
+        loss_ax.set_xlabel("Step")
 
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Loss")
-    ax.set_title("Training Loss")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
     temp_path = output_path.with_name(output_path.stem + ".tmp.png")
     fig.savefig(str(temp_path), dpi=150, bbox_inches="tight")
     plt.close(fig)
