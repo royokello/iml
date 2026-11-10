@@ -113,9 +113,10 @@ def main() -> None:
 
     def output_name(step_number: int, sample_index: int, width: int, height: int, duplicate: int = 1) -> Path:
         suffix = "" if duplicate == 1 else f"_{duplicate}"
+        ref = f"_ref{args.ref_res}"
         if single_sample:
-            return sample_dir / f"{step_number:06d}_{width}x{height}{suffix}.png"
-        return sample_dir / f"{step_number:06d}_{sample_index}_{width}x{height}{suffix}.png"
+            return sample_dir / f"{step_number:06d}_{width}x{height}{ref}{suffix}.png"
+        return sample_dir / f"{step_number:06d}_{sample_index}_{width}x{height}{ref}{suffix}.png"
 
     def next_output_path(step_number: int, sample_index: int, width: int, height: int) -> Path:
         duplicate = 1
