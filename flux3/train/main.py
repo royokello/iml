@@ -56,6 +56,13 @@ def sample_sigma(uniform: torch.Tensor) -> torch.Tensor:
     return SCHEDULER_SHIFT * uniform / (1 + (SCHEDULER_SHIFT - 1) * uniform)
 
 
+def _epoch_order(dataset_size: int, shuffle: bool, seed: int, epoch: int) -> list[int]:
+    if not shuffle:
+        return list(range(dataset_size))
+    generator = torch.Generator("cpu").manual_seed(seed + epoch)
+    return torch.randperm(dataset_size, generator=generator).tolist()
+
+
 def main(
     project_dir: Path,
     checkpoint_metadata: dict[str, str],
@@ -80,10 +87,12 @@ def main(
     checkpoint_steps: int = 256,
     max_length: int = 512,
     max_grad_norm: float = DEFAULT_MAX_GRAD_NORM,
+    shuffle: bool = False,
 ) -> None:
     ma_windows = ma_windows or [32]
     print("Training Started ...")
     print(f"  * seed: {seed}")
+    print(f"  * shuffle: {shuffle}")
     print(f"  * max grad norm: {max_grad_norm}")
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -280,7 +289,9 @@ def main(
 
     while current_step < steps:
 
-        for sample_index in range(first_sample_index, dataset_size):
+        epoch_order = _epoch_order(dataset_size, shuffle, seed, current_epoch)
+
+        for sample_index in epoch_order[first_sample_index:]:
 
             sample_start = time.perf_counter()
             optimizer.zero_grad(set_to_none=True)
@@ -409,6 +420,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--denoiser-quant", default="sym-low-mini", help='Denoiser quantization. "none" loads fp16.')
     parser.add_argument("--cache-text", action="store_true")
     parser.add_argument("--cache-images", action="store_true")
+    parser.add_argument(
+        "--shuffle",
+        action="store_true",
+        help="Shuffle the sample order in each epoch. The order comes from --seed plus the epoch number.",
+    )
     parser.add_argument("--trigger", type=str, required=True)
     parser.add_argument(
         "--model",
@@ -490,6 +506,7 @@ if __name__ == "__main__":
         checkpoint_steps=args.checkpoint_steps,
         max_length=args.max_length,
         max_grad_norm=args.max_grad_norm,
+        shuffle=args.shuffle,
     )
 
     print(f"  * training done in {time.perf_counter() - training_start:.3f}s")
