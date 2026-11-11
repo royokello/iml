@@ -179,8 +179,13 @@ def main() -> None:
     if trigger is None and any(embedding is None for embedding in dataset.text_embeddings):
         raise ValueError("The dataset has samples without a caption. Pass --trigger or --prompt.")
 
-    sample_indices = parsed_indices if parsed_indices is not None else list(range(1, dataset_size + 1))
-    selected_index_by_sample = {sample_index: selected for selected, sample_index in enumerate(sample_indices)}
+    selected_index_by_sample = {
+        position + 1: selected for selected, position in enumerate(dataset.sample_positions)
+    }
+    if parsed_indices is not None:
+        sample_indices = [index for index in parsed_indices if index in selected_index_by_sample]
+    else:
+        sample_indices = list(selected_index_by_sample)
 
     sample_resolutions: dict[int, tuple[int, int]] = {}
     for sample_index in sample_indices:

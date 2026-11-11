@@ -28,6 +28,7 @@ class _Sample:
     """One entry of the sample list, before any image or text is loaded."""
 
     name: str
+    position: int
     target_path: Path
     ratio: float
     ref_paths: list[Path] = field(default_factory=list)
@@ -46,11 +47,13 @@ def _list_samples(
     reference_resolution: int,
     target_upscale: bool,
     ref_upscale: bool,
+    check_target_resolution: bool,
 ) -> list[_Sample]:
     """Return the samples to train on, in name order.
 
-    A target below `target_resolution` is skipped, unless `target_upscale` is
-    set. A reference below `reference_resolution` is skipped, unless
+    If `check_target_resolution` is set, a target below `target_resolution` is
+    skipped, unless `target_upscale` is set. A reference below
+    `reference_resolution` is skipped, unless
     `ref_upscale` is set. A sample whose reference folder exists, but has no
     usable reference, is skipped.
     """
@@ -63,7 +66,7 @@ def _list_samples(
             continue
 
         width, height = _image_size(target_path)
-        if min(width, height) < target_resolution and not target_upscale:
+        if check_target_resolution and min(width, height) < target_resolution and not target_upscale:
             print(f" * [{position + 1}] {target_path.name} skipped: target below target_resolution ({target_resolution})")
             continue
 
@@ -88,6 +91,7 @@ def _list_samples(
         samples.append(
             _Sample(
                 name=target_path.stem,
+                position=position,
                 target_path=target_path,
                 ratio=width / height,
                 ref_paths=ref_paths,
@@ -193,6 +197,8 @@ class Flux3Dataset:
         target_ratios: width / height of the target file, or None when
             `load_target_ratios` is False.
         sample_names: The file stem of the target.
+        sample_positions: The 0-based position of the target in the sorted
+            target list. Skipped targets leave gaps.
 
     One value for the dataset:
         trigger_embedding: `(embeds[S, 20480], txt_ids[S, 4])` of the trigger.
@@ -234,7 +240,8 @@ class Flux3Dataset:
             load_target_images: Encode the targets. If False, `target_latents[i]` is None.
             load_reference_images: Encode the references. If False, `ref_latents[i]` is None.
             load_target_ratios: Fill `target_ratios`.
-            target_upscale: Keep targets below `target_resolution`.
+            target_upscale: Keep targets below `target_resolution`. The size
+                check runs only if `load_target_images` is True.
             ref_upscale: Keep references below `reference_resolution`.
             max_length: The maximum number of text tokens.
         """
@@ -261,6 +268,7 @@ class Flux3Dataset:
             reference_resolution=reference_resolution,
             target_upscale=target_upscale,
             ref_upscale=ref_upscale,
+            check_target_resolution=load_target_images,
         )
         print(f" * Samples: {len(samples)}")
 
@@ -371,4 +379,5 @@ class Flux3Dataset:
         self.ref_latents = ref_latents
         self.target_ratios = [sample.ratio if load_target_ratios else None for sample in samples]
         self.sample_names = [sample.name for sample in samples]
+        self.sample_positions = [sample.position for sample in samples]
         self.trigger_embedding = trigger_embedding
