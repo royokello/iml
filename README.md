@@ -846,12 +846,14 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - Writes the generation settings into the PNG under the `sdxl` key as JSON
   - Moves the text encoders off the GPU after prompt encoding, then moves the UNet off before VAE decode
   - `--offload` streams `down_blocks`, `mid_block`, and `up_blocks` to the GPU one at a time. Peak UNet memory is the largest block (about 2.6 GB) instead of the whole checkpoint (about 5.1 GB)
+  - `--loras` loads kohya or native LoRA checkpoints into the UNet and the text encoders, at a chosen strength
   - Decodes the VAE with tiling
   - CUDA-only runtime; exits if CUDA is unavailable
 - Examples
   - `python -m sdxl.gen --root "/iml_root" --prompt "a cat holding a sign that says hello world"`
   - `python -m sdxl.gen --root "/iml_root" --width 832 --height 1216 --steps 30`
   - `python -m sdxl.gen --root "/iml_root" --no-quant`
+  - `python -m sdxl.gen --root "/iml_root" --loras "/models/loras/style.safetensors:1.0"`
 - Useful args
   - `--root`
   - `--name`
@@ -865,6 +867,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - `--method`
   - `--no-quant`
   - `--offload`
+  - `--loras`
 
 ### Ideogram 4
 

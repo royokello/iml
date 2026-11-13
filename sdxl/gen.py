@@ -17,10 +17,13 @@ import torch
 from PIL.PngImagePlugin import PngInfo
 from diffusers import AutoencoderKL
 from diffusers.schedulers import EulerAncestralDiscreteScheduler
+from flux2.gen import _parse_loras_arg
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 
 from sdxl.config import DEFAULT_MODEL_NAME, resolve_model_root, resolve_outputs_dir
 from sdxl.denoiser.loader import load_sdxl_denoiser
+from sdxl.lora.formats import format_of
+from sdxl.lora.inject import inject_sdxl_loras
 from sdxl.pipeline import StableDiffusionXLPipeline
 
 DEFAULT_PROMPT = (
@@ -83,6 +86,7 @@ def generate_image(
     method: str = DEFAULT_METHOD,
     no_quant: bool = False,
     offload: bool = False,
+    loras: dict[str, float] | None = None,
 ) -> Path:
     """Generate one image and save it as a PNG.
 
@@ -104,6 +108,8 @@ def generate_image(
         offload: Stream `down_blocks`, `mid_block`, and `up_blocks` to the GPU
             one at a time. Peak UNet memory is the largest block (`up_blocks`,
             about 2.6 GB) instead of the whole checkpoint (about 5.1 GB).
+        loras: A map of LoRA checkpoint path to strength. A checkpoint may use
+            kohya names or native names. Text-encoder tensors load when present.
 
     Returns:
         The path of the saved PNG.
@@ -164,6 +170,9 @@ def generate_image(
 
     print("Loading UNet ...", flush=True)
     unet = load_sdxl_denoiser(model_root, quant_method=None if no_quant else method)
+    if loras:
+        counts = inject_sdxl_loras(unet, text_encoder, text_encoder_2, loras)
+        print(f"    lora modules: {counts}", flush=True)
     if offload:
         unet.enable_block_offload(device)
         print("    offload: streaming down_blocks, mid_block, up_blocks", flush=True)
@@ -209,6 +218,10 @@ def generate_image(
         "height": height,
         "method": "none" if no_quant else method,
         "offload": offload,
+        "loras": [
+            {"path": str(path), "strength": strength, "format": format_of(path)}
+            for path, strength in (loras or {}).items()
+        ],
         "prompt": prompt,
         "negative": negative_prompt,
         "scheduler": "EulerAncestralDiscreteScheduler",
@@ -267,6 +280,11 @@ def parse_args() -> argparse.Namespace:
             "Use this when the UNet does not fit in VRAM."
         ),
     )
+    parser.add_argument(
+        "--loras",
+        default=None,
+        help='Comma-separated LoRA list in the form "path:strength, path2:strength2".',
+    )
     return parser.parse_args()
 
 
@@ -287,6 +305,7 @@ def main() -> None:
         method=args.method,
         no_quant=args.no_quant,
         offload=args.offload,
+        loras=_parse_loras_arg(args.loras),
     )
 
 
