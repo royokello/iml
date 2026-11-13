@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
 
-from ..blocks.conv_2d import QuantConv1x1
-
 
 def _linear_fp16(in_features: int, out_features: int, bias: bool = True) -> nn.Linear:
     layer = nn.Linear(in_features, out_features, bias=bias)
@@ -46,7 +44,14 @@ class ResnetBlock2D(nn.Module):
         ).to(torch.float16)
 
         if in_channels != out_channels:
-            self.conv_shortcut = QuantConv1x1(in_channels, out_channels, bias=True)
+            self.conv_shortcut = nn.Conv2d(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=1,
+                stride=1,
+                padding=0,
+                bias=True,
+            ).to(torch.float16)
         else:
             self.conv_shortcut = None
 

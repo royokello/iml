@@ -23,7 +23,6 @@ from .embeddings import (
     Timesteps,
     get_activation,
 )
-from .unet.loader import load_weights
 
 class AddEmbedding(nn.Module):
     def __init__(self, input_dim: int, embed_dim: int):
@@ -49,10 +48,7 @@ class AddEmbedding(nn.Module):
 
 class SDXLUNet(nn.Module):
 
-    def __init__(
-        self,
-        model: dict[str, torch.Tensor] | None = None,
-    ):
+    def __init__(self):
         super().__init__()
 
         # SDXL-base UNet configuration
@@ -291,9 +287,60 @@ class SDXLUNet(nn.Module):
             padding=1,
         ).to(torch.float16)
 
-        # 7) optional filtered weight loading from safetensors/state_dict
-        if model is not None:
-            load_weights(self, model)
+        self._offload_device: Optional[torch.device] = None
+
+    def enable_block_offload(self, device: torch.device) -> None:
+        """Stream the three top-level blocks to `device` one at a time.
+
+        `forward` moves `down_blocks`, `mid_block`, and `up_blocks` to `device`
+        before they run and back to the CPU after they run. The resident layers
+        must already be on `device`; call `move_resident_layers_to` first.
+
+        Args:
+            device: The device that runs the blocks.
+        """
+        self._offload_device = device
+
+    def disable_block_offload(self) -> None:
+        """Stop the streaming. `forward` then runs the blocks where they are."""
+        self._offload_device = None
+
+    @property
+    def offload_enabled(self) -> bool:
+        """True when `forward` streams the top-level blocks."""
+        return self._offload_device is not None
+
+    def move_resident_layers_to(self, device: torch.device | str) -> None:
+        """Move every layer that does not stream to `device`.
+
+        The layers outside `down_blocks`, `mid_block`, and `up_blocks` are the
+        embeddings and the convolution head.
+
+        Args:
+            device: The target device.
+        """
+        for module in self.children():
+            if module in (self.down_blocks, self.mid_block, self.up_blocks):
+                continue
+            module.to(device)
+
+    def _run_block(self, block: nn.Module, *args, **kwargs) -> Any:
+        """Run one top-level block, streaming it to the offload device if set.
+
+        Args:
+            block: The block to run.
+            *args: Positional arguments for the block.
+            **kwargs: Keyword arguments for the block.
+
+        Returns:
+            The block output.
+        """
+        if self._offload_device is not None:
+            block.to(self._offload_device, non_blocking=True)
+        output = block(*args, **kwargs)
+        if self._offload_device is not None:
+            block.to("cpu", non_blocking=True)
+        return output
 
     def _collect_skip_channels_for_up_blocks(self) -> list[int]:
         """
@@ -690,21 +737,23 @@ class SDXLUNet(nn.Module):
         res_hidden_states: list[torch.Tensor] = [x]
 
         # 3. down path
-        for idx, block in enumerate(self.down_blocks):
+        for block in self.down_blocks:
             if isinstance(block, CrossAttnDownBlock2D):
-                x, res = block(
+                x, res = self._run_block(
+                    block,
                     x,
                     emb,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
                 )
             else:
-                x, res = block(x, emb)
+                x, res = self._run_block(block, x, emb)
 
             res_hidden_states.extend(res)
 
         # 4. mid
-        x = self.mid_block(
+        x = self._run_block(
+            self.mid_block,
             x,
             emb,
             encoder_hidden_states=encoder_hidden_states,
@@ -712,9 +761,10 @@ class SDXLUNet(nn.Module):
         )
 
         # 5. up path
-        for idx, block in enumerate(self.up_blocks):
+        for block in self.up_blocks:
             if isinstance(block, CrossAttnUpBlock2D):
-                x = block(
+                x = self._run_block(
+                    block,
                     x,
                     emb,
                     res_hidden_states_list=res_hidden_states,
@@ -722,7 +772,8 @@ class SDXLUNet(nn.Module):
                     attention_mask=attention_mask,
                 )
             else:
-                x = block(
+                x = self._run_block(
+                    block,
                     x,
                     emb,
                     res_hidden_states_list=res_hidden_states,

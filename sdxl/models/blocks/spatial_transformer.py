@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 
 from ..blocks.basic_transformer_block import BasicTransformerBlock
-from ..blocks.linear import QuantLinear
 
 
 class SpatialTransformer(nn.Module):
@@ -21,7 +20,7 @@ class SpatialTransformer(nn.Module):
         self.inner_dim = num_heads * head_dim
 
         self.norm = nn.GroupNorm(num_groups, in_channels, eps=1e-5, affine=True)
-        self.proj_in = QuantLinear(
+        self.proj_in = nn.Linear(
             in_features=in_channels,
             out_features=self.inner_dim,
             bias=True,
@@ -39,7 +38,7 @@ class SpatialTransformer(nn.Module):
             ]
         )
 
-        self.proj_out = QuantLinear(
+        self.proj_out = nn.Linear(
             in_features=self.inner_dim,
             out_features=in_channels,
             bias=True,

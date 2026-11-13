@@ -2,8 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..blocks.linear import QuantLinear
-
 
 class AttentionBlock(nn.Module):
     def __init__(
@@ -24,24 +22,24 @@ class AttentionBlock(nn.Module):
 
         self.cross_attention_dim = cross_attention_dim or dim
 
-        self.to_q = QuantLinear(
+        self.to_q = nn.Linear(
             in_features=dim,
             out_features=self.inner_dim,
             bias=False,
         )
-        self.to_k = QuantLinear(
+        self.to_k = nn.Linear(
             in_features=self.cross_attention_dim,
             out_features=self.inner_dim,
             bias=False,
         )
-        self.to_v = QuantLinear(
+        self.to_v = nn.Linear(
             in_features=self.cross_attention_dim,
             out_features=self.inner_dim,
             bias=False,
         )
 
         self.to_out = nn.Sequential(
-            QuantLinear(
+            nn.Linear(
                 in_features=self.inner_dim,
                 out_features=dim,
                 bias=True,
