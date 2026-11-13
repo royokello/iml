@@ -415,7 +415,14 @@ class StableDiffusionXLPipeline(
         # 2. Define call parameters
         batch_size = 1
 
-        device = gpu_device or self._execution_device
+        if gpu_device is not None:
+            device = gpu_device
+        elif self.unet.offload_enabled:
+            # The UNet sits on the CPU between blocks, so `_execution_device`
+            # cannot name the device that runs the denoising loop.
+            device = torch.device("cuda")
+        else:
+            device = self._execution_device
 
         # 3. Encode input prompt
         (
@@ -437,7 +444,10 @@ class StableDiffusionXLPipeline(
             self.text_encoder_2.to(device="cpu")
 
         torch.cuda.empty_cache()
-        self.unet.to(device=device)
+        if self.unet.offload_enabled:
+            self.unet.move_resident_layers_to(device)
+        else:
+            self.unet.to(device=device)
 
         # 4. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(
@@ -534,7 +544,12 @@ class StableDiffusionXLPipeline(
         print(f"Total diffusion time: {total_duration:.2f}s", flush=True)
 
         # Move UNet off GPU before loading the VAE for decoding.
-        self.unet.to(device="cpu")
+        if self.unet.offload_enabled:
+            # The streamed blocks already returned to the CPU. Move the resident
+            # layers back so the whole model sits on one device again.
+            self.unet.move_resident_layers_to("cpu")
+        else:
+            self.unet.to(device="cpu")
         torch.cuda.empty_cache()
         self.vae.to(device=device, dtype=torch.float32)
 

@@ -50,6 +50,10 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
     - [`flux3.gen`](#flux3gen)
     - [`flux3.train.main`](#flux3trainmain)
     - [`flux3.sample`](#flux3sample)
+  - [SDXL](#sdxl)
+    - [`sdxl.convert`](#sdxlconvert)
+    - [`sdxl.denoiser.quant`](#sdxldenoiserquant)
+    - [`sdxl.gen`](#sdxlgen)
   - [Ideogram 4](#ideogram-4)
     - [`ideogram.gen`](#ideogramgen)
     - [`ideogram.text_encoder.quant`](#ideogramtext_encoderquant)
@@ -785,6 +789,81 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--text-quant-method` (default: `sym-high-mini`)
   - `--denoiser-quant-method` (default: `sym-med-nano`)
   - `--max-length`
+  - `--offload`
+
+### SDXL
+
+The `sdxl` package prepares, quantizes, and runs SDXL checkpoints. The model folder is `<root>/sdxl/<name>`:
+
+```
+<root>/sdxl/
+  base/
+    unet/                config.json, diffusion_pytorch_model.safetensors
+    text_encoder/        CLIP-L, fp16
+    text_encoder_2/      CLIP-G, fp16
+    vae/                 fp32
+    tokenizer/  tokenizer_2/  scheduler/
+  outputs/
+```
+
+The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<method>_quant.safetensors` file is missing.
+
+#### `sdxl.convert`
+- Features
+  - Converts one single-file SDXL checkpoint into the prepared model folder
+  - `--output` is the exact model folder. It is created if missing
+  - Reads the UNet, VAE, and both text encoders from the checkpoint and writes the tokenizers and the Euler A scheduler
+  - Fails when the output folder is not empty, unless `--overwrite` is set
+- Examples
+  - `python -m sdxl.convert --input "/models/Illustrious-XL-v1.0.safetensors" --output "/iml_root/sdxl/base"`
+- Useful args
+  - `--input`
+  - `--output`
+  - `--overwrite`
+
+#### `sdxl.denoiser.quant`
+- Features
+  - Quantizes the UNet linear weights and saves `<root>/sdxl/<name>/unet/<method>_quant.safetensors`
+  - `--method` defaults to `sym-high`
+  - Attention and projection weights go to `high`. Feed-forward weights go to `low`. The time and additive embeddings stay fp16
+  - `--input` is required; it is the `unet` folder of the converted model
+  - CUDA-only runtime; exits if CUDA is unavailable
+- Examples
+  - `python -m sdxl.denoiser.quant --root "/iml_root" --input "/models/illustrious-xl/unet"`
+  - `python -m sdxl.denoiser.quant --root "/iml_root" --input "/models/illustrious-xl/unet" --method fp16`
+- Useful args
+  - `--root`
+  - `--name`
+  - `--method`
+  - `--input`
+
+#### `sdxl.gen`
+- Features
+  - Generates one image from a prompt and saves it as a PNG in `<root>/sdxl/outputs`
+  - `--output` overrides the output folder
+  - Defaults: 1024×1024, 28 steps, CFG 5.0, seed 19930625
+  - Reads `<root>/sdxl/<name>/unet/<method>_quant.safetensors`. `--no-quant` reads the fp16 UNet file instead
+  - Writes the generation settings into the PNG under the `sdxl` key as JSON
+  - Moves the text encoders off the GPU after prompt encoding, then moves the UNet off before VAE decode
+  - `--offload` streams `down_blocks`, `mid_block`, and `up_blocks` to the GPU one at a time. Peak UNet memory is the largest block (about 2.6 GB) instead of the whole checkpoint (about 5.1 GB)
+  - Decodes the VAE with tiling
+  - CUDA-only runtime; exits if CUDA is unavailable
+- Examples
+  - `python -m sdxl.gen --root "/iml_root" --prompt "a cat holding a sign that says hello world"`
+  - `python -m sdxl.gen --root "/iml_root" --width 832 --height 1216 --steps 30`
+  - `python -m sdxl.gen --root "/iml_root" --no-quant`
+- Useful args
+  - `--root`
+  - `--name`
+  - `--output`
+  - `--prompt`
+  - `--negative`
+  - `--width`, `--height`
+  - `--steps`
+  - `--cfg`
+  - `--seed`
+  - `--method`
+  - `--no-quant`
   - `--offload`
 
 ### Ideogram 4
