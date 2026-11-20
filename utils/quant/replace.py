@@ -25,6 +25,7 @@ def replace_targeted_linear_modules(
     method: str,
     target_linear_names: tuple[str, ...],
     quantize_weights: bool = True,
+    linear_cls: type[QuantizedLinear] = QuantizedLinear,
     path: tuple[str, ...] = (),
     checkpoint_keys: set[str] | None = None,
 ) -> None:
@@ -38,9 +39,9 @@ def replace_targeted_linear_modules(
             setattr(
                 module,
                 name,
-                QuantizedLinear(child, method=method)
+                linear_cls(child, method=method)
                 if quantize_weights
-                else QuantizedLinear.from_prequantized(child, method=method),
+                else linear_cls.from_prequantized(child, method=method),
             )
             continue
         replace_targeted_linear_modules(
@@ -48,6 +49,7 @@ def replace_targeted_linear_modules(
             method=method,
             target_linear_names=target_linear_names,
             quantize_weights=quantize_weights,
+            linear_cls=linear_cls,
             path=child_path,
             checkpoint_keys=checkpoint_keys,
         )

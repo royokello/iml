@@ -33,7 +33,7 @@ from flux2.train.main import _parse_ma_windows, _plot_loss
 from flux3.train.main import format_duration
 from sdxl.config import DEFAULT_MODEL_NAME, resolve_model_root
 from sdxl.denoiser.loader import load_sdxl_denoiser
-from sdxl.denoiser.quantized import move_unstreamed_modules_to
+from utils.quant.streaming import move_unstreamed_modules_to
 from sdxl.lora.config import SDXL_LORA_TARGETS
 from sdxl.train.dataset import DEFAULT_TARGET_RESOLUTION, SDXLDataset
 from sdxl.train.noise import (

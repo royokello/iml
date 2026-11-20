@@ -6,13 +6,14 @@ import torch
 import torch.nn as nn
 from safetensors import safe_open
 
-from sdxl.denoiser.quantized import RecomputeQuantizedLinear, StreamedQuantizedLinear
+from sdxl.denoiser.quantized import RecomputeQuantizedLinear
 from sdxl.denoiser.targets import classify_linear_module
 from sdxl.models._unet import SDXLUNet
 from utils.loaders.single import load_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
 from utils.quant.name import convert_quant_name
 from utils.quant.replace import is_targeted_linear
+from utils.quant.streaming import StreamedQuantizedLinear, pin_quantized_buffers
 
 SINGLE_CHECKPOINT = "diffusion_pytorch_model.safetensors"
 
@@ -125,44 +126,6 @@ def _cast_float_tensors_to_fp16(module: torch.nn.Module) -> None:
 
     for child in module.children():
         _cast_float_tensors_to_fp16(child)
-
-
-def _pin_quantized_buffers(model: torch.nn.Module) -> None:
-    """Move the quantized weights into pinned host memory.
-
-    A streamed layer copies its weights to the GPU on every forward and
-    backward. Pinned host memory makes that copy asynchronous; pageable memory
-    makes it synchronous and about three times slower.
-
-    Args:
-        model: The UNet, already loaded and on the CPU.
-
-    Raises:
-        RuntimeError: If the host cannot pin the weights.
-    """
-    tensor_count = 0
-    total_bytes = 0
-    try:
-        for module in model.modules():
-            if not isinstance(module, QuantizedLinear):
-                continue
-            for name, buffer in list(module._buffers.items()):
-                if buffer is None or buffer.device.type != "cpu" or buffer.is_pinned():
-                    continue
-                pinned = buffer.pin_memory()
-                module._buffers[name] = pinned
-                tensor_count += 1
-                total_bytes += pinned.numel() * pinned.element_size()
-    except RuntimeError as error:
-        raise RuntimeError(
-            "Could not pin the quantized UNet weights in host memory. "
-            f"Pinned {total_bytes / 2**30:.2f} GiB before the failure. "
-            "Free host memory or run without --stream-denoiser."
-        ) from error
-    print(
-        f"    pinned {tensor_count} quantized tensors, {total_bytes / 2**30:.2f} GiB",
-        flush=True,
-    )
 
 
 def _linear_targets(model: torch.nn.Module) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -290,7 +253,7 @@ def load_sdxl_denoiser(
     _materialize_meta_tensors(model)
     _cast_float_tensors_to_fp16(model)
     if stream_denoiser:
-        _pin_quantized_buffers(model)
+        pin_quantized_buffers(model)
     model.eval()
 
     if device is not None:
