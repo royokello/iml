@@ -901,12 +901,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--text-quant-method",
         default="sym-high-mini",
-        help='Text encoder quantization method. "none" keeps checkpoint weights as loaded.',
+        help='Text encoder quantization method. "fp16" keeps checkpoint weights as loaded.',
     )
     parser.add_argument(
         "--denoiser-quant-method",
         default="sym-med-nano",
-        help='Denoiser quantization method. Use "none" to load the fp16 checkpoint directly.',
+        help='Denoiser quantization method. Use "fp16" to load the fp16 checkpoint directly.',
     )
     parser.add_argument(
         "--loras",
@@ -946,8 +946,8 @@ def main() -> None:
         guidance_scale=args.guidance_scale,
         base=args.base,
         ref_size=args.ref_size,
-        text_quant_method=None if args.text_quant_method == "none" else args.text_quant_method,
-        denoiser_quant_method=None if args.denoiser_quant_method == "none" else args.denoiser_quant_method,
+        text_quant_method=None if args.text_quant_method == "fp16" else args.text_quant_method,
+        denoiser_quant_method=None if args.denoiser_quant_method == "fp16" else args.denoiser_quant_method,
         loras=_parse_loras_arg(args.loras),
         max_length=args.max_length,
         offloading=args.offload,

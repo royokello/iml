@@ -413,7 +413,7 @@ def main() -> None:
                         "cfg": args.cfg,
                         "width": sample.width,
                         "height": sample.height,
-                        "method": "none" if args.no_quant else args.method,
+                        "method": "fp16" if args.no_quant else args.method,
                         "prompt": sample.prompt,
                         "negative": args.negative,
                         "scheduler": "EulerAncestralDiscreteScheduler",

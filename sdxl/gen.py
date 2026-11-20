@@ -216,7 +216,7 @@ def generate_image(
         "cfg": cfg,
         "width": width,
         "height": height,
-        "method": "none" if no_quant else method,
+        "method": "fp16" if no_quant else method,
         "offload": offload,
         "loras": [
             {"path": str(path), "strength": strength, "format": format_of(path)}

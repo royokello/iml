@@ -504,12 +504,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--text-quant-method",
         default="sym-high-mini",
-        help='Text encoder quantization method. "none" loads the fp16 weights.',
+        help='Text encoder quantization method. "fp16" loads the fp16 weights.',
     )
     parser.add_argument(
         "--denoiser-quant-method",
         default="sym-med-nano",
-        help='Denoiser quantization method. "none" loads the fp16 weights.',
+        help='Denoiser quantization method. "fp16" loads the fp16 weights.',
     )
     parser.add_argument(
         "--loras",
@@ -529,8 +529,8 @@ def main() -> None:
     from PIL.PngImagePlugin import PngInfo
 
     steps, guidance_scale = _resolve_settings(args.base, args.steps, args.guidance_scale)
-    text_quant = None if args.text_quant_method == "none" else args.text_quant_method
-    denoiser_quant = None if args.denoiser_quant_method == "none" else args.denoiser_quant_method
+    text_quant = None if args.text_quant_method == "fp16" else args.text_quant_method
+    denoiser_quant = None if args.denoiser_quant_method == "fp16" else args.denoiser_quant_method
     loras = _parse_loras_arg(args.loras)
 
     images = generate_image(

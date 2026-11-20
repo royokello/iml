@@ -60,8 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-seed", "--sample_seed", dest="sample_seed", type=int, default=DEFAULT_SAMPLE_SEED)
     parser.add_argument("--sample-indices", dest="sample_indices", type=str, default=None)
     parser.add_argument("--trigger", type=str, help="Required for captionless datasets.")
-    parser.add_argument("--text-quant-method", default="sym-high-mini", help='"none" loads the fp16 weights.')
-    parser.add_argument("--denoiser-quant-method", default="sym-med-nano", help='"none" loads the fp16 weights.')
+    parser.add_argument("--text-quant-method", default="sym-high-mini", help='"fp16" loads the fp16 weights.')
+    parser.add_argument("--denoiser-quant-method", default="sym-med-nano", help='"fp16" loads the fp16 weights.')
     parser.add_argument("--max-length", type=int, default=512, help="Maximum text tokens.")
     parser.add_argument(
         "--offload",
@@ -146,8 +146,8 @@ def main() -> None:
         raise RuntimeError("CUDA is not available in this environment.")
 
     model_root = resolve_model_root(args.root)
-    text_quant = None if args.text_quant_method == "none" else args.text_quant_method
-    denoiser_quant = None if args.denoiser_quant_method == "none" else args.denoiser_quant_method
+    text_quant = None if args.text_quant_method == "fp16" else args.text_quant_method
+    denoiser_quant = None if args.denoiser_quant_method == "fp16" else args.denoiser_quant_method
     variant = "distill" if args.distill else "base"
     steps, guidance_scale = _resolve_settings(not args.distill, args.steps, args.guidance_scale)
     use_cfg = not args.distill and guidance_scale != 1.0
