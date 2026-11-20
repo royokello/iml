@@ -23,6 +23,3 @@ SDXL_TEXT_TARGETS = (
     "mlp.fc1",
     "mlp.fc2",
 )
-
-SDXL_LORA_RANK = 32
-SDXL_LORA_ALPHA = 16

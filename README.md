@@ -869,6 +869,36 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - `--offload`
   - `--loras`
 
+#### `sdxl.train.main`
+- Features
+  - Trains a LoRA on `<project>/images/<id>.png`, with an optional `<id>.txt` caption, on the `sym-high` quantized UNet
+  - Resizes every image so the short side is `--target-res` and the aspect ratio is kept. Sides round to 32
+  - Skips an image below `--target-res` unless `--target-upscale` is set
+  - Encodes text and latents first, then frees the text encoders and the VAE. The loop holds only the UNet and the LoRA state
+  - Gradient checkpointing on `down_blocks`, `mid_block`, and `up_blocks` is on by default. `--no-gradient-checkpointing` keeps the activations and is faster, but needs about 2 GB more VRAM
+  - `--cache-text` writes `<id>.text.safetensors`. `--cache-images` writes `<id>.<res>.safetensors`. Both sit next to the images
+  - Saves `<step>.safetensors` and `<step>.optimizer.pt` under `<project>/models`, plus `steps.csv`, `stop.txt`, and `loss.png`
+  - Prints one line per step in the Flux 3 format: step time, the load/forward/backward split, the gradient norm, and the ETA
+  - Logs the loss and refreshes `loss.png` every 8 steps. `--ma` overrides the moving-average windows, which default to the sample count and the checkpoint interval
+  - Delete `models/stop.txt` to stop cleanly after the current step
+  - Checkpoint metadata: `rank`, `alpha`, `step`, `base`, `targets`
+  - `--resume` continues from the highest step in `<project>/models`
+  - The output loads straight into `sdxl.gen --loras`
+  - CUDA-only runtime; exits if CUDA is unavailable
+- Examples
+  - `python -m sdxl.train.main --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --cache-images --cache-text`
+  - `python -m sdxl.train.main --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --steps 512 --rank 16 --alpha 8`
+  - `python -m sdxl.train.main --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --resume`
+- Useful args
+  - `--root`, `--name`, `--project`
+  - `--steps`, `--lr`, `--seed`
+  - `--rank`, `--alpha`
+  - `--noise-offset`, `--min-snr-gamma`, `--max-grad-norm`
+  - `--target-res`, `--target-upscale`
+  - `--no-gradient-checkpointing`
+  - `--cache-images`, `--cache-text`
+  - `--checkpoint-steps`, `--resume`
+
 ### Ideogram 4
 
 #### `ideogram.gen`

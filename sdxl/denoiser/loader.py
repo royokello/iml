@@ -3,14 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 from safetensors import safe_open
 
+from sdxl.denoiser.quantized import RecomputeQuantizedLinear
 from sdxl.denoiser.targets import classify_linear_module
 from sdxl.models._unet import SDXLUNet
 from utils.loaders.single import load_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
 from utils.quant.name import convert_quant_name
-from utils.quant.replace import replace_targeted_linear_modules
+from utils.quant.replace import is_targeted_linear
 
 SINGLE_CHECKPOINT = "diffusion_pytorch_model.safetensors"
 
@@ -48,6 +50,49 @@ def _materialize_meta_tensors(model: torch.nn.Module) -> None:
             "Checkpoint load left tensors on meta. "
             f"Parameters: {', '.join(unresolved_parameters) or 'none'}. "
             f"Buffers: {', '.join(unresolved_buffers) or 'none'}."
+        )
+
+
+def _replace_with_recompute_linear(
+    module: torch.nn.Module,
+    *,
+    method: str,
+    target_linear_names: tuple[str, ...],
+    checkpoint_keys: set[str],
+    path: tuple[str, ...] = (),
+) -> None:
+    """Swap targeted `nn.Linear` modules for `RecomputeQuantizedLinear`.
+
+    The modules load their buffers from the checkpoint, so the swap must run
+    before the checkpoint load.
+
+    Args:
+        module: The module to walk.
+        method: The quantization method of this group.
+        target_linear_names: The module paths to replace.
+        checkpoint_keys: The checkpoint tensor names. A module is replaced only
+            when the file holds its `.sub_scales`.
+        path: The module path reached so far.
+    """
+    for name, child in list(module.named_children()):
+        child_path = (*path, name)
+        if isinstance(child, nn.Linear) and is_targeted_linear(
+            child_path,
+            target_linear_names,
+            checkpoint_keys=checkpoint_keys,
+        ):
+            setattr(
+                module,
+                name,
+                RecomputeQuantizedLinear.from_prequantized(child, method=method),
+            )
+            continue
+        _replace_with_recompute_linear(
+            child,
+            method=method,
+            target_linear_names=target_linear_names,
+            checkpoint_keys=checkpoint_keys,
+            path=child_path,
         )
 
 
@@ -160,18 +205,16 @@ def load_sdxl_denoiser(
         high_method, low_method = convert_quant_name(quant_method)
         checkpoint_keys = _list_checkpoint_keys(checkpoint_path)
         high_targets, low_targets = _linear_targets(model)
-        replace_targeted_linear_modules(
+        _replace_with_recompute_linear(
             model,
             method=high_method,
             target_linear_names=high_targets,
-            quantize_weights=False,
             checkpoint_keys=checkpoint_keys,
         )
-        replace_targeted_linear_modules(
+        _replace_with_recompute_linear(
             model,
             method=low_method,
             target_linear_names=low_targets,
-            quantize_weights=False,
             checkpoint_keys=checkpoint_keys,
         )
 

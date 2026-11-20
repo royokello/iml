@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint as checkpoint_fn
 
 from .blocks.cross_attn_down_block_2d import CrossAttnDownBlock2D
 from .blocks.cross_attn_up_block_2d import CrossAttnUpBlock2D
@@ -288,6 +289,20 @@ class SDXLUNet(nn.Module):
         ).to(torch.float16)
 
         self._offload_device: Optional[torch.device] = None
+        self.gradient_checkpointing = False
+
+    def enable_gradient_checkpointing(self) -> None:
+        """Recompute the top-level block activations in `backward`.
+
+        This lowers peak memory at a cost of about 30 percent more step time. It
+        does not combine with block offload, because the recompute needs the
+        weights that the offload moved back to the CPU.
+        """
+        self.gradient_checkpointing = True
+
+    def disable_gradient_checkpointing(self) -> None:
+        """Keep the block activations for `backward`."""
+        self.gradient_checkpointing = False
 
     def enable_block_offload(self, device: torch.device) -> None:
         """Stream the three top-level blocks to `device` one at a time.
@@ -341,6 +356,114 @@ class SDXLUNet(nn.Module):
         if self._offload_device is not None:
             block.to("cpu", non_blocking=True)
         return output
+
+    def _run_down_blocks(
+        self,
+        x: torch.Tensor,
+        emb: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, ...]]:
+        """Run the down path and collect the skip tensors.
+
+        Args:
+            x: The `conv_in` output.
+            emb: The time embedding.
+            encoder_hidden_states: The text conditioning.
+            attention_mask: The optional attention mask.
+
+        Returns:
+            The last block output and the skip tensors, which start with the
+            `conv_in` output.
+        """
+        res_hidden_states: list[torch.Tensor] = [x]
+
+        for block in self.down_blocks:
+            if isinstance(block, CrossAttnDownBlock2D):
+                x, res = self._run_block(
+                    block,
+                    x,
+                    emb,
+                    encoder_hidden_states=encoder_hidden_states,
+                    attention_mask=attention_mask,
+                )
+            else:
+                x, res = self._run_block(block, x, emb)
+
+            res_hidden_states.extend(res)
+
+        return x, tuple(res_hidden_states)
+
+    def _run_mid_block(
+        self,
+        x: torch.Tensor,
+        emb: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Run the mid block.
+
+        Args:
+            x: The down path output.
+            emb: The time embedding.
+            encoder_hidden_states: The text conditioning.
+            attention_mask: The optional attention mask.
+
+        Returns:
+            The mid block output.
+        """
+        return self._run_block(
+            self.mid_block,
+            x,
+            emb,
+            encoder_hidden_states=encoder_hidden_states,
+            attention_mask=attention_mask,
+        )
+
+    def _run_up_blocks(
+        self,
+        x: torch.Tensor,
+        emb: torch.Tensor,
+        skips: Tuple[torch.Tensor, ...],
+        encoder_hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor],
+    ) -> torch.Tensor:
+        """Run the up path.
+
+        The up blocks pop from the skip list, so this method pops from a local
+        copy. A recompute in `backward` then sees the same input list.
+
+        Args:
+            x: The mid block output.
+            emb: The time embedding.
+            skips: The skip tensors from the down path.
+            encoder_hidden_states: The text conditioning.
+            attention_mask: The optional attention mask.
+
+        Returns:
+            The last block output.
+        """
+        remaining = list(skips)
+
+        for block in self.up_blocks:
+            if isinstance(block, CrossAttnUpBlock2D):
+                x = self._run_block(
+                    block,
+                    x,
+                    emb,
+                    res_hidden_states_list=remaining,
+                    encoder_hidden_states=encoder_hidden_states,
+                    attention_mask=attention_mask,
+                )
+            else:
+                x = self._run_block(
+                    block,
+                    x,
+                    emb,
+                    res_hidden_states_list=remaining,
+                )
+
+        return x
 
     def _collect_skip_channels_for_up_blocks(self) -> list[int]:
         """
@@ -734,50 +857,59 @@ class SDXLUNet(nn.Module):
         # 2. pre-process (following the original modified logic)
         x = self.conv_in(sample)  # [B, 4, H, W] -> [B, 320, H, W]
 
-        res_hidden_states: list[torch.Tensor] = [x]
-
-        # 3. down path
-        for block in self.down_blocks:
-            if isinstance(block, CrossAttnDownBlock2D):
-                x, res = self._run_block(
-                    block,
-                    x,
-                    emb,
-                    encoder_hidden_states=encoder_hidden_states,
-                    attention_mask=attention_mask,
-                )
-            else:
-                x, res = self._run_block(block, x, emb)
-
-            res_hidden_states.extend(res)
-
-        # 4. mid
-        x = self._run_block(
-            self.mid_block,
-            x,
-            emb,
-            encoder_hidden_states=encoder_hidden_states,
-            attention_mask=attention_mask,
+        use_checkpoint = (
+            self.training
+            and self.gradient_checkpointing
+            and self._offload_device is None
         )
 
+        # 3. down path
+        if use_checkpoint:
+            x, res_hidden_states = checkpoint_fn(
+                self._run_down_blocks,
+                x,
+                emb,
+                encoder_hidden_states,
+                attention_mask,
+                use_reentrant=False,
+            )
+        else:
+            x, res_hidden_states = self._run_down_blocks(
+                x, emb, encoder_hidden_states, attention_mask
+            )
+
+        # 4. mid
+        if use_checkpoint:
+            x = checkpoint_fn(
+                self._run_mid_block,
+                x,
+                emb,
+                encoder_hidden_states,
+                attention_mask,
+                use_reentrant=False,
+            )
+        else:
+            x = self._run_mid_block(x, emb, encoder_hidden_states, attention_mask)
+
         # 5. up path
-        for block in self.up_blocks:
-            if isinstance(block, CrossAttnUpBlock2D):
-                x = self._run_block(
-                    block,
-                    x,
-                    emb,
-                    res_hidden_states_list=res_hidden_states,
-                    encoder_hidden_states=encoder_hidden_states,
-                    attention_mask=attention_mask,
-                )
-            else:
-                x = self._run_block(
-                    block,
-                    x,
-                    emb,
-                    res_hidden_states_list=res_hidden_states,
-                )
+        if use_checkpoint:
+            x = checkpoint_fn(
+                self._run_up_blocks,
+                x,
+                emb,
+                res_hidden_states,
+                encoder_hidden_states,
+                attention_mask,
+                use_reentrant=False,
+            )
+        else:
+            x = self._run_up_blocks(
+                x,
+                emb,
+                res_hidden_states,
+                encoder_hidden_states,
+                attention_mask,
+            )
 
         # 6. Post
         x = self.conv_norm_out(x)
