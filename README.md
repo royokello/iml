@@ -751,7 +751,7 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--target-upscale`, `--ref-upscale`
   - `--lr` (default: `1e-4`)
   - `--seed`
-  - `--moving-averages`
+  - `--moving-averages` (default: the sample count and the checkpoint interval)
   - `--checkpoint-steps` (default: `256`)
   - `--max-length` (default: `512`)
 

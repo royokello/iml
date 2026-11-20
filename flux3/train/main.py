@@ -89,7 +89,6 @@ def main(
     max_grad_norm: float = DEFAULT_MAX_GRAD_NORM,
     shuffle: bool = False,
 ) -> None:
-    ma_windows = ma_windows or [32]
     print("Training Started ...")
     print(f"  * seed: {seed}")
     print(f"  * shuffle: {shuffle}")
@@ -139,7 +138,7 @@ def main(
 
     if current_step >= steps:
         print(f"  * latest checkpoint step {current_step} is already at max steps {steps}; nothing to train")
-        _plot_loss(logs_filepath, models_dirpath / "loss.png", ma_windows=ma_windows)
+        _plot_loss(logs_filepath, models_dirpath / "loss.png", ma_windows=ma_windows or [])
         return
 
     # LOAD DATASET
@@ -159,6 +158,10 @@ def main(
     dataset_size = len(dataset.target_latents)
     if dataset_size == 0:
         raise ValueError("Training dataset has no target image latents.")
+
+    if ma_windows is None:
+        ma_windows = _parse_ma_windows(f"{dataset_size},{checkpoint_steps}")
+
     current_epoch = (current_step // dataset_size) + 1
     first_sample_index = current_step % dataset_size
 
@@ -450,8 +453,11 @@ def parse_args() -> argparse.Namespace:
         "--ma",
         dest="ma_windows",
         type=str,
-        default="32",
-        help="Comma-separated moving average window sizes for the loss plot, up to 3 values (default: 32).",
+        default=None,
+        help=(
+            "Comma-separated moving average window sizes for the loss plot, up to 3 values "
+            "(default: the sample count and the checkpoint interval)."
+        ),
     )
     parser.add_argument(
         "--checkpoint-steps", type=int, default=256, help="Save checkpoint every N steps (default: 256)"
@@ -468,7 +474,7 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    ma_windows = _parse_ma_windows(args.ma_windows)
+    ma_windows = _parse_ma_windows(args.ma_windows) if args.ma_windows else None
 
     print("1. Run training epochs ...")
 
