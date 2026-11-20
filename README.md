@@ -426,7 +426,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Supports optional image conditioning with `--images "img1.png, img2.png"` by encoding reference images into latent tokens
   - Reference images are resized so their longest side is at most `--ref-size`, then cropped to the nearest valid VAE multiple before encoding
   - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `fp16`, `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
-  - Passing `--text-quant-method none` or `--denoiser-quant-method none` keeps the original fp16 checkpoint weights
+  - Passing `--text-quant-method fp16` or `--denoiser-quant-method fp16` keeps the original fp16 checkpoint weights
   - Saved quantized checkpoints are loaded automatically when present:
     - text encoder: `<root>/<model>/model/text_encoder/symmetric_high_quant.safetensors`, `symmetric_med_quant.safetensors`, `affine_high_quant.safetensors`, `affine_med_quant.safetensors`, or `affine_low_quant.safetensors`
     - denoiser: `<root>/<model>/model/transformer/<variant>/symmetric_high_quant.safetensors`, `symmetric_med_quant.safetensors`, `affine_high_quant.safetensors`, `affine_med_quant.safetensors`, or `affine_low_quant.safetensors`
@@ -441,7 +441,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Apply LoRAs during generation:
     - `python -m flux2.gen --root "/models/flux" --version 9b --prompt "stylized character art" --loras "/models/lora/style.safetensors:0.8,/models/lora/character.safetensors:1.0"`
   - Disable denoiser quantization and force full-precision checkpoint weights as loaded:
-    - `python -m flux2.gen --root "/models/flux" --version 4b --prompt "product render on white seamless" --denoiser-quant-method none`
+    - `python -m flux2.gen --root "/models/flux" --version 4b --prompt "product render on white seamless" --denoiser-quant-method fp16`
 - Useful args
   - `--root`
   - `--version`
@@ -457,6 +457,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - `--denoiser-quant-method`
   - `--loras`
   - `--max-length`
+  - `--stream-denoiser`
 
 #### `flux2.train.main`
 - Current scope
@@ -699,7 +700,7 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--base` uses the base model: `50` steps, CFG `3.5`, and a negative prompt
   - `--images "a.png, b.png"` adds reference images. Their short side is resized to `--ref-size`
   - `--text-quant-method` and `--denoiser-quant-method` pick a saved quant file. `fp16` loads the fp16 weights
-  - `--offload` streams the denoiser blocks to the GPU one at a time
+  - `--stream-denoiser` streams the quantized weights from pinned host memory, one layer at a time
   - `--loras "path1:1.0,path2:0.7"` applies LoRA checkpoints
 - Examples
   - `python -m flux3.gen --root "/iml_root" --prompt "a cat holding a sign that says hello world"`
@@ -720,7 +721,7 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--denoiser-quant-method`
   - `--loras`
   - `--max-length`
-  - `--offload`
+  - `--stream-denoiser`
 
 #### `flux3.train.main`
 - Features
@@ -773,7 +774,7 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - The base denoiser is the default and uses CFG with an empty negative prompt (`--guidance-scale`, default `3.5`). `1.0` turns the negative pass off
   - `--distill` loads the distill denoiser, with no guidance
   - Reads existing latent and text caches from the project. It does not write caches
-  - `--offload` streams the denoiser blocks to the GPU one at a time
+  - `--stream-denoiser` streams the quantized weights from pinned host memory, one layer at a time
 - Examples
   - `python -m flux3.sample --root "/iml_root" --project "/data/flux3_dataset" --denoiser-quant-method aff-med --sample-indices "1,2"`
   - `python -m flux3.sample --root "/iml_root" --project "/data/flux3_dataset" --prompt "TOK on a beach" --steps 30`
@@ -794,7 +795,7 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--text-quant-method` (default: `sym-high-mini`)
   - `--denoiser-quant-method` (default: `sym-med-nano`)
   - `--max-length`
-  - `--offload`
+  - `--stream-denoiser`
 
 ### SDXL
 
@@ -842,7 +843,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - Reads `<root>/sdxl/<name>/unet/<method>_quant.safetensors`. `--no-quant` reads the fp16 UNet file instead
   - Writes the generation settings into the PNG under the `sdxl` key as JSON
   - Moves the text encoders off the GPU after prompt encoding, then moves the UNet off before VAE decode
-  - `--offload` streams `down_blocks`, `mid_block`, and `up_blocks` to the GPU one at a time. Peak UNet memory is the largest block (about 2.6 GB) instead of the whole checkpoint (about 5.1 GB)
+  - `--stream-denoiser` keeps the quantized weights in pinned host memory and copies each layer to the GPU for its own multiply. It needs a quantized checkpoint
   - `--loras` loads kohya or native LoRA checkpoints into the UNet and the text encoders. Each entry is `path:strength`, and the strength multiplies that checkpoint only
   - Several LoRAs add together. The checkpoints may use different ranks: every module is injected at the largest rank of the list, and a smaller checkpoint writes its factors into the leading block, so its result is exact
   - Decodes the VAE with tiling
@@ -865,7 +866,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - `--seed`
   - `--method`
   - `--no-quant`
-  - `--offload`
+  - `--stream-denoiser`
   - `--loras`
 
 #### `sdxl.train.main`
@@ -912,7 +913,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - `--sample-indices "1,2,3"` picks 1-based dataset positions, in the order the trainer uses. The output size comes from the aspect ratio of each image and `--target-res`, rounded to a multiple of 32
   - The noise is deterministic per sample name: `--sample-seed` and the file stem
   - Writes the checkpoint, step, seed, prompt, and sampler settings into the PNG under the `sdxl` key as JSON
-  - `--offload` streams `down_blocks`, `mid_block`, and `up_blocks` to the GPU one at a time
+  - `--stream-denoiser` keeps the quantized weights in pinned host memory and copies each layer to the GPU for its own multiply
 - Examples
   - `python -m sdxl.sample --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --sample-indices "1,2,3"`
   - `python -m sdxl.sample --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --start 256 --steps 30`
@@ -926,7 +927,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - `--cfg`, `--negative`
   - `--sample-seed`, `--sample-indices`
   - `--method`, `--no-quant`
-  - `--offload`
+  - `--stream-denoiser`
 
 ### Ideogram 4
 

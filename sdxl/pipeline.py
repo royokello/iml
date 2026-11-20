@@ -16,6 +16,7 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline, StableDiffusio
 from diffusers.utils.torch_utils import randn_tensor
 
 from .models._unet import SDXLUNet
+from utils.quant.streaming import has_streamed_layers, move_unstreamed_modules_to
 
 def rescale_noise_cfg(noise_cfg, noise_pred_text, guidance_rescale=0.0):
     r"""
@@ -417,9 +418,10 @@ class StableDiffusionXLPipeline(
 
         if gpu_device is not None:
             device = gpu_device
-        elif self.unet.offload_enabled:
-            # The UNet sits on the CPU between blocks, so `_execution_device`
-            # cannot name the device that runs the denoising loop.
+        elif has_streamed_layers(self.unet):
+            # The packed UNet weights stay in host memory, so the UNet sits on
+            # the CPU between layers and `_execution_device` cannot name the
+            # device that runs the denoising loop.
             device = torch.device("cuda")
         else:
             device = self._execution_device
@@ -444,10 +446,7 @@ class StableDiffusionXLPipeline(
             self.text_encoder_2.to(device="cpu")
 
         torch.cuda.empty_cache()
-        if self.unet.offload_enabled:
-            self.unet.move_resident_layers_to(device)
-        else:
-            self.unet.to(device=device)
+        move_unstreamed_modules_to(self.unet, device)
 
         # 4. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(
@@ -544,12 +543,7 @@ class StableDiffusionXLPipeline(
         print(f"Total diffusion time: {total_duration:.2f}s", flush=True)
 
         # Move UNet off GPU before loading the VAE for decoding.
-        if self.unet.offload_enabled:
-            # The streamed blocks already returned to the CPU. Move the resident
-            # layers back so the whole model sits on one device again.
-            self.unet.move_resident_layers_to("cpu")
-        else:
-            self.unet.to(device="cpu")
+        move_unstreamed_modules_to(self.unet, torch.device("cpu"))
         torch.cuda.empty_cache()
         self.vae.to(device=device, dtype=torch.float32)
 

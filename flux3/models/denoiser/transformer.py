@@ -158,36 +158,12 @@ class Flux3Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, FromOri
         self.proj_out = nn.Linear(self.inner_dim, in_channels, bias=False)
 
         self.gradient_checkpointing = False
-        self._offload_device: torch.device | None = None
-
-    def enable_block_offload(self, device: torch.device) -> None:
-        """Stream the blocks to `device` one at a time during `forward`.
-
-        Each block moves to `device` before it runs and back to the CPU after
-        it runs. The resident layers must already be on `device`. Call
-        `move_resident_layers_to(model, device)` from the loader first.
-
-        Args:
-            device: The device that runs the blocks.
-        """
-        self._offload_device = device
-
-    def disable_block_offload(self) -> None:
-        """Stop the block streaming. `forward` then uses the current block devices."""
-        self._offload_device = None
 
     def _run_block(self, block: nn.Module, *args: torch.Tensor | tuple[torch.Tensor, torch.Tensor]):
-        if self._offload_device is not None:
-            block.to(self._offload_device, non_blocking=True)
-
+        """Run one block, recomputing its activations when checkpointing is on."""
         if torch.is_grad_enabled() and self.gradient_checkpointing:
-            output = self._gradient_checkpointing_func(block, *args)
-        else:
-            output = block(*args)
-
-        if self._offload_device is not None:
-            block.to("cpu", non_blocking=True)
-        return output
+            return self._gradient_checkpointing_func(block, *args)
+        return block(*args)
 
     @apply_lora_scale("attention_kwargs")
     def forward(

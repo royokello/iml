@@ -113,9 +113,13 @@ def parse_args() -> argparse.Namespace:
         help="Read the fp16 UNet checkpoint instead of the quantized one.",
     )
     parser.add_argument(
-        "--offload",
+        "--stream-denoiser",
+        dest="stream_denoiser",
         action="store_true",
-        help="Stream down_blocks, mid_block, and up_blocks to the GPU one at a time.",
+        help=(
+            "Keep the quantized weights in pinned host memory and copy each layer to the GPU "
+            "for its own multiply. Needs a quantized checkpoint."
+        ),
     )
     return parser.parse_args()
 
@@ -301,6 +305,7 @@ def main() -> None:
     from sdxl.lora.config import SDXL_LORA_TARGETS
     from sdxl.pipeline import StableDiffusionXLPipeline
     from sdxl.train.main import _load_lora_state, _read_metadata
+    from utils.quant.streaming import move_unstreamed_modules_to
     from utils.seed import image_seed
 
     if not torch.cuda.is_available():
@@ -338,15 +343,19 @@ def main() -> None:
     scheduler = EulerAncestralDiscreteScheduler.from_pretrained(str(model_root / "scheduler"), local_files_only=True)
     scheduler.set_timesteps(args.steps, device=device)
 
-    unet = load_sdxl_denoiser(model_root, quant_method=None if args.no_quant else args.method)
+    unet = load_sdxl_denoiser(
+        model_root,
+        quant_method=None if args.no_quant else args.method,
+        stream_denoiser=args.stream_denoiser,
+    )
     injected = inject_trainable_lora_modules(
         unet,
         target_linear_names=SDXL_LORA_TARGETS,
         rank=rank,
         alpha=alpha,
     )
-    if args.offload:
-        unet.enable_block_offload(device)
+    if args.stream_denoiser:
+        move_unstreamed_modules_to(unet, device)
     else:
         unet = unet.to(device)
     print(f"  * injected lora modules: {len(injected)}", flush=True)

@@ -23,19 +23,6 @@ from flux2.models.denoiser.transformer import Flux2Transformer2DModel
 from flux2.denoiser.targets import _build_flux2_denoiser_target_tensors
 
 
-_RESIDENT_MODULE_NAMES = (
-    "pos_embed",
-    "time_guidance_embed",
-    "double_stream_modulation_img",
-    "double_stream_modulation_txt",
-    "single_stream_modulation",
-    "x_embedder",
-    "context_embedder",
-    "norm_out",
-    "proj_out",
-)
-
-
 def _materialize_meta_tensors(model: torch.nn.Module) -> None:
     unresolved_parameters = [name for name, parameter in model.named_parameters()
                              if getattr(parameter, "is_meta", False)]
@@ -91,58 +78,6 @@ def _build_model_from_config(model_dir: Path, *, device: str = "meta") -> Flux2T
 def _list_checkpoint_keys(checkpoint_path: Path) -> set[str]:
     with safe_open(str(checkpoint_path), framework="pt", device="cpu") as handle:
         return set(handle.keys())
-
-
-def move_resident_layers_to(model: Flux2Transformer2DModel, device: torch.device) -> None:
-    """Move always-resident layers to `device`.
-
-    The two block lists (`transformer_blocks`, `single_transformer_blocks`)
-    are intentionally left in place; they are streamed to `device` per-block
-    during `forward` when `enable_block_offload` is set.
-    """
-    for name in _RESIDENT_MODULE_NAMES:
-        if not hasattr(model, name):
-            continue
-        module = getattr(model, name)
-        if isinstance(module, torch.nn.Module):
-            module.to(device)
-
-
-def pin_module_parameters(model: torch.nn.Module) -> int:
-    """Pin all float parameters/buffers of `model` to host-pinned memory.
-
-    Returns the number of tensors pinned. Each pinned tensor can be transferred
-    to CUDA asynchronously with `non_blocking=True`. Use this for the CPU
-    master copy under `--pin-memory`.
-    """
-    pinned = 0
-    for parameter_name, parameter in list(model.named_parameters(recurse=True)):
-        if parameter is None or not parameter.is_floating_point():
-            continue
-        if parameter.device.type != "cpu":
-            continue
-        if not parameter.is_contiguous():
-            parameter.data = parameter.data.contiguous()
-        pinned_tensor = torch.empty_like(parameter.data, device="cpu", pin_memory=True)
-        pinned_tensor.copy_(parameter.data)
-        module_path, _, param_name = parameter_name.rpartition(".")
-        parent = model.get_submodule(module_path) if module_path else model
-        parent._parameters[param_name] = torch.nn.Parameter(pinned_tensor, requires_grad=parameter.requires_grad)
-        pinned += 1
-    for buffer_name, buffer in list(model.named_buffers(recurse=True)):
-        if buffer is None or not buffer.is_floating_point():
-            continue
-        if buffer.device.type != "cpu":
-            continue
-        if not buffer.is_contiguous():
-            buffer = buffer.contiguous()
-        pinned_buffer = torch.empty_like(buffer, device="cpu", pin_memory=True)
-        pinned_buffer.copy_(buffer)
-        module_path, _, buf_name = buffer_name.rpartition(".")
-        parent = model.get_submodule(module_path) if module_path else model
-        parent._buffers[buf_name] = pinned_buffer
-        pinned += 1
-    return pinned
 
 
 def _load_flux2_denoiser(

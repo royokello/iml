@@ -90,22 +90,26 @@ def _inject_loras(denoiser, loras: dict[str, float]) -> int:
 
 
 @contextlib.contextmanager
-def _denoiser_on_device(denoiser, device, *, offloading: bool):
+def _denoiser_on_device(denoiser, device, *, stream_denoiser: bool):
     """Place a caller denoiser for one denoise pass. Restore it on exit."""
-    from flux3.denoiser.loader import move_resident_layers_to
+    from utils.quant.streaming import (
+        enable_streaming,
+        move_unstreamed_modules_to,
+        pin_quantized_buffers,
+    )
 
     original_device = _module_device(denoiser)
     try:
-        if offloading:
-            move_resident_layers_to(denoiser, device)
-            denoiser.enable_block_offload(device)
+        if stream_denoiser:
+            if enable_streaming(denoiser):
+                pin_quantized_buffers(denoiser)
+            move_unstreamed_modules_to(denoiser, device)
         else:
             denoiser.to(device)
         yield denoiser
     finally:
-        if offloading:
-            denoiser.disable_block_offload()
-            move_resident_layers_to(denoiser, original_device)
+        if stream_denoiser:
+            move_unstreamed_modules_to(denoiser, original_device)
         else:
             denoiser.to(original_device)
 
@@ -126,9 +130,11 @@ def denoise(
     """Run the Euler denoise loop of Flux 3 Klein.
 
     Gen and sample use this function, so both use the same sigmas, Euler step,
-    and CFG formula. The denoiser must be on the CUDA device, or must have
-    block offload on. The function reads `flow_map` from the denoiser config.
-    A flow-map denoiser gets the next sigma as `target_timestep`.
+    and CFG formula. The denoiser must have its parameters on the CUDA device.
+    When the denoiser streams, its packed weights stay in host memory and each
+    layer copies itself in for its own multiply. The function reads `flow_map`
+    from the denoiser config. A flow-map denoiser gets the next sigma as
+    `target_timestep`.
 
     Args:
         denoiser: The Flux 3 denoiser.
@@ -204,7 +210,7 @@ def generate_image(
     denoiser_quant_method: str | None = None,
     loras: dict[str, float] | None = None,
     max_length: int = 512,
-    offloading: bool = False,
+    stream_denoiser: bool = False,
     tokenizer: Qwen2TokenizerFast | None = None,
     text_encoder: Qwen3Model | None = None,
     denoiser: Flux3Transformer2DModel | None = None,
@@ -246,7 +252,11 @@ def generate_image(
             copy needs one extra denoiser-sized block of host memory. The
             passed denoiser is not changed.
         max_length: Maximum tokenizer sequence length.
-        offloading: Stream denoiser blocks to the CUDA device one at a time.
+        stream_denoiser: Keep the quantized weights in pinned host memory and
+            copy each layer to the CUDA device for its own multiply. Applies
+            to a loaded denoiser and to a passed denoiser whose packed weights
+            are still on the CPU. A passed denoiser goes back to its original
+            device after the call.
         tokenizer: Pre-loaded tokenizer. Defaults to None (load from disk).
         text_encoder: Pre-loaded text encoder. Defaults to None (load from
             disk).
@@ -262,11 +272,7 @@ def generate_image(
             or alpha, or if the denoise run produces inf or NaN values.
         ValueError: If a passed denoiser does not match `base`.
     """
-    from flux3.denoiser.loader import (
-        load_flux3_denoiser,
-        move_resident_layers_to,
-        pin_module_parameters,
-    )
+    from flux3.denoiser.loader import load_flux3_denoiser
     from flux3.inputs import (
         build_sigmas,
         decode_tokens,
@@ -277,6 +283,11 @@ def generate_image(
     )
     from flux3.text_encoder.loader import load_flux3_text_encoder
     from flux2.lora.loader import load_checkpoint as load_lora_checkpoint
+    from utils.quant.streaming import (
+        enable_streaming,
+        move_unstreamed_modules_to,
+        pin_quantized_buffers,
+    )
     from utils.seed import image_seed
 
     import torch
@@ -384,14 +395,15 @@ def generate_image(
     if denoiser is None:
         print("  * loading transformer ...")
         print(f"    variant: {variant}")
-        print(f"    quantization: {denoiser_quant_method or 'none'}")
-        print(f"    offloading: {offloading}")
+        print(f"    quantization: {denoiser_quant_method or 'fp16'}")
+        print(f"    stream denoiser: {'on' if stream_denoiser else 'off'}")
         torch.cuda.empty_cache()
         transformer = load_flux3_denoiser(
             model_root / "transformer",
             denoiser_quant_method,
             variant,
-            offloading=offloading,
+            offloading=stream_denoiser,
+            stream_denoiser=stream_denoiser,
         )
     else:
         print("  * using caller-provided transformer")
@@ -403,11 +415,10 @@ def generate_image(
         print("  * applying loras ...")
         print(f"    injected lora modules: {_inject_loras(transformer, loras)}")
     if owns_denoiser:
-        if offloading:
-            pinned = pin_module_parameters(transformer)
-            print(f"    pinned {pinned} cpu tensors for faster block swaps")
-            move_resident_layers_to(transformer, device)
-            transformer.enable_block_offload(device)
+        if stream_denoiser:
+            if enable_streaming(transformer):
+                pin_quantized_buffers(transformer)
+            move_unstreamed_modules_to(transformer, device)
         else:
             transformer = transformer.to(device)
     if loras:
@@ -427,7 +438,7 @@ def generate_image(
     placement = (
         contextlib.nullcontext()
         if owns_denoiser
-        else _denoiser_on_device(denoiser, device, offloading=offloading)
+        else _denoiser_on_device(denoiser, device, stream_denoiser=stream_denoiser)
     )
     with placement:
         latents = denoise(
@@ -517,9 +528,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--max-length", type=int, default=512, help="Maximum tokenizer sequence length.")
     parser.add_argument(
-        "--offload",
+        "--stream-denoiser",
+        dest="stream_denoiser",
         action="store_true",
-        help="Keep denoiser weights on the CPU and stream blocks to the GPU one at a time.",
+        help=(
+            "Keep the quantized weights in pinned host memory and copy each layer to the GPU "
+            "for its own multiply."
+        ),
     )
     return parser.parse_args()
 
@@ -549,7 +564,7 @@ def main() -> None:
         denoiser_quant_method=denoiser_quant,
         loras=loras,
         max_length=args.max_length,
-        offloading=args.offload,
+        stream_denoiser=args.stream_denoiser,
     )
 
     output_dir = Path(args.root).expanduser().resolve() / "flux3" / "outputs"

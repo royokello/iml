@@ -64,9 +64,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--denoiser-quant-method", default="sym-med-nano", help='"fp16" loads the fp16 weights.')
     parser.add_argument("--max-length", type=int, default=512, help="Maximum text tokens.")
     parser.add_argument(
-        "--offload",
+        "--stream-denoiser",
+        dest="stream_denoiser",
         action="store_true",
-        help="Keep denoiser weights on the CPU and stream blocks to the GPU one at a time.",
+        help=(
+            "Keep the quantized weights in pinned host memory and copy each layer to the GPU "
+            "for its own multiply."
+        ),
     )
     return parser.parse_args()
 
@@ -130,15 +134,16 @@ def main() -> None:
     from flux2.lora.model import inject_trainable_lora_modules
     from flux2.gen import _on_device
     from flux2.train.images import normalize_image_latent_resolution
-    from flux3.denoiser.loader import (
-        load_flux3_denoiser,
-        move_resident_layers_to,
-        pin_module_parameters,
-    )
+    from flux3.denoiser.loader import load_flux3_denoiser
     from flux3.gen import _load_vae, _resolve_settings, denoise
     from flux3.inputs import build_sigmas, decode_tokens, encode_prompt, prepare_image_ids
     from flux3.lora.config import FLUX3_LORA_TARGETS
     from flux3.train.dataset import Flux3Dataset
+    from utils.quant.streaming import (
+        enable_streaming,
+        move_unstreamed_modules_to,
+        pin_quantized_buffers,
+    )
     from utils.seed import image_seed
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -248,7 +253,8 @@ def main() -> None:
         model_root / "transformer",
         denoiser_quant,
         variant,
-        offloading=args.offload,
+        offloading=args.stream_denoiser,
+        stream_denoiser=args.stream_denoiser,
     )
     injected = inject_trainable_lora_modules(
         denoiser,
@@ -259,11 +265,10 @@ def main() -> None:
     denoiser.eval()
     for parameter in denoiser.parameters():
         parameter.requires_grad = False
-    if args.offload:
-        pinned = pin_module_parameters(denoiser)
-        print(f"  * pinned {pinned} cpu tensors for faster block swaps")
-        move_resident_layers_to(denoiser, device)
-        denoiser.enable_block_offload(device)
+    if args.stream_denoiser:
+        if enable_streaming(denoiser):
+            pin_quantized_buffers(denoiser)
+        move_unstreamed_modules_to(denoiser, device)
     else:
         denoiser = denoiser.to(device)
     print(f"  * injected lora modules: {len(injected)}")
@@ -338,13 +343,11 @@ def main() -> None:
         step_start = time.perf_counter()
         load_lora_checkpoint(denoiser, checkpoint_path)
         rendered = denoise_samples(step_number)
-        if not args.offload:
-            denoiser.to("cpu")
+        move_unstreamed_modules_to(denoiser, torch.device("cpu"))
         torch.cuda.empty_cache()
         print("    * decoding samples ...")
         decode_samples(step_number, rendered)
-        if not args.offload:
-            denoiser.to(device)
+        move_unstreamed_modules_to(denoiser, device)
         print(f"    * step sample time: {time.perf_counter() - step_start:.3f}s")
 
     del denoiser

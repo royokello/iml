@@ -85,7 +85,7 @@ def generate_image(
     cfg: float = DEFAULT_CFG,
     method: str = DEFAULT_METHOD,
     no_quant: bool = False,
-    offload: bool = False,
+    stream_denoiser: bool = False,
     loras: dict[str, float] | None = None,
 ) -> Path:
     """Generate one image and save it as a PNG.
@@ -105,9 +105,10 @@ def generate_image(
         method: The quantization method. The UNet is read from
             `<root>/sdxl/<name>/unet/<method>_quant.safetensors`.
         no_quant: Read the fp16 UNet checkpoint instead of the quantized one.
-        offload: Stream `down_blocks`, `mid_block`, and `up_blocks` to the GPU
-            one at a time. Peak UNet memory is the largest block (`up_blocks`,
-            about 2.6 GB) instead of the whole checkpoint (about 5.1 GB).
+        stream_denoiser: Keep the quantized weights in pinned host memory and
+            copy each layer to the GPU for its own multiply. Peak UNet memory
+            is then a single layer, and the packed weights never leave host
+            memory.
         loras: A map of LoRA checkpoint path to strength. A checkpoint may use
             kohya names or native names. Text-encoder tensors load when present.
 
@@ -169,13 +170,16 @@ def generate_image(
     scheduler.set_timesteps(steps, device=device)
 
     print("Loading UNet ...", flush=True)
-    unet = load_sdxl_denoiser(model_root, quant_method=None if no_quant else method)
+    unet = load_sdxl_denoiser(
+        model_root,
+        quant_method=None if no_quant else method,
+        stream_denoiser=stream_denoiser,
+    )
     if loras:
         counts = inject_sdxl_loras(unet, text_encoder, text_encoder_2, loras)
         print(f"    lora modules: {counts}", flush=True)
-    if offload:
-        unet.enable_block_offload(device)
-        print("    offload: streaming down_blocks, mid_block, up_blocks", flush=True)
+    if stream_denoiser:
+        print("    stream denoiser: on", flush=True)
 
     print("Loading VAE ...", flush=True)
     vae = AutoencoderKL.from_pretrained(
@@ -217,7 +221,7 @@ def generate_image(
         "width": width,
         "height": height,
         "method": "fp16" if no_quant else method,
-        "offload": offload,
+        "stream_denoiser": stream_denoiser,
         "loras": [
             {"path": str(path), "strength": strength, "format": format_of(path)}
             for path, strength in (loras or {}).items()
@@ -273,11 +277,13 @@ def parse_args() -> argparse.Namespace:
         help="Read the fp16 UNet checkpoint instead of the quantized one.",
     )
     parser.add_argument(
-        "--offload",
+        "--stream-denoiser",
+        dest="stream_denoiser",
         action="store_true",
         help=(
-            "Stream down_blocks, mid_block, and up_blocks to the GPU one at a time. "
-            "Use this when the UNet does not fit in VRAM."
+            "Keep the quantized weights in pinned host memory and copy each layer to the GPU "
+            "for its own multiply. Use this when the UNet does not fit in VRAM. "
+            "Needs a quantized checkpoint."
         ),
     )
     parser.add_argument(
@@ -304,7 +310,7 @@ def main() -> None:
         cfg=args.cfg,
         method=args.method,
         no_quant=args.no_quant,
-        offload=args.offload,
+        stream_denoiser=args.stream_denoiser,
         loras=_parse_loras_arg(args.loras),
     )
 

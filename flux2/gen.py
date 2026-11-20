@@ -383,22 +383,26 @@ def _on_device(module, device, *, dtype=None, restore: bool = True):
 
 
 @contextlib.contextmanager
-def _denoiser_on_device(denoiser, device, *, offloading: bool):
+def _denoiser_on_device(denoiser, device, *, stream_denoiser: bool):
     """Place a caller denoiser for one denoise pass. Restore it on exit."""
-    from flux2.denoiser.loader import move_resident_layers_to
+    from utils.quant.streaming import (
+        enable_streaming,
+        move_unstreamed_modules_to,
+        pin_quantized_buffers,
+    )
 
     original_device = _module_device(denoiser)
     try:
-        if offloading:
-            move_resident_layers_to(denoiser, device)
-            denoiser.enable_block_offload(device)
+        if stream_denoiser:
+            if enable_streaming(denoiser):
+                pin_quantized_buffers(denoiser)
+            move_unstreamed_modules_to(denoiser, device)
         else:
             denoiser.to(device)
         yield denoiser
     finally:
-        if offloading:
-            denoiser.disable_block_offload()
-            move_resident_layers_to(denoiser, original_device)
+        if stream_denoiser:
+            move_unstreamed_modules_to(denoiser, original_device)
         else:
             denoiser.to(original_device)
 
@@ -421,7 +425,7 @@ def generate_image(
     loras: dict[str, float] | None = None,
     negative_prompt: str | None = None,
     max_length: int = 512,
-    offloading: bool = False,
+    stream_denoiser: bool = False,
     tokenizer: Qwen2TokenizerFast | None = None,
     text_encoder: Qwen3Model | None = None,
     denoiser: Flux2Transformer2DModel | None = None,
@@ -467,10 +471,11 @@ def generate_image(
         negative_prompt (str | None, optional): Negative prompt. Used only
             with base.
         max_length (int, optional): Maximum tokenizer sequence length.
-        offloading (bool, optional): Stream denoiser blocks to the CUDA
-            device one at a time. Applies to a loaded denoiser and to a
-            passed denoiser. A passed denoiser has block offloading off
-            after the call.
+        stream_denoiser (bool, optional): Keep the quantized weights in pinned
+            host memory and copy each layer to the CUDA device for its own
+            multiply. Applies to a loaded denoiser and to a passed denoiser
+            whose packed weights are still on the CPU. A passed denoiser goes
+            back to its original device after the call.
         tokenizer (Qwen2TokenizerFast | None, optional): Pre-loaded
             tokenizer. Defaults to None (load from disk).
         text_encoder (Qwen3Model | None, optional): Pre-loaded text encoder.
@@ -488,13 +493,14 @@ def generate_image(
         RuntimeError: If CUDA is not available, or if LoRA metadata has no
             rank or alpha.
     """
-    from flux2.denoiser.loader import (
-        _load_flux2_denoiser as load_flux2_denoiser,
-        move_resident_layers_to,
-        pin_module_parameters,
-    )
+    from flux2.denoiser.loader import _load_flux2_denoiser as load_flux2_denoiser
     from flux2.text_encoder.loader import _load_flux2_text_encoder as load_flux2_text_encoder
     from flux2.lora.loader import load_checkpoint as load_lora_checkpoint
+    from utils.quant.streaming import (
+        enable_streaming,
+        move_unstreamed_modules_to,
+        pin_quantized_buffers,
+    )
 
     print("1. Text Encoding")
     text_encoding_start = time.perf_counter()
@@ -697,15 +703,16 @@ def generate_image(
     if denoiser is None:
         print("  * loading transformer ...")
         print(f"    variant: {transformer_variant}")
-        print(f"    quantization: {denoiser_quant_method or 'none'}")
-        print(f"    offloading: {offloading}")
+        print(f"    quantization: {denoiser_quant_method or 'fp16'}")
+        print(f"    stream denoiser: {'on' if stream_denoiser else 'off'}")
         torch.cuda.empty_cache()
         transformer = load_flux2_denoiser(
             str(transformer_path),
             quant_method=denoiser_quant_method,
             variant=transformer_variant,
             version=resolved_version,
-            offloading=offloading,
+            offloading=stream_denoiser,
+            stream_denoiser=stream_denoiser,
         )
     else:
         print("  * using caller-provided transformer")
@@ -717,11 +724,10 @@ def generate_image(
         print("  * applying loras ...")
         print(f"    injected lora modules: {_inject_loras(transformer, loras)}")
     if owns_transformer:
-        if offloading:
-            pinned = pin_module_parameters(transformer)
-            print(f"    pinned {pinned} cpu tensors for faster block swaps")
-            move_resident_layers_to(transformer, device)
-            transformer.enable_block_offload(device)
+        if stream_denoiser:
+            if enable_streaming(transformer):
+                pin_quantized_buffers(transformer)
+            move_unstreamed_modules_to(transformer, device)
         else:
             transformer = transformer.to(device)
     if loras:
@@ -745,7 +751,7 @@ def generate_image(
     denoiser_placement = (
         contextlib.nullcontext()
         if owns_transformer
-        else _denoiser_on_device(denoiser, device, offloading=offloading)
+        else _denoiser_on_device(denoiser, device, stream_denoiser=stream_denoiser)
     )
     with denoiser_placement:
         with torch.inference_mode():
@@ -919,12 +925,13 @@ def parse_args() -> argparse.Namespace:
         help="Maximum tokenizer sequence length.",
     )
     parser.add_argument(
-        "--offload",
+        "--stream-denoiser",
+        dest="stream_denoiser",
         action="store_true",
         help=(
-            "Enable block offloading with pinned host memory. Keeps denoiser weights on CPU and "
-            "streams transformer blocks to GPU one at a time. Reserves ~model-size pinned RAM. "
-            "Use this to run large models (e.g. 9B) on small VRAM. Off by default."
+            "Keep the quantized weights in pinned host memory and copy each layer to the GPU "
+            "for its own multiply. Reserves ~model-size pinned RAM. Use this to run large "
+            "models (e.g. 9B) on small VRAM. Off by default."
         ),
     )
     return parser.parse_args()
@@ -950,7 +957,7 @@ def main() -> None:
         denoiser_quant_method=None if args.denoiser_quant_method == "fp16" else args.denoiser_quant_method,
         loras=_parse_loras_arg(args.loras),
         max_length=args.max_length,
-        offloading=args.offload,
+        stream_denoiser=args.stream_denoiser,
     )
     output_dir = Path(args.root) / _resolve_version_dir(args.version) / "outputs"
     output_dir.mkdir(parents=True, exist_ok=True)

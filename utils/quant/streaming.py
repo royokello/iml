@@ -139,6 +139,53 @@ def pin_quantized_buffers(model: torch.nn.Module) -> None:
     )
 
 
+def enable_streaming(model: torch.nn.Module) -> int:
+    """Turn a quantized model that sits on the CPU into a streamed one.
+
+    A model loaded without the stream flag stores its packed weights in
+    `QuantizedLinear` buffers. Those buffers live on the CPU already, so the
+    model can start streaming without a reload: only the class changes. The
+    buffers keep their identity, so no second copy is made.
+
+    Args:
+        model: A quantized model the caller already holds.
+
+    Returns:
+        The number of layers converted. Zero means the model was already
+        streamed.
+
+    Raises:
+        RuntimeError: If a packed weight is not on the CPU. A resident model
+            has already lost its host copy, so streaming it would stream from
+            the GPU and save nothing.
+    """
+    converted = 0
+    for module in model.modules():
+        if type(module) is not QuantizedLinear:
+            continue
+        for buffer in module._buffers.values():
+            if buffer is not None and buffer.device.type != "cpu":
+                raise RuntimeError(
+                    f"Cannot stream weights that are on {buffer.device}. "
+                    "Load the model with the stream flag, or run it resident."
+                )
+        module.__class__ = StreamedQuantizedLinear
+        converted += 1
+    return converted
+
+
+def has_streamed_layers(model: torch.nn.Module) -> bool:
+    """Return True when the model keeps any quantized weights in host memory.
+
+    Args:
+        model: The model to inspect.
+
+    Returns:
+        True if at least one layer streams its weights.
+    """
+    return any(isinstance(module, StreamedQuantizedLinear) for module in model.modules())
+
+
 def move_unstreamed_modules_to(model: torch.nn.Module, device: torch.device) -> None:
     """Move every module to `device` except the streamed quantized linears.
 
@@ -162,6 +209,8 @@ def move_unstreamed_modules_to(model: torch.nn.Module, device: torch.device) -> 
 
 __all__ = [
     "StreamedQuantizedLinear",
+    "enable_streaming",
+    "has_streamed_layers",
     "move_unstreamed_modules_to",
     "pin_quantized_buffers",
 ]

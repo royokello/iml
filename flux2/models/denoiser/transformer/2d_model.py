@@ -239,27 +239,8 @@ class Flux2Transformer2DModel(
         self.proj_out = nn.Linear(self.inner_dim, patch_size * patch_size * self.out_channels, bias=False)
 
         self.gradient_checkpointing = False
-        self._offload_device: torch.device | None = None
 
     _skip_keys = ["kv_cache"]
-
-    def enable_block_offload(
-        self,
-        device: torch.device,
-    ) -> None:
-        """Stream transformer blocks to `device` one at a time during forward.
-
-        When enabled, the two block loops in `forward` move a single block to
-        `device`, run it, and move it back to CPU before the next block is
-        loaded. Always-resident layers (embedders, modulations, output) must
-        already be on `device`; call `move_resident_layers_to(model, device)`
-        from the loader before enabling.
-        """
-        self._offload_device = device
-
-    def disable_block_offload(self) -> None:
-        """Stop streaming blocks and run `forward` on the current block devices."""
-        self._offload_device = None
 
     @apply_lora_scale("joint_attention_kwargs")
     def forward(
@@ -387,9 +368,6 @@ class Flux2Transformer2DModel(
             if kv_cache_mode is not None and kv_cache is not None:
                 kv_attn_kwargs["kv_cache"] = kv_cache.get_double(index_block)
 
-            if self._offload_device is not None:
-                block.to(self._offload_device, non_blocking=True)
-
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 encoder_hidden_states, hidden_states = self._gradient_checkpointing_func(
                     block,
@@ -409,9 +387,6 @@ class Flux2Transformer2DModel(
                     image_rotary_emb=concat_rotary_emb,
                     joint_attention_kwargs=kv_attn_kwargs,
                 )
-
-            if self._offload_device is not None:
-                block.to("cpu", non_blocking=True)
 
         # Concatenate text and image streams for single-block inference
         hidden_states = torch.cat([encoder_hidden_states, hidden_states], dim=1)
@@ -434,9 +409,6 @@ class Flux2Transformer2DModel(
             if kv_cache_mode is not None and kv_cache is not None:
                 kv_attn_kwargs_single["kv_cache"] = kv_cache.get_single(index_block)
 
-            if self._offload_device is not None:
-                block.to(self._offload_device, non_blocking=True)
-
             if torch.is_grad_enabled() and self.gradient_checkpointing:
                 hidden_states = self._gradient_checkpointing_func(
                     block,
@@ -454,9 +426,6 @@ class Flux2Transformer2DModel(
                     image_rotary_emb=concat_rotary_emb,
                     joint_attention_kwargs=kv_attn_kwargs_single,
                 )
-
-            if self._offload_device is not None:
-                block.to("cpu", non_blocking=True)
 
         # Remove text tokens (and ref tokens in extract mode) from concatenated stream
         if kv_cache_mode == "extract" and num_ref_tokens > 0:

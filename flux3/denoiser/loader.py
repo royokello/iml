@@ -10,7 +10,6 @@ from safetensors import safe_open
 from flux2.denoiser.loader import (
     _list_checkpoint_keys,
     _materialize_meta_tensors,
-    pin_module_parameters,
 )
 from flux3.denoiser.targets import _build_flux3_denoiser_target_tensors
 from flux3.models.denoiser.transformer import Flux3Transformer2DModel
@@ -21,39 +20,10 @@ from utils.quant.name import convert_quant_name
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
 from utils.quant.streaming import StreamedQuantizedLinear, pin_quantized_buffers
 
-__all__ = ["load_flux3_denoiser", "move_resident_layers_to", "pin_module_parameters"]
+__all__ = ["load_flux3_denoiser"]
 
 _VARIANTS = ("base", "distill")
 _SHARD_PATTERN = "diffusion_pytorch_model-*.safetensors"
-
-_RESIDENT_MODULE_NAMES = (
-    "pos_embed",
-    "time_proj",
-    "timestep_embedder",
-    "target_timestep_embedder",
-    "early_stream_modulations",
-    "single_stream_modulations",
-    "x_embedders",
-    "context_embedder",
-    "norm_out",
-    "proj_out",
-)
-
-
-def move_resident_layers_to(model: Flux3Transformer2DModel, device: torch.device) -> None:
-    """Move the always-resident layers to `device`.
-
-    The block lists (`mode_blocks`, `txt_mode_blocks`, `single_transformer_blocks`)
-    stay where they are. `forward` streams them when `enable_block_offload` is set.
-
-    Args:
-        model: The denoiser.
-        device: The target device.
-    """
-    for name in _RESIDENT_MODULE_NAMES:
-        module = getattr(model, name, None)
-        if isinstance(module, torch.nn.Module):
-            module.to(device)
 
 
 def _build_model_from_config(model_dir: Path, variant: str, *, device: str = "meta") -> Flux3Transformer2DModel:
