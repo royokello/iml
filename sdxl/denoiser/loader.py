@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from safetensors import safe_open
 
-from sdxl.denoiser.quantized import RecomputeQuantizedLinear
+from sdxl.denoiser.quantized import RecomputeQuantizedLinear, StreamedQuantizedLinear
 from sdxl.denoiser.targets import classify_linear_module
 from sdxl.models._unet import SDXLUNet
 from utils.loaders.single import load_local_single_checkpoint
@@ -59,9 +59,10 @@ def _replace_with_recompute_linear(
     method: str,
     target_linear_names: tuple[str, ...],
     checkpoint_keys: set[str],
+    linear_cls: type[QuantizedLinear] = RecomputeQuantizedLinear,
     path: tuple[str, ...] = (),
 ) -> None:
-    """Swap targeted `nn.Linear` modules for `RecomputeQuantizedLinear`.
+    """Swap targeted `nn.Linear` modules for a quantized linear class.
 
     The modules load their buffers from the checkpoint, so the swap must run
     before the checkpoint load.
@@ -72,6 +73,9 @@ def _replace_with_recompute_linear(
         target_linear_names: The module paths to replace.
         checkpoint_keys: The checkpoint tensor names. A module is replaced only
             when the file holds its `.sub_scales`.
+        linear_cls: The class to build. `StreamedQuantizedLinear` keeps its
+            weights in host memory; `RecomputeQuantizedLinear` keeps them
+            resident.
         path: The module path reached so far.
     """
     for name, child in list(module.named_children()):
@@ -84,7 +88,7 @@ def _replace_with_recompute_linear(
             setattr(
                 module,
                 name,
-                RecomputeQuantizedLinear.from_prequantized(child, method=method),
+                linear_cls.from_prequantized(child, method=method),
             )
             continue
         _replace_with_recompute_linear(
@@ -92,6 +96,7 @@ def _replace_with_recompute_linear(
             method=method,
             target_linear_names=target_linear_names,
             checkpoint_keys=checkpoint_keys,
+            linear_cls=linear_cls,
             path=child_path,
         )
 
@@ -120,6 +125,44 @@ def _cast_float_tensors_to_fp16(module: torch.nn.Module) -> None:
 
     for child in module.children():
         _cast_float_tensors_to_fp16(child)
+
+
+def _pin_quantized_buffers(model: torch.nn.Module) -> None:
+    """Move the quantized weights into pinned host memory.
+
+    A streamed layer copies its weights to the GPU on every forward and
+    backward. Pinned host memory makes that copy asynchronous; pageable memory
+    makes it synchronous and about three times slower.
+
+    Args:
+        model: The UNet, already loaded and on the CPU.
+
+    Raises:
+        RuntimeError: If the host cannot pin the weights.
+    """
+    tensor_count = 0
+    total_bytes = 0
+    try:
+        for module in model.modules():
+            if not isinstance(module, QuantizedLinear):
+                continue
+            for name, buffer in list(module._buffers.items()):
+                if buffer is None or buffer.device.type != "cpu" or buffer.is_pinned():
+                    continue
+                pinned = buffer.pin_memory()
+                module._buffers[name] = pinned
+                tensor_count += 1
+                total_bytes += pinned.numel() * pinned.element_size()
+    except RuntimeError as error:
+        raise RuntimeError(
+            "Could not pin the quantized UNet weights in host memory. "
+            f"Pinned {total_bytes / 2**30:.2f} GiB before the failure. "
+            "Free host memory or run without --stream-denoiser."
+        ) from error
+    print(
+        f"    pinned {tensor_count} quantized tensors, {total_bytes / 2**30:.2f} GiB",
+        flush=True,
+    )
 
 
 def _linear_targets(model: torch.nn.Module) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -165,6 +208,7 @@ def load_sdxl_denoiser(
     quant_method: str | None = None,
     *,
     device: torch.device | str | None = None,
+    stream_denoiser: bool = False,
 ) -> SDXLUNet:
     """Load the SDXL UNet from a model folder.
 
@@ -172,6 +216,9 @@ def load_sdxl_denoiser(
         model_root: The model folder, or its `unet` folder.
         quant_method: A quantization method name, or None for the fp16 weights.
         device: Where to put the model. The default leaves it on the CPU.
+        stream_denoiser: Keep the quantized weights in pinned host memory and
+            copy each layer onto the GPU for its own multiply. Requires
+            `quant_method`. The model must stay on the CPU between calls.
 
     Returns:
         The UNet in eval mode. Float weights are fp16. `QuantizedLinear` layers
@@ -180,9 +227,17 @@ def load_sdxl_denoiser(
     Raises:
         FileNotFoundError: If the folder, the fp16 checkpoint, or the quantized
             checkpoint is missing. The loader never quantizes on the fly.
-        RuntimeError: If the checkpoint keys do not match the model, or if a
-            tensor stays on the meta device.
+        RuntimeError: If the checkpoint keys do not match the model, if a
+            tensor stays on the meta device, or if host memory cannot be
+            pinned.
+        ValueError: If `stream_denoiser` is set without `quant_method` or with
+            an explicit `device`.
     """
+    if stream_denoiser and quant_method is None:
+        raise ValueError("stream_denoiser needs a quantized checkpoint.")
+    if stream_denoiser and device is not None:
+        raise ValueError("stream_denoiser keeps the weights on the CPU; do not pass device.")
+
     root = Path(model_root).expanduser().resolve()
     unet_dir = root if root.name == "unet" else root / "unet"
     if not unet_dir.is_dir():
@@ -205,17 +260,20 @@ def load_sdxl_denoiser(
         high_method, low_method = convert_quant_name(quant_method)
         checkpoint_keys = _list_checkpoint_keys(checkpoint_path)
         high_targets, low_targets = _linear_targets(model)
+        linear_cls = StreamedQuantizedLinear if stream_denoiser else RecomputeQuantizedLinear
         _replace_with_recompute_linear(
             model,
             method=high_method,
             target_linear_names=high_targets,
             checkpoint_keys=checkpoint_keys,
+            linear_cls=linear_cls,
         )
         _replace_with_recompute_linear(
             model,
             method=low_method,
             target_linear_names=low_targets,
             checkpoint_keys=checkpoint_keys,
+            linear_cls=linear_cls,
         )
 
     incompatible = load_local_single_checkpoint(model, checkpoint_path)
@@ -231,6 +289,8 @@ def load_sdxl_denoiser(
 
     _materialize_meta_tensors(model)
     _cast_float_tensors_to_fp16(model)
+    if stream_denoiser:
+        _pin_quantized_buffers(model)
     model.eval()
 
     if device is not None:
