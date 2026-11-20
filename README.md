@@ -899,6 +899,34 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - `--cache-images`, `--cache-text`
   - `--checkpoint-steps`, `--resume`
 
+#### `sdxl.sample`
+- Features
+  - Renders sample images for the LoRA step checkpoints that `sdxl.train.main` saves. CUDA-only
+  - Scans `<project>/models` for numeric `<step>.safetensors` files and writes images to `<project>/samples`
+  - Loads the model once, then loads each checkpoint into the same LoRA modules. Only the weights change between steps
+  - `--start` skips earlier steps
+  - Skips a sample whose output file already exists
+  - Dataset-backed mode uses the captions in `<project>/images`. A sample without a caption raises
+  - `--prompt` replaces the captions. Without `--sample-indices`, it renders `--width` x `--height`
+  - `--sample-indices "1,2,3"` picks 1-based dataset positions, in the order the trainer uses. The output size comes from the aspect ratio of each image and `--target-res`, rounded to a multiple of 32
+  - The noise is deterministic per sample name: `--sample-seed` and the file stem
+  - Writes the checkpoint, step, seed, prompt, and sampler settings into the PNG under the `sdxl` key as JSON
+  - `--offload` streams `down_blocks`, `mid_block`, and `up_blocks` to the GPU one at a time
+- Examples
+  - `python -m sdxl.sample --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --sample-indices "1,2,3"`
+  - `python -m sdxl.sample --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --start 256 --steps 30`
+  - `python -m sdxl.sample --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --prompt "niji on a beach"`
+- Useful args
+  - `--root`, `--name`, `--project`
+  - `--prompt`, `--width`, `--height`
+  - `--target-res`
+  - `--start`
+  - `--steps` (default: `32`)
+  - `--cfg`, `--negative`
+  - `--sample-seed`, `--sample-indices`
+  - `--method`, `--no-quant`
+  - `--offload`
+
 ### Ideogram 4
 
 #### `ideogram.gen`
