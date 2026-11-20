@@ -20,6 +20,7 @@ from flux3.config import SCHEDULER_SHIFT, resolve_model_root
 from flux3.denoiser.loader import load_flux3_denoiser
 from flux3.lora.config import FLUX3_LORA_ALPHA, FLUX3_LORA_RANK, FLUX3_LORA_TARGETS
 from flux3.train.dataset import Flux3Dataset
+from utils.quant.streaming import move_unstreamed_modules_to
 
 LOSS_LOG_FLUSH_STEPS = 8
 ETA_WINDOW_STEPS = 32
@@ -88,6 +89,7 @@ def main(
     max_length: int = 512,
     max_grad_norm: float = DEFAULT_MAX_GRAD_NORM,
     shuffle: bool = False,
+    stream_denoiser: bool = False,
 ) -> None:
     print("Training Started ...")
     print(f"  * seed: {seed}")
@@ -212,6 +214,7 @@ def main(
     print(f"  * injected lora modules: {len(lora_module_names)}")
     print(f"  * lora rank/alpha: r={rank}, alpha={alpha}")
     print(f"  * gradient checkpointing: {transformer.is_gradient_checkpointing}")
+    print(f"  * stream denoiser: {'on' if stream_denoiser else 'off'}")
     lora_parameters = [parameter for parameter in transformer.parameters() if parameter.requires_grad]
     print(f"  * trainable params: {sum(parameter.numel() for parameter in lora_parameters):,}")
     print(f"  * lora parameter dtype: {lora_parameters[0].dtype}")
@@ -237,7 +240,10 @@ def main(
     for param_group in optimizer.param_groups:
         param_group["lr"] = learning_rate
 
-    transformer = transformer.to("cuda")
+    if stream_denoiser:
+        move_unstreamed_modules_to(transformer, torch.device("cuda"))
+    else:
+        transformer = transformer.to("cuda")
 
     def flush_pending_loss_logs() -> None:
         if not pending_loss_logs:
@@ -419,8 +425,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=1024)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--text-quant", default="sym-high-mini", help='Text encoder quantization. "none" loads fp16.')
-    parser.add_argument("--denoiser-quant", default="aff-med-mini", help='Denoiser quantization. "none" loads fp16.')
+    parser.add_argument("--text-quant", default="sym-high-mini", help='Text encoder quantization. "fp16" loads fp16.')
+    parser.add_argument("--denoiser-quant", default="aff-med-mini", help='Denoiser quantization. "fp16" loads fp16.')
+    parser.add_argument(
+        "--stream-denoiser",
+        dest="stream_denoiser",
+        action="store_true",
+        help=(
+            "Keep the quantized weights in pinned host memory and copy each layer "
+            "to the GPU for its own multiply. Lowers peak VRAM and costs step time."
+        ),
+    )
     parser.add_argument("--cache-text", action="store_true")
     parser.add_argument("--cache-images", action="store_true")
     parser.add_argument(
@@ -492,8 +507,8 @@ if __name__ == "__main__":
         project_dir=args.project,
         checkpoint_metadata=checkpoint_metadata,
         model_root=resolve_model_root(args.root),
-        text_quant=None if args.text_quant == "none" else args.text_quant,
-        denoiser_quant=None if args.denoiser_quant == "none" else args.denoiser_quant,
+        text_quant=None if args.text_quant == "fp16" else args.text_quant,
+        denoiser_quant=None if args.denoiser_quant == "fp16" else args.denoiser_quant,
         trigger=args.trigger,
         steps=args.steps,
         resume=args.resume,
@@ -513,6 +528,7 @@ if __name__ == "__main__":
         max_length=args.max_length,
         max_grad_norm=args.max_grad_norm,
         shuffle=args.shuffle,
+        stream_denoiser=args.stream_denoiser,
     )
 
     print(f"  * training done in {time.perf_counter() - training_start:.3f}s")

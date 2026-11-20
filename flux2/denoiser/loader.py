@@ -17,6 +17,7 @@ from torch.nn import RMSNorm
 from utils.quant.linear import QuantizedLinear
 from utils.quant.name import convert_quant_name
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
+from utils.quant.streaming import StreamedQuantizedLinear, pin_quantized_buffers
 
 from flux2.models.denoiser.transformer import Flux2Transformer2DModel
 from flux2.denoiser.targets import _build_flux2_denoiser_target_tensors
@@ -152,9 +153,17 @@ def _load_flux2_denoiser(
     *,
     offloading: bool = False,
     stream_load: bool | None = None,
+    stream_denoiser: bool = False,
 ) -> Flux2Transformer2DModel:
     variant = variant.strip().lower()
     version = version.strip().lower()
+
+    if stream_denoiser and quant_method is None:
+        raise ValueError(
+            "stream_denoiser needs a quantized checkpoint. "
+            "Pass a --denoiser-quant method, or drop --stream-denoiser."
+        )
+    linear_cls = StreamedQuantizedLinear if stream_denoiser else QuantizedLinear
 
     # ---- Parse mixed-precision quantisation ----
     if quant_method is not None:
@@ -250,6 +259,7 @@ def _load_flux2_denoiser(
             method=high_method,
             target_linear_names=high_linear,
             quantize_weights=False,
+            linear_cls=linear_cls,
             checkpoint_keys=checkpoint_keys,
         )
         # Replace low‑priority modules (low_method quant format)
@@ -258,6 +268,7 @@ def _load_flux2_denoiser(
             method=low_method,
             target_linear_names=low_linear,
             quantize_weights=False,
+            linear_cls=linear_cls,
             checkpoint_keys=checkpoint_keys,
         )
 
@@ -278,11 +289,13 @@ def _load_flux2_denoiser(
             model,
             method=high_method,
             target_linear_names=high_linear,
+            linear_cls=linear_cls,
         )
         replace_targeted_linear_modules(
             model,
             method=low_method,
             target_linear_names=low_linear,
+            linear_cls=linear_cls,
         )
 
     # ---- Finalise dtype ----
@@ -293,6 +306,9 @@ def _load_flux2_denoiser(
             model = model.to(dtype=torch.float16)
     else:
         _cast_float_tensors_except_quantized_linear(model, torch.float16)
+
+    if stream_denoiser:
+        pin_quantized_buffers(model)
 
     model.eval()
     return model

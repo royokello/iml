@@ -19,6 +19,7 @@ from utils.loaders.single import load_local_single_checkpoint, stream_local_sing
 from utils.quant.linear import QuantizedLinear
 from utils.quant.name import convert_quant_name
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
+from utils.quant.streaming import StreamedQuantizedLinear, pin_quantized_buffers
 
 __all__ = ["load_flux3_denoiser", "move_resident_layers_to", "pin_module_parameters"]
 
@@ -135,6 +136,7 @@ def load_flux3_denoiser(
     *,
     offloading: bool = False,
     stream_load: bool | None = None,
+    stream_denoiser: bool = False,
 ) -> Flux3Transformer2DModel:
     """Load the Flux 3 denoiser.
 
@@ -145,6 +147,9 @@ def load_flux3_denoiser(
         offloading: If true, build the model on the CPU and keep the weights there.
         stream_load: If true, copy tensors into the model one at a time. Defaults
             to the value of `offloading`.
+        stream_denoiser: Keep the quantized weights in pinned host memory and
+            copy each layer onto the GPU for its own multiply. Requires
+            `quant_method`.
 
     Returns:
         The denoiser in eval mode. Float weights are fp16. The weights in the
@@ -163,6 +168,12 @@ def load_flux3_denoiser(
     variant = variant.strip().lower()
     if variant not in _VARIANTS:
         raise ValueError(f"Unsupported variant {variant!r}. Expected one of: {', '.join(_VARIANTS)}.")
+    if stream_denoiser and quant_method is None:
+        raise ValueError(
+            "stream_denoiser needs a quantized checkpoint. "
+            "Pass a --denoiser-quant method, or drop --stream-denoiser."
+        )
+    linear_cls = StreamedQuantizedLinear if stream_denoiser else QuantizedLinear
 
     # ---- Quantization setup ----
     if quant_method is not None:
@@ -258,6 +269,7 @@ def load_flux3_denoiser(
             method=high_method,
             target_linear_names=high_linear,
             quantize_weights=False,
+            linear_cls=linear_cls,
             checkpoint_keys=checkpoint_keys,
         )
         replace_targeted_linear_modules(
@@ -265,6 +277,7 @@ def load_flux3_denoiser(
             method=low_method,
             target_linear_names=low_linear,
             quantize_weights=False,
+            linear_cls=linear_cls,
             checkpoint_keys=checkpoint_keys,
         )
 
@@ -281,6 +294,9 @@ def load_flux3_denoiser(
 
     # ---- Final dtypes ----
     _cast_float_tensors_except(model, torch.float16, set(bf16_modules))
+
+    if stream_denoiser:
+        pin_quantized_buffers(model)
 
     model.eval()
     return model

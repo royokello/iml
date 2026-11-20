@@ -425,7 +425,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - `--base` switches to base-model defaults: `50` steps and CFG guidance scale `4.0`
   - Supports optional image conditioning with `--images "img1.png, img2.png"` by encoding reference images into latent tokens
   - Reference images are resized so their longest side is at most `--ref-size`, then cropped to the nearest valid VAE multiple before encoding
-  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `none`, `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
+  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `fp16`, `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
   - Passing `--text-quant-method none` or `--denoiser-quant-method none` keeps the original fp16 checkpoint weights
   - Saved quantized checkpoints are loaded automatically when present:
     - text encoder: `<root>/<model>/model/text_encoder/symmetric_high_quant.safetensors`, `symmetric_med_quant.safetensors`, `affine_high_quant.safetensors`, `affine_med_quant.safetensors`, or `affine_low_quant.safetensors`
@@ -471,6 +471,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Writes training losses to `<project>/models/steps.csv`
   - Uses text encoder quantization method from the CLI
   - Uses denoiser quantization method from the CLI
+  - `--stream-denoiser` keeps the quantized weights in pinned host memory and copies each layer onto the GPU for its own multiply. It leaves gradient checkpointing on
   - Prints encoded text memory size in MB
 - Current CLI
   - `--root`
@@ -481,6 +482,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - `--model` (LoRA init checkpoint file, optional)
   - `--text-quant` (default: `aff-high-mini`)
   - `--denoiser-quant` (default: `aff-high-mini`)
+  - `--stream-denoiser`
   - `--trigger`
   - `--cache-text` (pre-encode captions to CPU)
   - `--cache-images` (pre-encode image latents to disk)
@@ -511,7 +513,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Prompt-only mode renders a single logical sample using `--width` and `--height`
   - Sample seeds are deterministic per dataset index via `--sample-seed + sample_index`
   - Uses the distilled denoiser defaults from `flux2.gen`
-  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `none`, `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
+  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `fp16`, `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
   - Requires local Flux 2 assets under the selected model's `model` directory:
     - `tokenizer`
     - `text_encoder`
@@ -696,7 +698,7 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - Distill is the default: `16` steps, no guidance
   - `--base` uses the base model: `50` steps, CFG `3.5`, and a negative prompt
   - `--images "a.png, b.png"` adds reference images. Their short side is resized to `--ref-size`
-  - `--text-quant-method` and `--denoiser-quant-method` pick a saved quant file. `none` loads the fp16 weights
+  - `--text-quant-method` and `--denoiser-quant-method` pick a saved quant file. `fp16` loads the fp16 weights
   - `--offload` streams the denoiser blocks to the GPU one at a time
   - `--loras "path1:1.0,path2:0.7"` applies LoRA checkpoints
 - Examples
@@ -732,7 +734,8 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - Writes LoRA checkpoints to `<project>/models/<step>.safetensors`, the step log to `<project>/models/steps.csv`, and the loss plot to `<project>/models/loss.png`
   - Delete `<project>/models/stop.txt` to stop cleanly after the current step
   - `--cache-images` and `--cache-text` read and write caches next to the images. The cache names carry a `flux3` tag, so Flux 2 caches stay untouched
-  - `--text-quant` and `--denoiser-quant` pick a saved quant file. `none` loads the fp16 weights
+  - `--text-quant` and `--denoiser-quant` pick a saved quant file. `fp16` loads the fp16 weights
+  - `--stream-denoiser` keeps the quantized weights in pinned host memory and copies each layer onto the GPU for its own multiply. It leaves gradient checkpointing on
   - The checkpoints load with `flux3.gen --loras`
 - Examples
   - `python -m flux3.train.main --root "/iml_root" --project "/data/flux3_dataset" --trigger "TOK"`
@@ -746,6 +749,7 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--model` (LoRA start checkpoint)
   - `--text-quant` (default: `sym-high-mini`)
   - `--denoiser-quant` (default: `sym-med-nano`)
+  - `--stream-denoiser`
   - `--cache-text`, `--cache-images`
   - `--rank`, `--alpha` (default: `32`, `32`)
   - `--target-res`, `--ref-res` (default: `512`, `512`)
