@@ -33,6 +33,7 @@ from flux2.train.main import _parse_ma_windows, _plot_loss
 from flux3.train.main import format_duration
 from sdxl.config import DEFAULT_MODEL_NAME, resolve_model_root
 from sdxl.denoiser.loader import load_sdxl_denoiser
+from sdxl.denoiser.quantized import move_unstreamed_modules_to
 from sdxl.lora.config import SDXL_LORA_TARGETS
 from sdxl.train.dataset import DEFAULT_TARGET_RESOLUTION, SDXLDataset
 from sdxl.train.noise import (
@@ -303,6 +304,7 @@ def train(
     target_resolution: int = DEFAULT_TARGET_RESOLUTION,
     target_upscale: bool = False,
     gradient_checkpointing: bool = True,
+    stream_denoiser: bool = False,
     cache_images: bool = False,
     cache_text: bool = False,
     resume: bool = False,
@@ -331,6 +333,9 @@ def train(
             skipping them.
         gradient_checkpointing: Recompute the block activations in `backward`.
             This lowers peak memory and costs step time.
+        stream_denoiser: Keep the quantized weights in pinned host memory and
+            copy each layer onto the GPU for its own multiply. Lowers peak
+            memory at the cost of host-to-device traffic.
         cache_images: Write and reuse latents.
         cache_text: Write and reuse text embeddings.
         resume: Continue from the highest step in `<models>`.
@@ -376,6 +381,7 @@ def train(
     print(f"  * model: {model_root}", flush=True)
     print(f"  * project: {project_path}", flush=True)
     print(f"  * quant method: {DEFAULT_QUANT_METHOD}", flush=True)
+    print(f"  * stream denoiser: {'on' if stream_denoiser else 'off'}", flush=True)
     print(f"  * rank/alpha: {rank}/{alpha} (scaling {alpha / rank:.3f})", flush=True)
     print(f"  * steps: {steps}", flush=True)
 
@@ -425,7 +431,11 @@ def train(
     print(f"  * betas: {num_train_timesteps} steps from {scheduler_config.name}", flush=True)
 
     print("Loading UNet ...", flush=True)
-    unet = load_sdxl_denoiser(model_root, quant_method=DEFAULT_QUANT_METHOD)
+    unet = load_sdxl_denoiser(
+        model_root,
+        quant_method=DEFAULT_QUANT_METHOD,
+        stream_denoiser=stream_denoiser,
+    )
     for parameter in unet.parameters():
         parameter.requires_grad = False
 
@@ -445,7 +455,10 @@ def train(
         matched = _load_lora_state(unet, resume_checkpoint)
         print(f"  * resumed {matched} LoRA modules from {resume_checkpoint.name}", flush=True)
 
-    unet = unet.to(device=device)
+    if stream_denoiser:
+        move_unstreamed_modules_to(unet, device)
+    else:
+        unet = unet.to(device=device)
 
     lora_parameters = [parameter for parameter in unet.parameters() if parameter.requires_grad]
     trainable_parameters = sum(parameter.numel() for parameter in lora_parameters)
@@ -575,6 +588,7 @@ def train(
             metadata["step"] = str(step)
             final_path = _save_checkpoint(unet, models_dir, step, metadata, optimizer)
             print(f"  * stop checkpoint saved at step {step}. Exiting.", flush=True)
+            print(f"  * peak VRAM: {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB", flush=True)
             return final_path
 
     _flush_loss_rows(loss_csv, pending_loss_rows, models_dir, ma_windows)
@@ -585,6 +599,7 @@ def train(
         final_path = _save_checkpoint(unet, models_dir, step, metadata, optimizer)
     print(
         f"Training done in {time.perf_counter() - training_start:.1f}s. "
+        f"Peak VRAM: {torch.cuda.max_memory_allocated() / 2**30:.2f} GiB. "
         f"Use `sdxl.gen --loras \"{final_path}:1.0\"`.",
         flush=True,
     )
@@ -660,6 +675,15 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Keep the block activations. Faster, but about 2 GB more VRAM.",
     )
+    parser.add_argument(
+        "--stream-denoiser",
+        dest="stream_denoiser",
+        action="store_true",
+        help=(
+            "Keep the quantized weights in pinned host memory and copy each layer "
+            "to the GPU for its own multiply. Lowers peak VRAM and costs step time."
+        ),
+    )
     parser.add_argument("--cache-images", dest="cache_images", action="store_true")
     parser.add_argument("--cache-text", dest="cache_text", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -696,6 +720,7 @@ def main() -> None:
         target_resolution=args.target_res,
         target_upscale=args.target_upscale,
         gradient_checkpointing=args.gradient_checkpointing,
+        stream_denoiser=args.stream_denoiser,
         cache_images=args.cache_images,
         cache_text=args.cache_text,
         resume=args.resume,

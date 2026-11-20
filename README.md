@@ -871,6 +871,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - Skips an image below `--target-res` unless `--target-upscale` is set
   - Encodes text and latents first, then frees the text encoders and the VAE. The loop holds only the UNet and the LoRA state
   - Gradient checkpointing on `down_blocks`, `mid_block`, and `up_blocks` is on by default. `--no-gradient-checkpointing` keeps the activations and is faster, but needs about 2 GB more VRAM
+  - `--stream-denoiser` keeps the quantized weights in pinned host memory and copies each layer onto the GPU for its own multiply. It trades about 1 s per step for 2.2 GiB of VRAM, which is what fits 768 on a 6 GB card. It needs about 2.2 GiB of free host RAM and leaves gradient checkpointing on
   - `--cache-text` writes `<id>.text.safetensors`. `--cache-images` writes `<id>.<res>.safetensors`. Both sit next to the images
   - Saves `<step>.safetensors` and `<step>.optimizer.pt` under `<project>/models`, plus `steps.csv`, `stop.txt`, and `loss.png`
   - Prints one line per step in the Flux 3 format: step time, the load/forward/backward split, the gradient norm, and the ETA
@@ -891,6 +892,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - `--noise-offset`, `--min-snr-gamma`, `--max-grad-norm`
   - `--target-res`, `--target-upscale`
   - `--no-gradient-checkpointing`
+  - `--stream-denoiser`
   - `--cache-images`, `--cache-text`
   - `--checkpoint-steps`, `--resume`
 
