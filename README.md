@@ -51,9 +51,10 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
     - [`flux3.train.main`](#flux3trainmain)
     - [`flux3.sample`](#flux3sample)
   - [SDXL](#sdxl)
-    - [`sdxl.convert`](#sdxlconvert)
     - [`sdxl.denoiser.quant`](#sdxldenoiserquant)
     - [`sdxl.gen`](#sdxlgen)
+    - [`sdxl.train.main`](#sdxltrainmain)
+    - [`sdxl.sample`](#sdxlsample)
   - [Ideogram 4](#ideogram-4)
     - [`ideogram.gen`](#ideogramgen)
     - [`ideogram.text_encoder.quant`](#ideogramtext_encoderquant)
@@ -798,7 +799,8 @@ The `sdxl` package prepares, quantizes, and runs SDXL checkpoints. The model fol
 ```
 <root>/sdxl/
   base/
-    unet/                config.json, diffusion_pytorch_model.safetensors
+    unet/                config.json, <method>_quant.safetensors
+                         and diffusion_pytorch_model.safetensors with --keep-fp16
     text_encoder/        CLIP-L, fp16
     text_encoder_2/      CLIP-G, fp16
     vae/                 fp32
@@ -808,34 +810,25 @@ The `sdxl` package prepares, quantizes, and runs SDXL checkpoints. The model fol
 
 The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<method>_quant.safetensors` file is missing.
 
-#### `sdxl.convert`
-- Features
-  - Converts one single-file SDXL checkpoint into the prepared model folder
-  - `--output` is the exact model folder. It is created if missing
-  - Reads the UNet, VAE, and both text encoders from the checkpoint and writes the tokenizers and the Euler A scheduler
-  - Fails when the output folder is not empty, unless `--overwrite` is set
-- Examples
-  - `python -m sdxl.convert --input "/models/Illustrious-XL-v1.0.safetensors" --output "/iml_root/sdxl/base"`
-- Useful args
-  - `--input`
-  - `--output`
-  - `--overwrite`
-
 #### `sdxl.denoiser.quant`
 - Features
-  - Quantizes the UNet linear weights and saves `<root>/sdxl/<name>/unet/<method>_quant.safetensors`
+  - Turns one single-file SDXL checkpoint into a complete model folder at `<root>/sdxl/<name>`
+  - Converts the UNet, the VAE, both text encoders, both tokenizers, and the Euler A scheduler
+  - Quantizes the UNet in memory during the same pass and writes only `<name>/unet/<method>_quant.safetensors`. The 5.1 GB fp16 UNet file is not written, unless `--keep-fp16` is set
+  - The quantized file holds every UNet tensor, so it is complete on its own
   - `--method` defaults to `sym-high`
   - Attention and projection weights go to `high`. Feed-forward weights go to `low`. The time and additive embeddings stay fp16
-  - `--input` is required; it is the `unet` folder of the converted model
+  - Fails when the model folder is not empty, unless `--overwrite` is set
   - CUDA-only runtime; exits if CUDA is unavailable
 - Examples
-  - `python -m sdxl.denoiser.quant --root "/iml_root" --input "/models/illustrious-xl/unet"`
-  - `python -m sdxl.denoiser.quant --root "/iml_root" --input "/models/illustrious-xl/unet" --method fp16`
+  - `python -m sdxl.denoiser.quant --input "/models/Illustrious-XL-v1.0.safetensors" --root "/iml_root" --name illustrious`
+  - `python -m sdxl.denoiser.quant --input "/models/Illustrious-XL-v1.0.safetensors" --root "/iml_root" --name illustrious --method sym-med --keep-fp16`
 - Useful args
-  - `--root`
-  - `--name`
-  - `--method`
   - `--input`
+  - `--root`, `--name`
+  - `--method`
+  - `--keep-fp16`
+  - `--overwrite`
 
 #### `sdxl.gen`
 - Features

@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 """Generate one image from a prepared SDXL model folder.
 
-The model folder comes from `python -m sdxl.convert`. The UNet is read from
-`<model>/unet/<method>_quant.safetensors` by default, so run
-`python -m sdxl.denoiser.quant` first. Pass `--no-quant` to use the fp16 file.
+The model folder comes from `python -m sdxl.denoiser.quant`. The UNet is read
+from `<model>/unet/<method>_quant.safetensors` by default. Pass `--no-quant` to
+use the fp16 file, which needs `--keep-fp16` at quantize time.
 """
 
 from __future__ import annotations
