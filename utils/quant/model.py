@@ -31,7 +31,7 @@ def _build_quantized_or_fp16_tensors(
 ) -> dict[str, torch.Tensor]:
     if target_method is not None:
         if target_method == "bf16":
-            return {name: tensor}
+            return {name: tensor.to(dtype=torch.bfloat16)}
         if target_method == "fp32":
             return {name: tensor.to(dtype=torch.float32)}
         if target_method == "fp16":
