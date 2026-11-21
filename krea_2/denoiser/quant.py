@@ -18,6 +18,7 @@ def _quantize_denoiser(
     root: str | Path,
     input_dirpath: str | Path,
     method: str,
+    variant: str,
 ) -> Path:
     input_dir = Path(input_dirpath)
     model_files = sorted(input_dir.glob("*.safetensors"))
@@ -25,7 +26,7 @@ def _quantize_denoiser(
         raise FileNotFoundError(f"No .safetensors files found in {input_dir}")
 
     quant_name = replace_hyphens_with_underscores(method)
-    output_dir = Path(root) / "krea_2" / "model" / "denoiser"
+    output_dir = Path(root) / "krea_2" / "model" / "denoiser" / variant
     output_path = output_dir / f"{quant_name}_quant.safetensors"
 
     target_tensors = _build_krea2_denoiser_target_tensors()
@@ -35,7 +36,8 @@ def _quantize_denoiser(
         "Quantize denoiser args:\n"
         f"  root={root}\n"
         f"  input={input_dirpath}\n"
-        f"  method={method}"
+        f"  method={method}\n"
+        f"  variant={variant}"
     )
     print("Targets")
     for target_method, target_names in targets.items():
@@ -56,6 +58,7 @@ def _quantize_denoiser(
         metadata={
             "component": "denoiser",
             "model": "krea_2",
+            "variant": variant,
             "method": quant_name,
         },
     )
@@ -68,13 +71,19 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Quantize the Krea-2 denoiser.")
     parser.add_argument("--root", required=True, help="Root folder to receive the quantized output.")
     parser.add_argument("--input", required=True, help="Source directory containing .safetensors shards.")
+    parser.add_argument(
+        "--variant",
+        required=True,
+        choices=("turbo", "raw"),
+        help="Checkpoint variant. The output goes to <root>/krea_2/model/denoiser/<variant>/.",
+    )
     parser.add_argument("--method", default="sym-med-nano", help="Quantization method (default: sym-med-nano).")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    output_path = _quantize_denoiser(args.root, args.input, method=args.method)
+    output_path = _quantize_denoiser(args.root, args.input, method=args.method, variant=args.variant)
     print(f"Saved quantized denoiser to {output_path}")
 
 

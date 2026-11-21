@@ -18,7 +18,7 @@ _LOW_SUFFIXES = (
     "ff.up.weight",
 )
 
-_FP32_SUFFIXES = (
+_BF16_SUFFIXES = (
     "attn.norm_k.weight",
     "attn.norm_q.weight",
     "norm1.weight",
@@ -28,7 +28,7 @@ _FP32_SUFFIXES = (
 _GLOBAL_HIGH = (
 )
 
-_GLOBAL_FP32 = (
+_GLOBAL_BF16 = (
     "img_in.bias",
     "img_in.weight",
     "txt_in.norm.weight",
@@ -56,7 +56,7 @@ _GLOBAL_FP16 = (
 def _build_krea2_denoiser_target_tensors() -> dict[str, list[str]]:
     high: list[str] = []
     low: list[str] = []
-    fp32: list[str] = []
+    bf16: list[str] = []
     fp16: list[str] = []
 
     for i in range(_NUM_TRANSFORMER_BLOCKS):
@@ -65,9 +65,9 @@ def _build_krea2_denoiser_target_tensors() -> dict[str, list[str]]:
             high.append(prefix + s)
         for s in _LOW_SUFFIXES:
             low.append(prefix + s)
-        for s in _FP32_SUFFIXES:
-            fp32.append(prefix + s)
-        fp32.append(f"{prefix}scale_shift_table")
+        for s in _BF16_SUFFIXES:
+            bf16.append(prefix + s)
+        bf16.append(f"{prefix}scale_shift_table")
 
     for i in range(_NUM_LAYERWISE_BLOCKS):
         prefix = f"text_fusion.layerwise_blocks.{i}."
@@ -75,8 +75,8 @@ def _build_krea2_denoiser_target_tensors() -> dict[str, list[str]]:
             high.append(prefix + s)
         for s in _LOW_SUFFIXES:
             low.append(prefix + s)
-        for s in _FP32_SUFFIXES:
-            fp32.append(prefix + s)
+        for s in _BF16_SUFFIXES:
+            bf16.append(prefix + s)
 
     for i in range(_NUM_REFINER_BLOCKS):
         prefix = f"text_fusion.refiner_blocks.{i}."
@@ -84,14 +84,14 @@ def _build_krea2_denoiser_target_tensors() -> dict[str, list[str]]:
             high.append(prefix + s)
         for s in _LOW_SUFFIXES:
             low.append(prefix + s)
-        for s in _FP32_SUFFIXES:
-            fp32.append(prefix + s)
+        for s in _BF16_SUFFIXES:
+            bf16.append(prefix + s)
 
     for name in _GLOBAL_HIGH:
         high.append(name)
-    for name in _GLOBAL_FP32:
-        fp32.append(name)
+    for name in _GLOBAL_BF16:
+        bf16.append(name)
     for name in _GLOBAL_FP16:
         fp16.append(name)
 
-    return {"high": high, "low": low, "fp32": fp32, "fp16": fp16}
+    return {"high": high, "low": low, "bf16": bf16, "fp16": fp16}

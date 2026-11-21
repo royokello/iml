@@ -50,6 +50,11 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
     - [`flux3.gen`](#flux3gen)
     - [`flux3.train.main`](#flux3trainmain)
     - [`flux3.sample`](#flux3sample)
+  - [Krea 2](#krea-2)
+    - [`krea2.*.copy_files`](#krea2text_encodercopy_files-krea2denoisercopy_files-krea2vaecopy_files)
+    - [`krea2.denoiser.quant`](#krea2denoiserquant)
+    - [`krea2.text_encoder.quant`](#krea2text_encoderquant)
+    - [`krea2.gen`](#krea2gen)
   - [SDXL](#sdxl)
     - [`sdxl.denoiser.quant`](#sdxldenoiserquant)
     - [`sdxl.gen`](#sdxlgen)
@@ -796,6 +801,109 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--denoiser-quant-method` (default: `sym-med-nano`)
   - `--max-length`
   - `--stream-denoiser`
+
+### Krea 2
+
+The `krea_2` package quantizes and runs the Krea 2 text-to-image model. The model folder is `<root>/krea_2/model`:
+
+```
+<root>/krea_2/model/
+  denoiser/
+    config.json
+    turbo/                 <method>_quant.safetensors
+    raw/                   <method>_quant.safetensors
+  text_encoder/
+    config.json
+    tokenizer.json
+    tokenizer_config.json
+    chat_template.jinja
+    <method>_quant.safetensors
+  vae/
+    config.json
+    diffusion_pytorch_model.safetensors
+```
+
+The quant CLIs write only the quant file. The copy modules below put the config, tokenizer, and VAE files there. A loader never quantizes on the fly. It raises `FileNotFoundError` when the quant file is missing.
+
+Krea 2 runs the Qwen3-VL-4B language model as the text encoder and the Qwen-Image VAE. The vision tower is not quantized and not built. It is text-to-image only.
+
+#### `krea2.text_encoder.copy_files`, `krea2.denoiser.copy_files`, `krea2.vae.copy_files`
+- Features
+  - Copy the small files that `krea_2.gen` reads, from the source model folders into `<root>/krea_2/model`
+  - Text encoder: `config.json` from `--input`, and `tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja` from `--tokenizer`
+  - Denoiser: `transformer/config.json`. `--input` is the `transformer` folder, the parent of `turbo` and `raw`
+  - VAE: `diffusion_pytorch_model.safetensors`, and a `config.json` written from the known Qwen-Image VAE values
+  - Never copy the text encoder or denoiser weight shards
+  - Skip a file that is already in the target with the same size. Raise `FileNotFoundError` if a listed file is missing
+- Examples
+  - `python -m krea_2.text_encoder.copy_files --root "/iml_root" --input "/models/Krea 2/text_encoder" --tokenizer "/models/Krea 2/tokenizer"`
+  - `python -m krea_2.denoiser.copy_files --root "/iml_root" --input "/models/Krea 2/transformer"`
+  - `python -m krea_2.vae.copy_files --root "/iml_root" --input "/models/Krea 2/vae"`
+- Useful args
+  - `--root`
+  - `--input`
+  - `--tokenizer` (text encoder only)
+
+#### `krea2.denoiser.quant`
+- Features
+  - Quantizes the Krea 2 denoiser for the `turbo` or `raw` variant
+  - Saves `<root>/krea_2/model/denoiser/<variant>/<method>_quant.safetensors`
+  - `--variant` is required, so a raw run cannot overwrite turbo
+  - Default method: `sym-med-nano`
+- Examples
+  - `python -m krea_2.denoiser.quant --root "/iml_root" --input "/models/Krea 2/transformer/turbo" --variant turbo --method sym-med-nano`
+- Useful args
+  - `--root`
+  - `--input`
+  - `--variant`
+  - `--method`
+
+#### `krea2.text_encoder.quant`
+- Features
+  - Quantizes the Krea 2 text encoder (Qwen3-VL-4B language model, 36 layers)
+  - Skips the visual tower
+  - Quantizes the embedding table with `sym-high`, which the loader reads with a row gather
+  - Saves `<root>/krea_2/model/text_encoder/<method>_quant.safetensors`
+  - Default method: `sym-high-mini`
+- Examples
+  - `python -m krea_2.text_encoder.quant --root "/iml_root" --input "/models/Krea 2/text_encoder" --method sym-high-mini`
+- Useful args
+  - `--root`
+  - `--input`
+  - `--method`
+
+#### `krea2.gen`
+- Features
+  - Generates an image from a prompt and saves it to `<root>/krea_2/outputs`
+  - CUDA-only runtime; exits if CUDA is unavailable
+  - Turbo is the default: `8` steps, no guidance, `mu=1.15`
+  - `--raw` uses the raw model: `28` steps, CFG `4.5`, resolution-derived `mu`, and a negative prompt
+  - Turbo and raw read `denoiser/turbo/` and `denoiser/raw/`
+  - `--text-quant-method` and `--denoiser-quant-method` pick a saved quant file. `fp16` reads the fp16 quant file
+  - `--text-positions {diffusers,absolute}` picks the text position ids. Default: `diffusers` (cumulative valid tokens)
+  - `--stream-denoiser` keeps the quantized weights in pinned host memory and copies one layer at a time
+  - `--vae-dtype {fp32,fp16}` sets the VAE compute dtype. Default: `fp32`
+  - On a 6 GB GPU, use `--stream-denoiser` at 1024, or generate at 512
+- Examples
+  - `python -m krea_2.gen --root "/iml_root" --prompt "a red fox in the snow" --stream-denoiser`
+  - `python -m krea_2.gen --root "/iml_root" --width 512 --height 512 --steps 8`
+  - `python -m krea_2.gen --root "/iml_root" --raw --prompt "a red fox in the snow" --negative-prompt "blurry"`
+- Useful args
+  - `--root`
+  - `--prompt`
+  - `--width`, `--height`
+  - `--steps`
+  - `--seed`
+  - `--num-images`
+  - `--raw`
+  - `--guidance-scale`
+  - `--negative-prompt`
+  - `--text-quant-method`
+  - `--denoiser-quant-method`
+  - `--max-length`
+  - `--stream-denoiser`
+  - `--vae-dtype`
+  - `--text-positions`
 
 ### SDXL
 

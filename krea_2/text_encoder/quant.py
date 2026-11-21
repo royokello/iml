@@ -11,7 +11,10 @@ from utils.quant.model import quantize_model_tensors
 from utils.quant.targets import build_mixed_target_config
 from utils.text import replace_hyphens_with_underscores
 
-from krea_2.text_encoder.target import _build_krea2_text_encoder_targets
+from krea_2.text_encoder.target import (
+    _KREA2_TEXT_ENCODER_INCLUSION_PREFIX,
+    _build_krea2_text_encoder_targets,
+)
 
 
 def _quantize_text_encoder(
@@ -43,7 +46,12 @@ def _quantize_text_encoder(
 
     print(f"Quantizing {model_file} with {method} ...")
     quant_start = time.perf_counter()
-    state_dict = quantize_model_tensors(files=model_file, targets=targets)
+    # The inclusion prefix drops the vision tower, which text-to-image never reads.
+    state_dict = quantize_model_tensors(
+        files=model_file,
+        targets=targets,
+        inclusion_prefix=_KREA2_TEXT_ENCODER_INCLUSION_PREFIX,
+    )
     quant_seconds = time.perf_counter() - quant_start
     print(f"Quantized in {quant_seconds:.3f}s")
 
@@ -68,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Quantize the Krea-2 text encoder.")
     parser.add_argument("--root", required=True, help="Root folder to receive the quantized output.")
     parser.add_argument("--input", required=True, help="Source directory containing model.safetensors.")
-    parser.add_argument("--method", default="sym-med-nano", help="Quantization method (default: sym-med-nano).")
+    parser.add_argument("--method", default="sym-high-mini", help="Quantization method (default: sym-high-mini).")
     return parser.parse_args()
 
 

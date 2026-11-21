@@ -15,6 +15,7 @@ def build_mixed_target_config(
     fp32_targets = list(target_tensors.get("fp32", []))
     fp16_targets = list(target_tensors.get("fp16", []))
     bf16_targets = list(target_tensors.get("bf16", []))
+    sym_high_targets = list(target_tensors.get("sym-high", []))
 
     # fp16: high and low targets cast to fp16; fp32/fp16 targets left as-is
     if high_method == "fp16":
@@ -40,6 +41,8 @@ def build_mixed_target_config(
         config["fp16"] = fp16_targets
     if bf16_targets:
         config["bf16"] = bf16_targets
+    if sym_high_targets:
+        config.setdefault("sym-high", []).extend(sym_high_targets)
     return config
 
 
