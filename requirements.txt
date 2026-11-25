@@ -5,7 +5,7 @@ pillow
 transformers
 scikit-learn
 ultralytics
-diffusers==0.38.0
+diffusers>=0.41.0
 matplotlib
 huggingface_hub==1.21.0
 tensorflow

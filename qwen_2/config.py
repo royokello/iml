@@ -42,7 +42,7 @@ TEXT_TEMPLATE_T2I = (
     "<|im_start|>assistant\n"
 )
 
-DEFAULT_TEXT_QUANT_METHOD = "sym-high-mini"
+DEFAULT_TEXT_QUANT_METHOD = "sym-med-nano"
 DEFAULT_DENOISER_QUANT_METHOD = "sym-med-nano"
 DEFAULT_SEED = 19930625
 

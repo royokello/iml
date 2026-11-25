@@ -18,7 +18,7 @@ def quant_path(*parts: str) -> str:
 class QuantFileTest(unittest.TestCase):
     def test_text_encoder_quant_file(self):
         with safe_open(
-            quant_path("text_encoder", "sym_high_mini_quant.safetensors"),
+            quant_path("text_encoder", "sym_med_nano_quant.safetensors"),
             framework="numpy",
         ) as handle:
             keys = set(handle.keys())
