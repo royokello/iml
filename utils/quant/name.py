@@ -1,77 +1,109 @@
 QUANT_METHODS_BY_MAIN_BITS = (
-    "aff-low",
-    "sym-low",
-    "aff-med",
-    "aff-high",
-    "sym-med",
-    "sym-high",
+    "q2",
+    "q3",
+    "q4",
+    "q5",
+    "q6",
+    "q8",
 )
-MIXED_VARIANT_ORDER = ("nano", "mini", "")
-_VARIANT_DEPTH = {"mini": 1, "nano": 2}
+MIXED_VARIANT_ORDER = ("mini", "max", "")
+_VARIANTS = ("max", "mini")
+_VARIANT_SIZE_ORDER = {"mini": 0, "": 1, "max": 2}
+# The widest target set in the repo has three ranks. A method must work for
+# that count to be offered as a mixed preset.
+_MAX_MIXED_RANKS = 3
 
 
-def split_quant_name(name: str) -> tuple[str, int]:
-    """Split a method name into its base method and its rank depth.
+def split_quant_name(name: str) -> tuple[str, str]:
+    """Split a method name into its base method and its variant.
 
-    The depth is the number of ladder rungs the bottom rank drops: none for a
-    plain method, one for `-mini`, two for `-nano`.
+    The variant is `""` for a plain method, `max` for the wide variant, and
+    `mini` for the narrow variant.
 
     Args:
-        name: A method name such as `sym-med-nano`.
+        name: A method name such as `q6-mini`.
 
     Returns:
-        The base method and the rank depth.
+        The base method and the variant.
 
     Raises:
         ValueError: If the base method is not in the ladder.
     """
     if name == "fp16":
-        return "fp16", 0
+        return "fp16", ""
 
     base = name
-    depth = 0
-    for suffix, suffix_depth in _VARIANT_DEPTH.items():
+    variant = ""
+    for suffix in _VARIANTS:
         if name.endswith("-" + suffix):
             base = name[: -len(suffix) - 1]
-            depth = suffix_depth
+            variant = suffix
             break
 
     if base not in QUANT_METHODS_BY_MAIN_BITS:
         raise ValueError(
             f"Base quantization '{base}' not in recognized order: {QUANT_METHODS_BY_MAIN_BITS}"
         )
-    return base, depth
+    return base, variant
 
 
 def convert_quant_ranks(name: str, count: int = 2) -> tuple[str, ...]:
     """Return the method for each precision rank of a target set.
 
-    Rank 1 takes the base method. The bottom rank drops by the depth of the
-    variant. Ranks between rank 1 and the bottom rank drop by one rung.
+    Rank 1 is the most precise.
+
+    - A plain method gives every rank the base method.
+    - `-max` raises rank 1 by one rung and drops the bottom rank by one rung.
+      The ranks between stay at the base method. A two-rank set raises rank 1
+      and keeps rank 2 at the base method.
+    - `-mini` keeps rank 1 at the base method and drops every other rank by
+      one rung.
 
     Args:
-        name: A method name such as `sym-med-nano`.
+        name: A method name such as `q6-mini`.
         count: The number of ranks in the target set.
 
     Returns:
         One method per rank, most precise first.
 
     Raises:
-        ValueError: If the base method is not in the ladder, or if a rank would
-            drop below the lowest method.
+        ValueError: If the base method is not in the ladder, a single-rank set
+            uses `-max`, or a rank would fall outside the ladder.
     """
     if count < 1:
         raise ValueError(f"A target set needs at least one rank, got {count}.")
 
-    base, depth = split_quant_name(name)
+    base, variant = split_quant_name(name)
     if base == "fp16":
         return ("fp16",) * count
 
     index = QUANT_METHODS_BY_MAIN_BITS.index(base)
+    if not variant:
+        return (base,) * count
+
+    if variant == "max":
+        if count == 1:
+            raise ValueError(f"Cannot spread '{name}' across a single rank.")
+        top = index + 1
+        if top >= len(QUANT_METHODS_BY_MAIN_BITS):
+            raise ValueError(
+                f"Cannot offset '{name}' to rank 1: '{base}' is the highest method."
+            )
+        methods = [QUANT_METHODS_BY_MAIN_BITS[top]]
+        for rank in range(2, count + 1):
+            drop = 1 if (count > 2 and rank == count) else 0
+            target = index - drop
+            if target < 0:
+                raise ValueError(
+                    f"Cannot offset '{name}' to rank {rank}: "
+                    f"'{base}' is the lowest method."
+                )
+            methods.append(QUANT_METHODS_BY_MAIN_BITS[target])
+        return tuple(methods)
+
     methods = [base]
     for rank in range(2, count + 1):
-        step = depth if rank == count else min(depth, 1)
-        target = index - step
+        target = index - 1
         if target < 0:
             raise ValueError(
                 f"Cannot offset '{name}' to rank {rank}: "
@@ -88,6 +120,7 @@ def mixed_quant_methods() -> tuple[str, ...]:
             method = base_method if not variant else f"{base_method}-{variant}"
             try:
                 convert_quant_ranks(method, 2)
+                convert_quant_ranks(method, _MAX_MIXED_RANKS)
             except ValueError:
                 continue
             methods.append(method)
@@ -95,12 +128,12 @@ def mixed_quant_methods() -> tuple[str, ...]:
 
 
 def quant_method_sort_key(method: str) -> tuple[int, int, str]:
-    variant = ""
     base_method = method
-    for suffix in ("-nano", "-mini"):
-        if method.endswith(suffix):
-            base_method = method[: -len(suffix)]
-            variant = suffix[1:]
+    variant = ""
+    for suffix in _VARIANTS:
+        if method.endswith("-" + suffix):
+            base_method = method[: -len(suffix) - 1]
+            variant = suffix
             break
 
     try:
@@ -108,10 +141,7 @@ def quant_method_sort_key(method: str) -> tuple[int, int, str]:
     except ValueError:
         bit_order = len(QUANT_METHODS_BY_MAIN_BITS)
 
-    try:
-        variant_order = MIXED_VARIANT_ORDER.index(variant)
-    except ValueError:
-        variant_order = len(MIXED_VARIANT_ORDER)
+    variant_order = _VARIANT_SIZE_ORDER.get(variant, len(_VARIANT_SIZE_ORDER))
 
     return (bit_order, variant_order, method)
 

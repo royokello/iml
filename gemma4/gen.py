@@ -81,7 +81,7 @@ def parse_args():
         default=None,
         choices=_GEMMA4_QUANT_METHODS,
         help=(
-            "Quantization preset to load, e.g. 'aff-med-mini' or 'sym-high-mini'."
+            "Quantization preset to load, e.g. 'q4-mini' or 'q8-mini'."
         ),
     )
     return parser.parse_args()

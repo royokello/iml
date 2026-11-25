@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Quantize the Krea-2 text encoder.")
     parser.add_argument("--root", required=True, help="Root folder to receive the quantized output.")
     parser.add_argument("--input", required=True, help="Source directory containing model.safetensors.")
-    parser.add_argument("--method", default="sym-high-mini", help="Quantization method (default: sym-high-mini).")
+    parser.add_argument("--method", default="q8-mini", help="Quantization method (default: q8-mini).")
     return parser.parse_args()
 
 

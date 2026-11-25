@@ -102,7 +102,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--method",
         required=True,
-        help="Quantization method to apply (for example sym-med-nano).",
+        help="Quantization method to apply (for example q6-mini).",
     )
     parser.add_argument(
         "--input",

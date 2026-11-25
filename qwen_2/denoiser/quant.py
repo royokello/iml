@@ -93,7 +93,7 @@ def parse_args() -> argparse.Namespace:
         choices=VARIANTS,
         help="Checkpoint variant. The output goes to <root>/qwen_2/model/denoiser/<variant>/.",
     )
-    parser.add_argument("--method", default="sym-med-nano", help="Quantization method (default: sym-med-nano).")
+    parser.add_argument("--method", default="q6-mini", help="Quantization method (default: q6-mini).")
     return parser.parse_args()
 
 

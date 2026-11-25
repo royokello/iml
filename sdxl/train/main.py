@@ -1,4 +1,4 @@
-"""Train an SDXL LoRA on the `sym-high` quantized UNet.
+"""Train an SDXL LoRA on the `q8` quantized UNet.
 
 Run from the repository root:
 
@@ -43,7 +43,7 @@ from sdxl.train.noise import (
     min_snr_weight,
 )
 
-DEFAULT_QUANT_METHOD = "sym-high"
+DEFAULT_QUANT_METHOD = "q8"
 DEFAULT_STEPS = 1024
 DEFAULT_SEED = 19930625
 DEFAULT_LR = 1e-4
@@ -612,7 +612,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         The parsed arguments.
     """
-    parser = argparse.ArgumentParser(description="Train an SDXL LoRA on the sym-high UNet.")
+    parser = argparse.ArgumentParser(description="Train an SDXL LoRA on the q8 UNet.")
     parser.add_argument("--root", type=Path, required=True, help="The data root.")
     parser.add_argument(
         "--name",

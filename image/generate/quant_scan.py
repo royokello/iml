@@ -2,17 +2,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from utils.quant.name import mixed_quant_methods
+
+_PLAIN_METHODS = {"fp16", "fp32", "bf16"}
+
 
 def _extract_methods(directory: Path) -> list[str]:
-    """Scan */*_quant.safetensors, return sorted method names (hyphenated)."""
+    """Scan *_quant.safetensors and return the loadable method names.
+
+    Dead names from the old scheme stay on disk, but no loader can read them,
+    so the list keeps only the current methods and the plain dtypes.
+
+    Args:
+        directory: The folder that holds the quantized checkpoints.
+
+    Returns:
+        The sorted, hyphenated method names.
+    """
     if not directory.is_dir():
         return []
+    allowed = set(mixed_quant_methods()) | _PLAIN_METHODS
     methods: set[str] = set()
     for fpath in directory.glob("*_quant.safetensors"):
-        name = fpath.stem  # e.g. "sym_high_quant"
+        name = fpath.stem  # e.g. "q8_quant"
         if name.endswith("_quant"):
             name = name[:-6]
-        methods.add(name.replace("_", "-"))
+        method = name.replace("_", "-")
+        if method in allowed:
+            methods.add(method)
     return sorted(methods)
 
 

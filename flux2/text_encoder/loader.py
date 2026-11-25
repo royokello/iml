@@ -70,7 +70,7 @@ def _load_flux2_text_encoder(
 
     # 2. ---- Parse mixed‑precision quantisation ----
     if quant_method is not None:
-        quant_method_key = replace_hyphens_with_underscores(quant_method)   # e.g. "aff_med_max"
+        quant_method_key = replace_hyphens_with_underscores(quant_method)   # e.g. "q4_max"
         rank_1_method, rank_2_method = convert_quant_ranks(quant_method, 2)
     else:
         quant_method_key = None

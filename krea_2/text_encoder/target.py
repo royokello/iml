@@ -48,5 +48,5 @@ def _build_krea2_text_encoder_targets() -> dict[str, list[str]]:
         "rank_1": rank_1,
         "rank_2": rank_2,
         "bf16": bf16,
-        "sym-high": ["language_model.embed_tokens.weight"],
+        "q8": ["language_model.embed_tokens.weight"],
     }

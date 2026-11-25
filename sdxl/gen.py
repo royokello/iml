@@ -35,7 +35,7 @@ DEFAULT_HEIGHT = 1024
 DEFAULT_WIDTH = 1024
 DEFAULT_STEPS = 28
 DEFAULT_CFG = 5.0
-DEFAULT_METHOD = "sym-high"
+DEFAULT_METHOD = "q8"
 
 
 def _coerce_dimension(value: int) -> int:

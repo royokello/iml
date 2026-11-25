@@ -212,10 +212,10 @@ def load_krea2_text_encoder(path: str | Path, quant_method: str | None = None) -
 
     embedding_names = {
         _strip_language_prefix(name).removesuffix(".weight")
-        for name in target_tensors.get("sym-high", [])
+        for name in target_tensors.get("q8", [])
     }
     if "embed_tokens" in embedding_names and "embed_tokens.sub_scales" in checkpoint_keys:
-        model.embed_tokens = QuantizedEmbedding.from_prequantized(model.embed_tokens, method="sym-high")
+        model.embed_tokens = QuantizedEmbedding.from_prequantized(model.embed_tokens, method="q8")
 
     incompatible = load_local_single_checkpoint(model, quantized_path, key_transform=_strip_language_prefix)
     if incompatible.get("unexpected_keys") or incompatible.get("missing_keys"):

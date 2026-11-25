@@ -55,7 +55,7 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(parse_quant_method("BF16"), (None, "bf16"))
 
     def test_quant_method_names_pass_through(self):
-        for method in ("sym-med-nano", "aff-high-nano", "sym-high-mini"):
+        for method in ("q6-mini", "q5-mini", "q8-mini"):
             with self.subTest(method=method):
                 self.assertEqual(
                     parse_quant_method(method), (method, DEFAULT_WEIGHT_DTYPE)

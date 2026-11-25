@@ -205,8 +205,8 @@ def generate_image(
     guidance_scale: float | None = None,
     distilled: bool = True,
     negative_prompt: str = "",
-    text_quant_method: str | None = "sym-high-mini",
-    denoiser_quant_method: str | None = "sym-med-nano",
+    text_quant_method: str | None = "q8-mini",
+    denoiser_quant_method: str | None = "q6-mini",
     max_length: int = TEXT_MAX_LENGTH,
     stream_denoiser: bool = False,
     text_positions: str = "diffusers",
@@ -236,9 +236,9 @@ def generate_image(
         distilled: True for the turbo variant, False for raw.
         negative_prompt: Negative prompt. Used only when guidance is on.
         text_quant_method: Text encoder quant method. Defaults to
-            `sym-high-mini`.
+            `q8-mini`.
         denoiser_quant_method: Denoiser quant method. Defaults to
-            `sym-med-nano`.
+            `q6-mini`.
         max_length: Number of text tokens after the prefix is dropped.
         stream_denoiser: Keep the quantized weights in pinned host memory and
             copy each layer to the GPU for its own multiply.
@@ -448,12 +448,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--negative-prompt", default="", help="Negative prompt for --raw. Default: empty.")
     parser.add_argument(
         "--text-quant-method",
-        default="sym-high-mini",
+        default="q8-mini",
         help='Text encoder quantization method. "fp16" reads the fp16 quant file.',
     )
     parser.add_argument(
         "--denoiser-quant-method",
-        default="sym-med-nano",
+        default="q6-mini",
         help='Denoiser quantization method. "fp16" reads the fp16 quant file.',
     )
     parser.add_argument("--max-length", type=int, default=TEXT_MAX_LENGTH, help="Number of text tokens.")

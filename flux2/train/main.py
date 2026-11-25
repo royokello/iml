@@ -608,8 +608,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=1024)
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--text-quant", default="sym-high-mini", help='Text encoder quantization. "fp16" loads fp16.')
-    parser.add_argument("--denoiser-quant", default="sym-med-nano", help='Denoiser quantization. "fp16" loads fp16.')
+    parser.add_argument("--text-quant", default="q8-mini", help='Text encoder quantization. "fp16" loads fp16.')
+    parser.add_argument("--denoiser-quant", default="q6-mini", help='Denoiser quantization. "fp16" loads fp16.')
     parser.add_argument(
         "--stream-denoiser",
         dest="stream_denoiser",

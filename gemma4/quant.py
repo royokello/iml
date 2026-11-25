@@ -25,7 +25,7 @@ from utils.quant.model import quantize_model_tensors
 
 _MODEL_DIR = "gemma4"
 _CHECKPOINT_NAME = "model.safetensors"
-_DEFAULT_QUANT_METHOD = "sym-high-mini"
+_DEFAULT_QUANT_METHOD = "q8-mini"
 
 _AUDIO_PREFIXES = (
     "model.audio_tower.",

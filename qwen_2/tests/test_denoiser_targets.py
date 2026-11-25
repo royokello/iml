@@ -35,8 +35,8 @@ class DenoiserTargetTest(unittest.TestCase):
 
     def test_quantized_split_matches_the_written_checkpoint(self):
         targets = _build_qwen2_denoiser_target_tensors()
-        config = build_mixed_target_config("sym-med-nano", targets)
+        config = build_mixed_target_config("q6-mini", targets)
         self.assertEqual(
             {method: len(names) for method, names in config.items()},
-            {"sym-med": 64, "aff-high": 128, "aff-med": 32, "bf16": 73},
+            {"q6": 64, "q5": 160, "bf16": 73},
         )

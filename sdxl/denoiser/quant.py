@@ -10,7 +10,7 @@ The UNet is converted and quantized in memory. The quantized file holds every
 UNet tensor, so the fp16 UNet checkpoint is never written unless
 `--keep-fp16` is set. That saves one 5.1 GB file and a full read.
 
-The default method is `sym-high`. Any other name from `utils.quant` is passed
+The default method is `q8`. Any other name from `utils.quant` is passed
 through as-is.
 
 Diffusers 0.38 converts single-file CLIP weights through
@@ -48,7 +48,7 @@ from sdxl.denoiser.targets import build_sdxl_denoiser_target_tensors
 from utils.quant.model import _build_quantized_or_fp16_tensors
 from utils.quant.targets import build_mixed_target_config
 
-DEFAULT_METHOD = "sym-high"
+DEFAULT_METHOD = "q8"
 
 CONFIG_REPO = "stabilityai/stable-diffusion-xl-base-1.0"
 CONDITIONER_PREFIX = "conditioner."
@@ -199,7 +199,7 @@ def _quantize_unet(
     Args:
         unet: The converted UNet, in fp16.
         out_dir: The `unet` folder of the model.
-        method: A quantization method name, for example `sym-high`.
+        method: A quantization method name, for example `q8`.
 
     Returns:
         The path of the quantized checkpoint.
@@ -253,7 +253,7 @@ def quantize_checkpoint(
     Args:
         input_path: The single-file `.safetensors` checkpoint.
         output_path: The model folder. It is created if missing.
-        method: A quantization method name. The default is `sym-high`.
+        method: A quantization method name. The default is `q8`.
         keep_fp16: Also write the fp16 UNet checkpoint.
         overwrite: Replace the output folder when it is not empty.
 

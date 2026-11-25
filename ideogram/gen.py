@@ -196,8 +196,8 @@ def generate_image(
     num_inference_steps: int = 128,
     guidance_scale: float = 7.0,
     seed: int | None = None,
-    text_quant_method: str | None = "sym-high",
-    denoiser_quant_method: str | None = "sym-med",
+    text_quant_method: str | None = "q8",
+    denoiser_quant_method: str | None = "q6",
     offloading: bool = False,
 ) -> list[Image.Image]:
     root = Path(root).expanduser().resolve()
@@ -408,8 +408,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--steps", type=int, default=128, help="Number of denoising steps.")
     parser.add_argument("--guidance-scale", type=float, default=7.0, help="CFG guidance scale.")
     parser.add_argument("--seed", type=int, default=None, help="RNG seed.")
-    parser.add_argument("--text-quant-method", default="sym-high", help="Text encoder quantization method.")
-    parser.add_argument("--denoiser-quant-method", default="sym-med", help="Denoiser quantization method.")
+    parser.add_argument("--text-quant-method", default="q8", help="Text encoder quantization method.")
+    parser.add_argument("--denoiser-quant-method", default="q6", help="Denoiser quantization method.")
     parser.add_argument("--offload", action="store_true", help="Enable block offloading with pinned host memory. Keeps weights on CPU and streams blocks to GPU one at a time.")
     return parser.parse_args()
 

@@ -29,7 +29,7 @@ class TextTargetTest(unittest.TestCase):
         self.assertEqual(len(targets["rank_3"]), 36)
         self.assertEqual(len(targets["bf16"]), 496)
         self.assertEqual(
-            targets["sym-high"],
+            targets["q8"],
             ["model.language_model.embed_tokens.weight"],
         )
 

@@ -139,7 +139,7 @@ def _load_flux2_denoiser(
     # ---- Quantised checkpoint path ----
     quantized_checkpoint_path = None
     if quant_method is not None:
-        quantized_filename = f"{quant_method_key}_quant.safetensors"  # e.g. "aff_med_max_quant.safetensors"
+        quantized_filename = f"{quant_method_key}_quant.safetensors"  # e.g. "q4_max_quant.safetensors"
         quantized_checkpoint_path = checkpoint_dir / quantized_filename
         if not quantized_checkpoint_path.is_file():
             print(f"    saved quantized checkpoint not found in {checkpoint_dir}; quantizing on the fly")

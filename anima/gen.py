@@ -171,7 +171,7 @@ def parse_args():
     parser.add_argument("--width", type=int, default=1024)
     parser.add_argument("--height", type=int, default=1024)
     parser.add_argument("--text-quant", default="fp16")
-    parser.add_argument("--denoiser-quant", default="sym-high")
+    parser.add_argument("--denoiser-quant", default="q8")
     return parser.parse_args()
 
 

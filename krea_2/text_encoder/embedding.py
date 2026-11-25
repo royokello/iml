@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 
 _BLOCK_SIZE = 32
-_SUPPORTED_METHOD = "sym-high"
+_SUPPORTED_METHOD = "q8"
 
 
 class QuantizedEmbedding(nn.Module):
@@ -48,7 +48,7 @@ class QuantizedEmbedding(nn.Module):
         Args:
             embedding: The plain embedding whose shape and padding index are
                 copied.
-            method: The quantization method. Only `sym-high` is supported.
+            method: The quantization method. Only `q8` is supported.
 
         Returns:
             The quantized embedding with uninitialized buffers.

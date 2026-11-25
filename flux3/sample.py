@@ -60,8 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-seed", "--sample_seed", dest="sample_seed", type=int, default=DEFAULT_SAMPLE_SEED)
     parser.add_argument("--sample-indices", dest="sample_indices", type=str, default=None)
     parser.add_argument("--trigger", type=str, help="Required for captionless datasets.")
-    parser.add_argument("--text-quant-method", default="sym-high-mini", help='"fp16" loads the fp16 weights.')
-    parser.add_argument("--denoiser-quant-method", default="sym-med-nano", help='"fp16" loads the fp16 weights.')
+    parser.add_argument("--text-quant-method", default="q8-mini", help='"fp16" loads the fp16 weights.')
+    parser.add_argument("--denoiser-quant-method", default="q6-mini", help='"fp16" loads the fp16 weights.')
     parser.add_argument("--max-length", type=int, default=512, help="Maximum text tokens.")
     parser.add_argument(
         "--stream-denoiser",

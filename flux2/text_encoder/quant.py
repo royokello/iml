@@ -119,7 +119,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--method",
         required=True,
-        help="Quantization method to apply (e.g., sym-high-nano, aff-med-mini).",
+        help="Quantization method to apply (e.g., q8-mini, q4-mini).",
     )
     return parser.parse_args()
 

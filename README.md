@@ -435,11 +435,11 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - `--base` switches to base-model defaults: `50` steps and CFG guidance scale `4.0`
   - Supports optional image conditioning with `--images "img1.png, img2.png"` by encoding reference images into latent tokens
   - Reference images are resized so their longest side is at most `--ref-size`, then cropped to the nearest valid VAE multiple before encoding
-  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `fp16`, `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
+  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `fp16`, `q8`, `q6`, `q5`, `q4`, `q3`, or `q2`
   - Passing `--text-quant-method fp16` or `--denoiser-quant-method fp16` keeps the original fp16 checkpoint weights
   - Saved quantized checkpoints are loaded automatically when present:
-    - text encoder: `<root>/<model>/model/text_encoder/symmetric_high_quant.safetensors`, `symmetric_med_quant.safetensors`, `affine_high_quant.safetensors`, `affine_med_quant.safetensors`, or `affine_low_quant.safetensors`
-    - denoiser: `<root>/<model>/model/transformer/<variant>/symmetric_high_quant.safetensors`, `symmetric_med_quant.safetensors`, `affine_high_quant.safetensors`, `affine_med_quant.safetensors`, or `affine_low_quant.safetensors`
+    - text encoder: `<root>/<model>/model/text_encoder/q8_quant.safetensors`, `q6_quant.safetensors`, `q5_quant.safetensors`, `q4_quant.safetensors`, `q3_quant.safetensors`, or `q2_quant.safetensors`
+    - denoiser: `<root>/<model>/model/transformer/<variant>/q8_quant.safetensors`, `q6_quant.safetensors`, `q5_quant.safetensors`, `q4_quant.safetensors`, `q3_quant.safetensors`, or `q2_quant.safetensors`
   - Supports merging one or more LoRA checkpoints at load time with `--loras "path1:1.0,path2:0.7"`
 - Examples
   - Prompt-only distilled generation:
@@ -491,8 +491,8 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - `--steps` (default: `1024`)
   - `--resume`
   - `--model` (LoRA init checkpoint file, optional)
-  - `--text-quant` (default: `aff-high-mini`)
-  - `--denoiser-quant` (default: `aff-high-mini`)
+  - `--text-quant` (default: `q8-mini`)
+  - `--denoiser-quant` (default: `q6-mini`)
   - `--stream-denoiser`
   - `--trigger`
   - `--cache-text` (pre-encode captions to CPU)
@@ -524,7 +524,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Prompt-only mode renders a single logical sample using `--width` and `--height`
   - Sample seeds are deterministic per dataset index via `--sample-seed + sample_index`
   - Uses the distilled denoiser defaults from `flux2.gen`
-  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `fp16`, `sym-high`, `sym-med`, `aff-high`, `aff-med`, or `aff-low`
+  - Uses `--text-quant-method` and `--denoiser-quant-method` to choose `fp16`, `q8`, `q6`, `q5`, `q4`, `q3`, or `q2`
   - Requires local Flux 2 assets under the selected model's `model` directory:
     - `tokenizer`
     - `text_encoder`
@@ -573,7 +573,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Builds the target tensor list from the shared Qwen linear suffixes and the version layer count
   - Saves `<iml_root>/<model>/model/text_encoder/<method>_quant.safetensors`, creating that output directory if needed
 - Examples
-  - `python -m flux2.text_encoder.quant --root "/iml_root" --version 4b --input "/models/flux2_4b/text_encoder" --method sym-high-mini`
+  - `python -m flux2.text_encoder.quant --root "/iml_root" --version 4b --input "/models/flux2_4b/text_encoder" --method q8-mini`
 - Useful args
   - `--root`
   - `--input`
@@ -590,7 +590,7 @@ The unified `flux2` package provides the version-aware entrypoints for generatio
   - Quantizes `8` double blocks and `24` single blocks for `9b`
   - Saves `<root>/<model>/model/transformer/<variant>/<method>_quant.safetensors`, creating that output directory if needed
 - Examples
-  - `python -m flux2.denoiser.quant --root "/iml_root" --version 4b --variant base --method sym-med-mini`
+  - `python -m flux2.denoiser.quant --root "/iml_root" --version 4b --variant base --method q6-mini`
 - Useful args
   - `--root`
   - `--version`
@@ -682,7 +682,7 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--input` is optional; it defaults to `<root>/flux3/model/transformer/<variant>`
   - Saves `<root>/flux3/model/transformer/<variant>/<method>_quant.safetensors`
 - Examples
-  - `python -m flux3.denoiser.quant --root "/iml_root" --input "/models/Flux 3 Image Klein/transformer/distill" --variant distill --method sym-med-nano`
+  - `python -m flux3.denoiser.quant --root "/iml_root" --input "/models/Flux 3 Image Klein/transformer/distill" --variant distill --method q6-mini`
 - Useful args
   - `--root`
   - `--input`
@@ -696,7 +696,7 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--input` is optional; it defaults to `<root>/flux3/model/text_encoder`
   - Saves `<root>/flux3/model/text_encoder/<method>_quant.safetensors`
 - Examples
-  - `python -m flux3.text_encoder.quant --root "/iml_root" --input "/models/Flux 3 Image Klein/text_encoder" --method sym-high-mini`
+  - `python -m flux3.text_encoder.quant --root "/iml_root" --input "/models/Flux 3 Image Klein/text_encoder" --method q8-mini`
 - Useful args
   - `--root`
   - `--input`
@@ -758,8 +758,8 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--steps` (default: `1024`)
   - `--resume`
   - `--model` (LoRA start checkpoint)
-  - `--text-quant` (default: `sym-high-mini`)
-  - `--denoiser-quant` (default: `sym-med-nano`)
+  - `--text-quant` (default: `q8-mini`)
+  - `--denoiser-quant` (default: `q6-mini`)
   - `--stream-denoiser`
   - `--cache-text`, `--cache-images`
   - `--rank`, `--alpha` (default: `32`, `32`)
@@ -786,7 +786,7 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - Reads existing latent and text caches from the project. It does not write caches
   - `--stream-denoiser` streams the quantized weights from pinned host memory, one layer at a time
 - Examples
-  - `python -m flux3.sample --root "/iml_root" --project "/data/flux3_dataset" --denoiser-quant-method aff-med --sample-indices "1,2"`
+  - `python -m flux3.sample --root "/iml_root" --project "/data/flux3_dataset" --denoiser-quant-method q4 --sample-indices "1,2"`
   - `python -m flux3.sample --root "/iml_root" --project "/data/flux3_dataset" --prompt "TOK on a beach" --steps 30`
 - Useful args
   - `--root`
@@ -802,8 +802,8 @@ The quant CLIs write only the quant file. They create the missing folders in `<r
   - `--sample-seed`
   - `--sample-indices`
   - `--trigger`
-  - `--text-quant-method` (default: `sym-high-mini`)
-  - `--denoiser-quant-method` (default: `sym-med-nano`)
+  - `--text-quant-method` (default: `q8-mini`)
+  - `--denoiser-quant-method` (default: `q6-mini`)
   - `--max-length`
   - `--stream-denoiser`
 
@@ -854,9 +854,9 @@ Krea 2 runs the Qwen3-VL-4B language model as the text encoder and the Qwen-Imag
   - Quantizes the Krea 2 denoiser for the `turbo` or `raw` variant
   - Saves `<root>/krea_2/model/denoiser/<variant>/<method>_quant.safetensors`
   - `--variant` is required, so a raw run cannot overwrite turbo
-  - Default method: `sym-med-nano`
+  - Default method: `q6-mini`
 - Examples
-  - `python -m krea_2.denoiser.quant --root "/iml_root" --input "/models/Krea 2/transformer/turbo" --variant turbo --method sym-med-nano`
+  - `python -m krea_2.denoiser.quant --root "/iml_root" --input "/models/Krea 2/transformer/turbo" --variant turbo --method q6-mini`
 - Useful args
   - `--root`
   - `--input`
@@ -867,11 +867,11 @@ Krea 2 runs the Qwen3-VL-4B language model as the text encoder and the Qwen-Imag
 - Features
   - Quantizes the Krea 2 text encoder (Qwen3-VL-4B language model, 36 layers)
   - Skips the visual tower
-  - Quantizes the embedding table with `sym-high`, which the loader reads with a row gather
+  - Quantizes the embedding table with `q8`, which the loader reads with a row gather
   - Saves `<root>/krea_2/model/text_encoder/<method>_quant.safetensors`
-  - Default method: `sym-high-mini`
+  - Default method: `q8-mini`
 - Examples
-  - `python -m krea_2.text_encoder.quant --root "/iml_root" --input "/models/Krea 2/text_encoder" --method sym-high-mini`
+  - `python -m krea_2.text_encoder.quant --root "/iml_root" --input "/models/Krea 2/text_encoder" --method q8-mini`
 - Useful args
   - `--root`
   - `--input`
@@ -938,7 +938,7 @@ The quant CLIs write only the quant file. The copy modules below put the config,
 
 Qwen Image 2.1 runs a Qwen3-VL-8B text encoder and a 7.1B parameter denoiser. The text encoder quant file holds the whole vision tower as 351 bf16 tensors, because the edit pipeline reads it. Text-to-image reads the language model only, so the tower costs disk space and no time. `lm_head` stays out of the quant file, because neither path reads logits.
 
-Reference sizes: text encoder 6.85 GB at `sym-med-nano`, denoiser 4.43 GB at `aff-high-nano`.
+Reference sizes: text encoder 6.85 GB at `sym-med-nano`, denoiser 4.43 GB at `aff-high-nano`. These were measured at the old nano presets; the `q6-mini` and `q5-mini` files are slightly larger, so re-measure with `utils.quant.estimator` after re-quantizing.
 
 #### `qwen2.text_encoder.copy_files`, `qwen2.denoiser.copy_files`, `qwen2.vae.copy_files`
 - Features
@@ -964,10 +964,10 @@ Reference sizes: text encoder 6.85 GB at `sym-med-nano`, denoiser 4.43 GB at `af
   - `--variant` is required, so a base run cannot overwrite turbo
   - Splits the block tensors into three ranks: `attn.to_q` and `attn.to_out.0` first, `attn.to_v` and the image MLP second, `attn.to_k` third
   - Keeps every global at bf16: `modulation.1`, `norm_out.linear`, `txt_in`, and the timestep embedders
-  - Default method: `sym-med-nano`, 5.24 GB. `aff-high-nano` gives 4.43 GB and runs resident at 1024 on a 6 GB card
+  - Default method: `q6-mini`, 5.24 GB. `q5-mini` gives 4.43 GB and runs resident at 1024 on a 6 GB card (sizes measured at the old nano presets; re-measure after re-quantizing)
   - `--denoiser-quant-method fp16`, `bf16`, or `fp32` skips quantization and reads the original shards from the same folder, cast to that dtype
 - Examples
-  - `python -m qwen_2.denoiser.quant --root "/iml_root" --input "/models/Qwen Image 2.1/transformer/Turbo" --variant turbo --method aff-high-nano`
+  - `python -m qwen_2.denoiser.quant --root "/iml_root" --input "/models/Qwen Image 2.1/transformer/Turbo" --variant turbo --method q5-mini`
 - Useful args
   - `--root`
   - `--input`
@@ -977,14 +977,14 @@ Reference sizes: text encoder 6.85 GB at `sym-med-nano`, denoiser 4.43 GB at `af
 #### `qwen2.text_encoder.quant`
 - Features
   - Quantizes the Qwen3-VL-8B language model (36 layers) and copies the 351 vision tensors at bf16
-  - Quantizes the embedding table with `sym-high`, which the loader reads with a row gather
+  - Quantizes the embedding table with `q8`, which the loader reads with a row gather
   - Splits the language tensors into three ranks: `v_proj` and `down_proj` first, `q_proj`, `k_proj`, `gate_proj`, and `up_proj` second, `o_proj` third
   - Never writes `lm_head`
   - Saves `<root>/qwen_2/model/text_encoder/<method>_quant.safetensors`
-  - Default method: `sym-high-mini`, 7.99 GB. `sym-med-nano` gives 6.85 GB and is what the 6 GB commands below use
+  - Default method: `q8-mini`, 7.99 GB. `q6-mini` is slightly larger than the 6.85 GB measured at the old `sym-med-nano`, and is what the 6 GB commands below use; re-measure after re-quantizing
   - `--text-quant-method fp16`, `bf16`, or `fp32` skips quantization and reads `model.safetensors` from the same folder, cast to that dtype
 - Examples
-  - `python -m qwen_2.text_encoder.quant --root "/iml_root" --input "/models/Qwen Image 2.1/text_encoder" --method sym-med-nano`
+  - `python -m qwen_2.text_encoder.quant --root "/iml_root" --input "/models/Qwen Image 2.1/text_encoder" --method q6-mini`
 - Useful args
   - `--root`
   - `--input`
@@ -1004,7 +1004,7 @@ Reference sizes: text encoder 6.85 GB at `sym-med-nano`, denoiser 4.43 GB at `af
   - `--vae-dtype {fp32,fp16}` sets the VAE compute dtype. Default: `fp16`
   - `--rgb` flattens alpha over white. The default keeps RGBA
   - Width and height round up to a multiple of 32
-- Measured on a 6 GB card with the text encoder at `sym-med-nano` and the denoiser at `aff-high-nano`: at 1024, 47.5 s per step and about 7 minutes in total, with the text encoder streamed and the denoiser resident. At 512, 14.7 s per step. Streaming the denoiser adds about 27% to the step time, so stream it only when the quant file does not fit
+- Measured on a 6 GB card at the old `sym-med-nano` text encoder and `aff-high-nano` denoiser, which the current `q6-mini` and `q5-mini` presets replace: at 1024, 47.5 s per step and about 7 minutes in total, with the text encoder streamed and the denoiser resident. At 512, 14.7 s per step. Streaming the denoiser adds about 27% to the step time, so stream it only when the quant file does not fit
 - Examples
   - `python -m qwen_2.gen --root "/iml_root" --prompt "a red fox in fresh snow, morning light"`
   - `python -m qwen_2.gen --root "/iml_root" --prompt "a red fox in fresh snow" --width 512 --height 512 --stream-text-encoder --stream-denoiser`
@@ -1050,13 +1050,13 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - Converts the UNet, the VAE, both text encoders, both tokenizers, and the Euler A scheduler
   - Quantizes the UNet in memory during the same pass and writes only `<name>/unet/<method>_quant.safetensors`. The 5.1 GB fp16 UNet file is not written, unless `--keep-fp16` is set
   - The quantized file holds every UNet tensor, so it is complete on its own
-  - `--method` defaults to `sym-high`
+  - `--method` defaults to `q8`
   - Attention and projection weights go to `high`. Feed-forward weights go to `low`. The time and additive embeddings stay fp16
   - Fails when the model folder is not empty, unless `--overwrite` is set
   - CUDA-only runtime; exits if CUDA is unavailable
 - Examples
   - `python -m sdxl.denoiser.quant --input "/models/Illustrious-XL-v1.0.safetensors" --root "/iml_root" --name illustrious`
-  - `python -m sdxl.denoiser.quant --input "/models/Illustrious-XL-v1.0.safetensors" --root "/iml_root" --name illustrious --method sym-med --keep-fp16`
+  - `python -m sdxl.denoiser.quant --input "/models/Illustrious-XL-v1.0.safetensors" --root "/iml_root" --name illustrious --method q6 --keep-fp16`
 - Useful args
   - `--input`
   - `--root`, `--name`
@@ -1100,7 +1100,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
 
 #### `sdxl.train.main`
 - Features
-  - Trains a LoRA on `<project>/images/<id>.png`, with an optional `<id>.txt` caption, on the `sym-high` quantized UNet
+  - Trains a LoRA on `<project>/images/<id>.png`, with an optional `<id>.txt` caption, on the `q8` quantized UNet
   - Resizes every image so the short side is `--target-res` and the aspect ratio is kept. Sides round to 32
   - Skips an image below `--target-res` unless `--target-upscale` is set
   - Encodes text and latents first, then frees the text encoders and the VAE. The loop holds only the UNet and the LoRA state
@@ -1172,7 +1172,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
 - Examples
   - `python -m ideogram.gen --root "/models" --prompt "A cat holding a sign" --output "cat.png"`
   - `python -m ideogram.gen --root "/models" --prompt "cinematic portrait" --width 768 --height 768 --steps 64 --guidance-scale 5.0`
-  - `python -m ideogram.gen --root "/models" --prompt "futuristic city" --text-quant-method sym-high --denoiser-quant-method sym-med`
+  - `python -m ideogram.gen --root "/models" --prompt "futuristic city" --text-quant-method q8 --denoiser-quant-method q6`
 - Useful args
   - `--root`, `--prompt`, `--output`
   - `--width`, `--height`, `--steps`, `--guidance-scale`, `--seed`
@@ -1187,7 +1187,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - Strips the `language_model.` prefix in the saved output
   - Saves `<root>/ideogram/text_encoder/<method>_quant.safetensors`
 - Examples
-  - `python -m ideogram.text_encoder.quant --root "/models" --input "/path/to/f8/text_encoder" --method sym-high-nano`
+  - `python -m ideogram.text_encoder.quant --root "/models" --input "/path/to/f8/text_encoder" --method q8-mini`
 - Useful args
   - `--root`, `--input`, `--method`
 
@@ -1199,7 +1199,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - Dequantizes F8 scales back to fp32, then re-quantizes target tensors with the chosen method
   - Saves `<root>/ideogram/transformer/<variant>/<method>_quant.safetensors`
 - Examples
-  - `python -m ideogram.denoiser.quant --root "/models" --input "/path/to/f8/root" --variant cond --method sym-med-mini`
+  - `python -m ideogram.denoiser.quant --root "/models" --input "/path/to/f8/root" --variant cond --method q6-mini`
 - Useful args
   - `--root`, `--input`, `--method`, `--variant` (`cond` or `uncond`)
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 # `rank_1`  attention projections and the spatial transformer input/output
 #           projections.
 # `rank_2`  feed-forward layers inside the transformer blocks. These carry most of
-#           the parameters, so a `-mini` or `-nano` variant puts them at the lower
+#           the parameters, so a `-mini` or `-max` variant puts them at the lower
 #           method.
 # `fp16`  the time and additive embeddings. They are small and sensitive.
 

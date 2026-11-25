@@ -71,7 +71,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", required=True, help="Root folder to receive the quantized output.")
     parser.add_argument("--input", required=True, help="Source directory containing .safetensors shards.")
     parser.add_argument("--variant", default="base", help="Model variant subfolder (default: base).")
-    parser.add_argument("--method", default="sym-high", help="Quantization method (default: sym-high).")
+    parser.add_argument("--method", default="q8", help="Quantization method (default: q8).")
     return parser.parse_args()
 
 

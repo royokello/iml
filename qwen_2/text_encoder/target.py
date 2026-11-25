@@ -115,7 +115,7 @@ def _build_qwen2_text_encoder_targets() -> dict[str, list[str]]:
         "rank_2": rank_2,
         "rank_3": rank_3,
         "bf16": bf16,
-        "sym-high": list(_SYM_HIGH_TARGETS),
+        "q8": list(_SYM_HIGH_TARGETS),
     }
 
 

@@ -167,7 +167,7 @@ def _wrap_quantized_embedding(model: nn.Module, *, include_vision: bool, checkpo
     embedding = getattr(parent, "embed_tokens")
     if isinstance(embedding, QuantizedEmbedding):
         return
-    parent.embed_tokens = QuantizedEmbedding.from_prequantized(embedding, method="sym-high")
+    parent.embed_tokens = QuantizedEmbedding.from_prequantized(embedding, method="q8")
 
 
 def load_qwen2_text_encoder(

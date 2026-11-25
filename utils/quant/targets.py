@@ -56,13 +56,15 @@ def build_mixed_target_config(
     """Map tensor groups onto quantization methods for one method name.
 
     A target set names its groups `rank_1`, `rank_2`, ... in order of precision,
-    most precise first. Rank 1 takes the base method. The bottom rank drops by
-    the depth of the variant, and the ranks between drop by one rung. A group
-    named after a method, such as `sym-high`, keeps that method whatever the
-    ladder says.
+    most precise first. A plain method gives every rank the base method. `-max`
+    raises rank 1 by one rung, drops the bottom rank by one rung, and keeps the
+    ranks between at the base method; on a two-rank set rank 2 stays at the base
+    method. `-mini` keeps rank 1 at the base method and drops every other rank
+    by one rung. A group named after a method, such as `q8`, keeps that method
+    whatever the variant says.
 
     Args:
-        method: A method name such as `sym-med-nano`.
+        method: A method name such as `q6-mini`.
         target_tensors: The tensor groups.
 
     Returns:
