@@ -402,9 +402,11 @@ A Flask-based web interface for finding and exporting near-duplicate images usin
   - `interval` mode samples frames at a fixed seconds interval and emits as many full grids as possible
   - `segment_midpoints` mode divides the full video into exactly `rows * cols` segments and picks the middle frame from each segment to build one grid
   - Center-crops each frame to the requested cell ratio before resizing into the grid
-  - Output: `<dir>/000001.png ...` + `config.json`
+  - `--root` supplies ffmpeg (`<root>/ffmpeg/bin/ffmpeg.exe`) and the default output folder `<root>/video/grids/<YYYY-MM-DD-HH-MM-SS>`
+  - `--ffmpeg` and `--output` stay available and override `--root`
+  - Output: one PNG per full grid (e.g. `1.png`, `01.png`, ...) + `config.json`
 - Example
-  - `python -m video.grid.generate -i "video.mp4" -o "grids" --ffmpeg "/tools/ffmpeg" --rows 3 --cols 3 --selection-mode interval --frame-interval 30`
+  - `python -m video.grid.generate -i "video.mp4" --root "/tools" --rows 3 --cols 3 --selection-mode interval --frame-interval 30`
 
 #### `video.grid.animate`
 - Features
@@ -1107,17 +1109,20 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - Gradient checkpointing on `down_blocks`, `mid_block`, and `up_blocks` is on by default. `--no-gradient-checkpointing` keeps the activations and is faster, but needs about 2 GB more VRAM
   - `--stream-denoiser` keeps the quantized weights in pinned host memory and copies each layer onto the GPU for its own multiply. It trades about 1 s per step for 2.2 GiB of VRAM, which is what fits 768 on a 6 GB card. It needs about 2.2 GiB of free host RAM and leaves gradient checkpointing on
   - `--cache-text` writes `<id>.text.safetensors`. `--cache-images` writes `<id>.<res>.safetensors`. Both sit next to the images
+  - `--text-dropout` removes each tag except `--trigger` with the given probability. The captions are encoded before the loop, `ceil(steps / images)` per image, so every visit can see a different caption and the encoders stay out of the loop. The trigger is required and every caption must hold it
+  - The text cache stores `(variants, 77, 2048)` and `(variants, 1280)` tensors. It is rebuilt when the caption, the dropout config, or the step count changes
   - Saves `<step>.safetensors` and `<step>.optimizer.pt` under `<project>/models`, plus `steps.csv`, `stop.txt`, and `loss.png`
   - Prints one line per step in the Flux 3 format: step time, the load/forward/backward split, the gradient norm, and the ETA
   - Logs the loss and refreshes `loss.png` every 8 steps. `--ma` overrides the moving-average windows, which default to the sample count and the checkpoint interval
   - Delete `models/stop.txt` to stop cleanly after the current step
-  - Checkpoint metadata: `rank`, `alpha`, `step`, `base`, `targets`
+  - Checkpoint metadata: `rank`, `alpha`, `step`, `base`, `targets`, plus `text_dropout` and `trigger` when dropout is on
   - `--resume` continues from the highest step in `<project>/models`
   - The output loads straight into `sdxl.gen --loras`
   - CUDA-only runtime; exits if CUDA is unavailable
 - Examples
   - `python -m sdxl.train.main --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --cache-images --cache-text`
   - `python -m sdxl.train.main --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --steps 512 --rank 16 --alpha 8`
+  - `python -m sdxl.train.main --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --text-dropout 0.1 --trigger niji --cache-text`
   - `python -m sdxl.train.main --root "/iml_root" --project "/iml_root/sdxl/loras/niji" --resume`
 - Useful args
   - `--root`, `--name`, `--project`
@@ -1128,6 +1133,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
   - `--no-gradient-checkpointing`
   - `--stream-denoiser`
   - `--cache-images`, `--cache-text`
+  - `--text-dropout`, `--trigger`
   - `--checkpoint-steps`, `--resume`
 
 #### `sdxl.sample`

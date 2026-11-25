@@ -1,8 +1,11 @@
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -14,6 +17,65 @@ def _run_cmd(cmd, verbose=False):
         print(" ".join(cmd))
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     return p.returncode, p.stdout, p.stderr
+
+
+def _ffmpeg_binary_name():
+    return "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
+
+
+def resolve_ffmpeg(root, ffmpeg):
+    """Resolve the ffmpeg executable from an explicit path or a root directory.
+
+    Args:
+        root: Root directory that holds ``ffmpeg/bin/ffmpeg``. Used only when
+            ``ffmpeg`` is not given.
+        ffmpeg: Explicit path to the ffmpeg executable, or to a folder that
+            holds ``bin/ffmpeg``.
+
+    Returns:
+        Path to the ffmpeg executable as a string.
+
+    Raises:
+        ValueError: No ffmpeg could be located.
+    """
+    if ffmpeg:
+        path = Path(ffmpeg)
+        if path.is_dir():
+            path = path / "bin" / _ffmpeg_binary_name()
+        if path.is_file():
+            return str(path)
+        found = shutil.which(str(path))
+        if found:
+            return found
+        raise ValueError(f"ffmpeg not found at {path}")
+    if root:
+        path = Path(root) / "ffmpeg" / "bin" / _ffmpeg_binary_name()
+        if not path.is_file():
+            raise ValueError(f"ffmpeg not found at {path}")
+        return str(path)
+    raise ValueError("Provide --ffmpeg or --root to locate ffmpeg.")
+
+
+def resolve_output_dir(root, output_dir):
+    """Resolve the output directory, defaulting to a timestamped folder under root.
+
+    Args:
+        root: Root directory that holds ``video/grids``. Used only when
+            ``output_dir`` is not given.
+        output_dir: Explicit output directory.
+
+    Returns:
+        The output directory as a ``Path``.
+
+    Raises:
+        ValueError: No output directory could be resolved.
+    """
+    if output_dir:
+        return Path(output_dir)
+    if root:
+        stamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+        return Path(root) / "video" / "grids" / stamp
+    raise ValueError("Provide --output or --root for the output directory.")
 
 
 def _resolve_tool(ffmpeg_path):
@@ -328,8 +390,15 @@ def create_video_grids(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate video grid images")
     parser.add_argument("-i", "--input", required=True, help="Input video path")
-    parser.add_argument("-o", "--output", required=True, help="Output directory")
-    parser.add_argument("--ffmpeg", required=True, help="Path to ffmpeg executable")
+    parser.add_argument("--root", type=Path, default=None,
+                        help="Root directory (ffmpeg at <root>/ffmpeg/bin/ffmpeg, "
+                             "default output at <root>/video/grids/<timestamp>)")
+    parser.add_argument("-o", "--output", type=Path, default=None,
+                        help="Output directory "
+                             "(default: <root>/video/grids/<YYYY-MM-DD-HH-MM-SS>)")
+    parser.add_argument("--ffmpeg", default=None,
+                        help="Path to ffmpeg executable or its folder "
+                             "(overrides --root; ffprobe must be next to it)")
     parser.add_argument("--rows", type=int, default=2, help="Grid rows (default: 2)")
     parser.add_argument("--cols", type=int, default=2, help="Grid columns (default: 2)")
     parser.add_argument("--cell-ratio", default="1x1",
@@ -356,9 +425,15 @@ if __name__ == "__main__":
         parser.error("--cell-ratio must contain integers")
 
     if args.dry_run:
+        try:
+            ffmpeg_path = resolve_ffmpeg(args.root, args.ffmpeg)
+            output_dir = resolve_output_dir(args.root, args.output)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         print(f"Input: {args.input}")
-        print(f"Output: {args.output}")
-        print(f"FFmpeg: {args.ffmpeg}")
+        print(f"Output: {output_dir}")
+        print(f"FFmpeg: {ffmpeg_path}")
         print(f"Grid: {args.rows}x{args.cols}")
         print(f"Cell ratio: {ratio_w}x{ratio_h}")
         print(f"Cell height: {args.cell_height}")
@@ -369,10 +444,12 @@ if __name__ == "__main__":
         sys.exit(0)
 
     try:
+        ffmpeg_path = resolve_ffmpeg(args.root, args.ffmpeg)
+        output_dir = resolve_output_dir(args.root, args.output)
         result = create_video_grids(
             video_path=args.input,
-            output_dir=args.output,
-            ffmpeg=args.ffmpeg,
+            output_dir=output_dir,
+            ffmpeg=ffmpeg_path,
             grid_rows=args.rows,
             grid_cols=args.cols,
             cell_ratio=(ratio_w, ratio_h),
@@ -381,7 +458,7 @@ if __name__ == "__main__":
             selection_mode=args.selection_mode,
             verbose=args.verbose,
         )
-        print(f"Created {result['grids_made']} grid(s) in {args.output}")
+        print(f"Created {result['grids_made']} grid(s) in {output_dir}")
         for o in result["outputs"]:
             print(f"  {o['filename']}")
     except Exception as e:
