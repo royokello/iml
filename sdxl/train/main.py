@@ -307,6 +307,8 @@ def train(
     stream_denoiser: bool = False,
     cache_images: bool = False,
     cache_text: bool = False,
+    text_dropout: float = 0.0,
+    trigger: str | None = None,
     resume: bool = False,
     ma_windows: list[int] | None = None,
 ) -> Path:
@@ -338,6 +340,12 @@ def train(
             memory at the cost of host-to-device traffic.
         cache_images: Write and reuse latents.
         cache_text: Write and reuse text embeddings.
+        text_dropout: The probability that a tag other than the trigger is
+            removed from a caption. The captions are encoded once, before the
+            loop, at `ceil(steps / images)` per image, so the encoders stay
+            out of the loop.
+        trigger: The tag that tag dropout never removes. Required when
+            `text_dropout` is above zero.
         resume: Continue from the highest step in `<models>`.
         ma_windows: The moving-average windows for `loss.png`. Defaults to the
             sample count and the checkpoint interval.
@@ -360,6 +368,11 @@ def train(
         raise ValueError(f"--rank and --alpha must be positive, got {rank} and {alpha}.")
     if checkpoint_steps <= 0:
         raise ValueError(f"--checkpoint-steps must be positive, got {checkpoint_steps}.")
+    if not 0.0 <= text_dropout < 1.0:
+        raise ValueError(f"--text-dropout must be in [0, 1), got {text_dropout}.")
+    trigger = trigger.strip() if trigger else None
+    if text_dropout > 0 and not trigger:
+        raise ValueError("--text-dropout needs --trigger.")
 
     model_root = resolve_model_root(root, name)
     if not model_root.is_dir():
@@ -397,6 +410,20 @@ def train(
             raise RuntimeError(
                 f"Checkpoint rank {metadata['rank']} does not match --rank {rank}."
             )
+        checkpoint_dropout = metadata.get("text_dropout")
+        if checkpoint_dropout is not None and float(checkpoint_dropout) != text_dropout:
+            print(
+                f"  * warning: checkpoint text dropout {checkpoint_dropout} "
+                f"differs from --text-dropout {text_dropout:g}",
+                flush=True,
+            )
+        checkpoint_trigger = metadata.get("trigger")
+        if checkpoint_trigger is not None and checkpoint_trigger != trigger:
+            print(
+                f"  * warning: checkpoint trigger {checkpoint_trigger!r} "
+                f"differs from --trigger {trigger!r}",
+                flush=True,
+            )
         start_step = _read_step(resume_checkpoint)
         _truncate_loss_csv(loss_csv, start_step)
         if not loss_csv.exists():
@@ -416,6 +443,10 @@ def train(
         target_upscale=target_upscale,
         cache_images=cache_images,
         cache_text=cache_text,
+        text_dropout=text_dropout,
+        trigger=trigger,
+        text_steps=steps,
+        text_seed=seed,
         device=device,
     )
     if len(dataset) == 0:
@@ -489,6 +520,9 @@ def train(
         "base": name,
         "targets": ",".join(SDXL_LORA_TARGETS),
     }
+    if text_dropout > 0:
+        metadata["text_dropout"] = f"{text_dropout:g}"
+        metadata["trigger"] = trigger
 
     sample_count = len(dataset)
     cursor = start_step % sample_count
@@ -504,12 +538,23 @@ def train(
 
         sample_start = time.perf_counter()
         index = cursor % sample_count
+        variant = (
+            (step // sample_count) % dataset.text_variants
+            if dataset.text_variants > 1
+            else 0
+        )
 
         latents = dataset.latents[index].unsqueeze(0).to(device=device, dtype=torch.float16)
         prompt_embeds = (
-            dataset.prompt_embeds[index].unsqueeze(0).to(device=device, dtype=torch.float16)
+            dataset.prompt_embeds[index][variant]
+            .unsqueeze(0)
+            .to(device=device, dtype=torch.float16)
         )
-        pooled_embeds = dataset.pooled[index].unsqueeze(0).to(device=device, dtype=torch.float16)
+        pooled_embeds = (
+            dataset.pooled[index][variant]
+            .unsqueeze(0)
+            .to(device=device, dtype=torch.float16)
+        )
         time_ids = dataset.time_ids(index, dtype=prompt_embeds.dtype).to(device=device)
 
         noise = torch.randn_like(latents)
@@ -686,6 +731,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--cache-images", dest="cache_images", action="store_true")
     parser.add_argument("--cache-text", dest="cache_text", action="store_true")
+    parser.add_argument(
+        "--text-dropout",
+        dest="text_dropout",
+        type=float,
+        default=0.0,
+        help=(
+            "Probability that a tag other than the trigger is removed from a "
+            "caption. Captions are encoded once before the loop, one per image "
+            "visit (default: 0)."
+        ),
+    )
+    parser.add_argument(
+        "--trigger",
+        default=None,
+        help="The tag that --text-dropout never removes. Required with it.",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument(
         "--moving-averages",
@@ -723,6 +784,8 @@ def main() -> None:
         stream_denoiser=args.stream_denoiser,
         cache_images=args.cache_images,
         cache_text=args.cache_text,
+        text_dropout=args.text_dropout,
+        trigger=args.trigger,
         resume=args.resume,
         ma_windows=_parse_ma_windows(args.ma_windows) if args.ma_windows else None,
     )

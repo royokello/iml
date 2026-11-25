@@ -1,9 +1,108 @@
 from __future__ import annotations
 
+import random
+
 import torch
 
 PROMPT_EMBEDS_KEY = "prompt_embeds"
 POOLED_KEY = "pooled"
+
+
+def split_tags(caption: str) -> list[str]:
+    """Split a caption into tags.
+
+    Args:
+        caption: A comma-separated caption.
+
+    Returns:
+        The stripped tags. Empty entries are dropped.
+    """
+    return [tag.strip() for tag in caption.split(",") if tag.strip()]
+
+
+def caption_has_tag(caption: str, tag: str) -> bool:
+    """Return True when a caption holds an exact tag.
+
+    Args:
+        caption: A comma-separated caption.
+        tag: The tag to look for.
+
+    Returns:
+        True when the tag is present after stripping.
+    """
+    return tag in split_tags(caption)
+
+
+def drop_tags(
+    caption: str,
+    *,
+    trigger: str,
+    rate: float,
+    rng: random.Random,
+) -> str:
+    """Return a caption with random tags removed.
+
+    The trigger tag is always kept. Every other tag is kept with probability
+    `1 - rate`.
+
+    Args:
+        caption: A comma-separated caption.
+        trigger: The tag that must survive. It must be in the caption.
+        rate: The probability that an eligible tag is removed.
+        rng: The random source. Pass one instance per image so a rebuild
+            reproduces the same captions.
+
+    Returns:
+        The remaining tags, joined with `", "`, in their original order.
+
+    Raises:
+        ValueError: If the caption does not hold the trigger, or the rate is
+            outside `[0, 1)`.
+    """
+    if not 0.0 <= rate < 1.0:
+        raise ValueError(f"Tag dropout rate must be in [0, 1), got {rate}.")
+
+    tags = split_tags(caption)
+    if trigger not in tags:
+        raise ValueError(f"Caption does not hold the trigger {trigger!r}: {caption!r}")
+
+    return ", ".join(tag for tag in tags if tag == trigger or rng.random() >= rate)
+
+
+def build_dropout_captions(
+    caption: str,
+    *,
+    trigger: str,
+    rate: float,
+    count: int,
+    seed: str,
+) -> list[str]:
+    """Return `count` captions with independent tag dropout.
+
+    The seed fixes the result, so two builds of the same image produce the
+    same list and the text cache can be reused.
+
+    Args:
+        caption: A comma-separated caption.
+        trigger: The tag that must survive.
+        rate: The probability that an eligible tag is removed.
+        count: The number of captions to produce. At least one.
+        seed: A stable seed string, unique per image.
+
+    Returns:
+        The generated captions, in a fixed order.
+
+    Raises:
+        ValueError: If `count` is below one.
+    """
+    if count < 1:
+        raise ValueError(f"Caption count must be positive, got {count}.")
+
+    rng = random.Random(seed)
+    return [
+        drop_tags(caption, trigger=trigger, rate=rate, rng=rng)
+        for _ in range(count)
+    ]
 
 
 def encode_caption(
@@ -80,4 +179,12 @@ def encode_caption(
     )
 
 
-__all__ = ["POOLED_KEY", "PROMPT_EMBEDS_KEY", "encode_caption"]
+__all__ = [
+    "POOLED_KEY",
+    "PROMPT_EMBEDS_KEY",
+    "build_dropout_captions",
+    "caption_has_tag",
+    "drop_tags",
+    "encode_caption",
+    "split_tags",
+]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import math
 import time
 from pathlib import Path
 
@@ -11,7 +13,13 @@ from safetensors import safe_open
 from safetensors.torch import load_file, save_file
 from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 
-from sdxl.train.text import POOLED_KEY, PROMPT_EMBEDS_KEY, encode_caption
+from sdxl.train.text import (
+    POOLED_KEY,
+    PROMPT_EMBEDS_KEY,
+    build_dropout_captions,
+    caption_has_tag,
+    encode_caption,
+)
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 VAE_SCALE_FACTOR = 8
@@ -20,6 +28,7 @@ DEFAULT_TARGET_RESOLUTION = 512
 
 LATENT_KEY = "latent"
 CAPTION_METADATA_KEY = "caption"
+VARIANTS_METADATA_KEY = "variants"
 
 
 def target_size(
@@ -109,7 +118,7 @@ def _prepare_pixels(
 
 
 class SDXLDataset:
-    """A cached SDXL training set: one latent, one text embedding per image.
+    """A cached SDXL training set: one latent and one or more text embeddings per image.
 
     The text encoders and the VAE are loaded only when something must be
     encoded, and they are freed before the constructor returns.
@@ -123,6 +132,10 @@ class SDXLDataset:
         target_upscale: bool = False,
         cache_images: bool = False,
         cache_text: bool = False,
+        text_dropout: float = 0.0,
+        trigger: str | None = None,
+        text_steps: int = 0,
+        text_seed: int = 0,
         device: torch.device | str = "cuda",
     ):
         """Build the training set.
@@ -135,11 +148,22 @@ class SDXLDataset:
                 `target_resolution`. Without it, such an image is skipped.
             cache_images: Write and reuse `<id>.<res>.safetensors` latents.
             cache_text: Write and reuse `<id>.text.safetensors` embeddings.
+            text_dropout: The probability that a tag other than the trigger is
+                removed from a caption. Zero disables it and stores one
+                embedding per image.
+            trigger: The tag that tag dropout never removes. Required when
+                `text_dropout` is above zero.
+            text_steps: The number of training steps. It fixes the number of
+                dropout captions per image to `ceil(text_steps / images)`, so
+                every visit can see a different caption.
+            text_seed: The seed of the dropout captions. A rebuild with the
+                same seed writes the same cache.
             device: Where the encoders run during the cache pass.
 
         Raises:
             FileNotFoundError: If the dataset folder is missing.
-            ValueError: If the folder has no usable image.
+            ValueError: If the folder has no usable image, or the dropout
+                settings are inconsistent.
         """
         self.model_root = Path(model_root).expanduser().resolve()
         self.dataset_dir = Path(dataset_dir).expanduser().resolve()
@@ -148,6 +172,14 @@ class SDXLDataset:
         self.target_upscale = target_upscale
         self.cache_images = cache_images
         self.cache_text = cache_text
+        self.text_dropout = text_dropout
+        self.trigger = trigger.strip() if trigger else None
+        self.text_seed = text_seed
+
+        if not 0.0 <= text_dropout < 1.0:
+            raise ValueError(f"Text dropout must be in [0, 1), got {text_dropout}.")
+        if text_dropout > 0 and not self.trigger:
+            raise ValueError("Text dropout needs a trigger tag.")
 
         if not self.dataset_dir.is_dir():
             raise FileNotFoundError(f"Dataset folder not found: {self.dataset_dir}")
@@ -174,12 +206,28 @@ class SDXLDataset:
                 "Use --target-upscale to encode them anyway."
             )
 
+        self.text_variants = (
+            max(1, math.ceil(text_steps / len(selected))) if text_dropout > 0 else 1
+        )
+
         self.names = [path.stem for path in selected]
         print(
             f"Dataset: {len(selected)} image(s) at target resolution "
             f"{target_resolution}, {skipped} skipped",
             flush=True,
         )
+        if self.text_variants > 1:
+            print(
+                f"  * text dropout {text_dropout:g} on {self.trigger!r}: "
+                f"{self.text_variants} caption(s) per image",
+                flush=True,
+            )
+        elif text_dropout > 0:
+            print(
+                "  * warning: the run is shorter than the dataset, so text "
+                "dropout stores a single caption per image",
+                flush=True,
+            )
 
         self.latents = self._build_latents(selected)
         self.prompt_embeds, self.pooled = self._build_text(selected)
@@ -265,14 +313,49 @@ class SDXLDataset:
 
         return latents
 
+    def _captions_for(self, image_path: Path, caption: str) -> list[str]:
+        """Return the captions to encode for one image.
+
+        Args:
+            image_path: The image file, used in error messages and the seed.
+            caption: The caption text.
+
+        Returns:
+            One caption without dropout, or `text_variants` captions with it.
+
+        Raises:
+            ValueError: If dropout is on and the caption is empty or lacks the
+                trigger.
+        """
+        if self.text_dropout <= 0:
+            return [caption]
+        if not caption:
+            raise ValueError(
+                f"{image_path.name} has no caption. Text dropout needs one."
+            )
+        if not caption_has_tag(caption, self.trigger):
+            raise ValueError(
+                f"The caption of {image_path.name} does not hold the trigger "
+                f"{self.trigger!r}. Put the trigger in every caption or pass "
+                "the right --trigger."
+            )
+        return build_dropout_captions(
+            caption,
+            trigger=self.trigger,
+            rate=self.text_dropout,
+            count=self.text_variants,
+            seed=f"{self.text_seed}:{image_path.stem}",
+        )
+
     def _build_text(self, image_paths: list[Path]) -> tuple[list[torch.Tensor], list[torch.Tensor]]:
-        """Return one embedding and one pooled vector per image.
+        """Return one embedding stack and one pooled stack per image.
 
         Args:
             image_paths: The image files, in dataset order.
 
         Returns:
-            Two lists of CPU fp16 tensors: shapes `(77, 2048)` and `(1280,)`.
+            Two lists of CPU fp16 tensors: shapes `(variants, 77, 2048)` and
+            `(variants, 1280)`.
         """
         prompt_embeds: list[torch.Tensor] = []
         pooled_embeds: list[torch.Tensor] = []
@@ -283,40 +366,61 @@ class SDXLDataset:
 
         for index, image_path in enumerate(image_paths):
             caption = _read_caption(image_path)
+            captions = self._captions_for(image_path, caption)
             cache_path = self.dataset_dir / f"{image_path.stem}.text.safetensors"
 
-            if self.cache_text and cache_path.is_file() and _caption_matches(cache_path, caption):
+            if self.cache_text and cache_path.is_file() and _text_cache_matches(
+                cache_path, caption, captions
+            ):
                 tensors = load_file(str(cache_path), device="cpu")
-                prompt_embeds.append(tensors[PROMPT_EMBEDS_KEY].to(dtype=torch.float16))
-                pooled_embeds.append(tensors[POOLED_KEY].to(dtype=torch.float16))
-                print(f"    [{index + 1}/{len(image_paths)}] {image_path.name}: text cache")
-                continue
+                embed = tensors[PROMPT_EMBEDS_KEY].to(dtype=torch.float16)
+                pooled = tensors[POOLED_KEY].to(dtype=torch.float16)
+                if embed.ndim == 2:
+                    embed = embed.unsqueeze(0)
+                if pooled.ndim == 1:
+                    pooled = pooled.unsqueeze(0)
+                if embed.shape[0] == len(captions) and pooled.shape[0] == len(captions):
+                    prompt_embeds.append(embed)
+                    pooled_embeds.append(pooled)
+                    print(f"    [{index + 1}/{len(image_paths)}] {image_path.name}: text cache")
+                    continue
 
             if text_encoder is None:
                 tokenizer, tokenizer_2, text_encoder, text_encoder_2 = self._load_encoders()
 
             start = time.perf_counter()
-            embed, pooled = encode_caption(
-                caption,
-                tokenizer,
-                tokenizer_2,
-                text_encoder,
-                text_encoder_2,
-                device=self.device,
-            )
+            embed_list: list[torch.Tensor] = []
+            pooled_list: list[torch.Tensor] = []
+            for current_caption in captions:
+                embed, pooled = encode_caption(
+                    current_caption,
+                    tokenizer,
+                    tokenizer_2,
+                    text_encoder,
+                    text_encoder_2,
+                    device=self.device,
+                )
+                embed_list.append(embed)
+                pooled_list.append(pooled)
+
+            embed = torch.stack(embed_list, dim=0)
+            pooled = torch.stack(pooled_list, dim=0)
 
             if self.cache_text:
                 save_file(
                     {PROMPT_EMBEDS_KEY: embed, POOLED_KEY: pooled},
                     str(cache_path),
-                    metadata={CAPTION_METADATA_KEY: caption},
+                    metadata={
+                        CAPTION_METADATA_KEY: caption,
+                        VARIANTS_METADATA_KEY: json.dumps(captions),
+                    },
                 )
 
             prompt_embeds.append(embed)
             pooled_embeds.append(pooled)
             print(
                 f"    [{index + 1}/{len(image_paths)}] {image_path.name}: "
-                f"text in {time.perf_counter() - start:.2f}s"
+                f"{len(captions)} caption(s) in {time.perf_counter() - start:.2f}s"
             )
 
         if text_encoder is not None:
@@ -389,19 +493,34 @@ def _read_caption(image_path: Path) -> str:
     return caption_path.read_text(encoding="utf-8").strip()
 
 
-def _caption_matches(cache_path: Path, caption: str) -> bool:
-    """Return True when a text cache belongs to a caption.
+def _text_cache_matches(cache_path: Path, caption: str, captions: list[str]) -> bool:
+    """Return True when a text cache belongs to a caption and its variants.
+
+    A cache written before tag dropout carries no variant list. It matches
+    only when one caption is wanted.
 
     Args:
         cache_path: The `.text.safetensors` file.
         caption: The current caption.
+        captions: The captions to encode, in order.
 
     Returns:
-        True when the file metadata holds the same caption.
+        True when the file metadata holds the same caption and the same
+        caption list.
     """
     with safe_open(str(cache_path), framework="pt") as handle:
         metadata = handle.metadata() or {}
-    return metadata.get(CAPTION_METADATA_KEY) == caption
+
+    if metadata.get(CAPTION_METADATA_KEY) != caption:
+        return False
+
+    stored = metadata.get(VARIANTS_METADATA_KEY)
+    if stored is None:
+        return len(captions) == 1
+    try:
+        return json.loads(stored) == captions
+    except ValueError:
+        return False
 
 
 __all__ = ["DEFAULT_TARGET_RESOLUTION", "SDXLDataset", "target_size"]
