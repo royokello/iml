@@ -43,17 +43,17 @@ _VISUAL_FP16_SUFFIXES = (
 
 
 def _build_ideogram_text_encoder_targets() -> dict[str, list[str]]:
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
     fp32: list[str] = []
     fp16: list[str] = []
 
     for layer_idx in range(_NUM_LM_LAYERS):
         prefix = f"language_model.layers.{layer_idx}."
         for suffix in _LM_HIGH_SUFFIXES:
-            high.append(prefix + suffix)
+            rank_1.append(prefix + suffix)
         for suffix in _LM_LOW_SUFFIXES:
-            low.append(prefix + suffix)
+            rank_2.append(prefix + suffix)
         for suffix in _LM_FP32_SUFFIXES:
             fp32.append(prefix + suffix)
 
@@ -91,4 +91,4 @@ def _build_ideogram_text_encoder_targets() -> dict[str, list[str]]:
     # LM embedding — fp16
     fp16.append("language_model.embed_tokens.weight")
 
-    return {"high": high, "low": low, "fp32": fp32, "fp16": fp16}
+    return {"rank_1": rank_1, "rank_2": rank_2, "fp32": fp32, "fp16": fp16}

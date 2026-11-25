@@ -4,7 +4,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 import torch
-from safetensors import safe_open
+
+from utils.safetensors_io import TensorFile
 
 from .to.affine import quantize_to_affine
 from .to.symmetric import quantize_to_symmetric
@@ -81,32 +82,32 @@ def _quantize_safetensors_file(
     result: dict[str, torch.Tensor],
 ) -> None:
     skipped = 0
-    with safe_open(str(path), framework="pt", device="cpu") as handle:
-        names = handle.keys()
-        total = len(names)
-        for i, name in enumerate(names, start=1):
-            if inclusion_prefix is not None and not name.startswith(inclusion_prefix):
-                skipped += 1
-                print(f"{i}/{total}: {name} skipped")
-                continue
+    handle = TensorFile(path)
+    names = handle.keys()
+    total = len(names)
+    for i, name in enumerate(names, start=1):
+        if inclusion_prefix is not None and not name.startswith(inclusion_prefix):
+            skipped += 1
+            print(f"{i}/{total}: {name} skipped")
+            continue
 
-            if exclusion_prefix is not None and name.startswith(exclusion_prefix):
-                skipped += 1
-                print(f"{i}/{total}: {name} skipped")
-                continue
+        if exclusion_prefix is not None and name.startswith(exclusion_prefix):
+            skipped += 1
+            print(f"{i}/{total}: {name} skipped")
+            continue
 
-            tensor = handle.get_tensor(name)
-            method = methods_by_name.get(name)
-            label = method or ("fp16" if tensor.dtype in {torch.float32, torch.bfloat16} else "pass")
-            print(f"{i}/{total}: {name} {tuple(tensor.shape)} at {label}")
-            result.update(
-                _build_quantized_or_fp16_tensors(
-                    name=name,
-                    tensor=tensor,
-                    target_method=method,
-                )
+        tensor = handle.read(name)
+        method = methods_by_name.get(name)
+        label = method or ("fp16" if tensor.dtype in {torch.float32, torch.bfloat16} else "pass")
+        print(f"{i}/{total}: {name} {tuple(tensor.shape)} at {label}")
+        result.update(
+            _build_quantized_or_fp16_tensors(
+                name=name,
+                tensor=tensor,
+                target_method=method,
             )
-            del tensor
+        )
+        del tensor
 
     if skipped:
         print(f"Skipped {skipped} tensors from {path}.")

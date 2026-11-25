@@ -61,8 +61,8 @@ _GLOBAL_FP16 = (
 
 
 def _build_flux2_denoiser_target_tensors(version: str) -> dict[str, list[str]]:
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
     fp32: list[str] = []
     fp16: list[str] = []
 
@@ -75,13 +75,13 @@ def _build_flux2_denoiser_target_tensors(version: str) -> dict[str, list[str]]:
         prefix = f"transformer_blocks.{block_idx}."
         all_high = block_idx in double_edge
         for s in _DOUBLE_HIGH_SUFFIXES:
-            high.append(prefix + s)
+            rank_1.append(prefix + s)
         if all_high:
             for s in _DOUBLE_LOW_SUFFIXES:
-                high.append(prefix + s)
+                rank_1.append(prefix + s)
         else:
             for s in _DOUBLE_LOW_SUFFIXES:
-                low.append(prefix + s)
+                rank_2.append(prefix + s)
         for s in _DOUBLE_FP32_SUFFIXES:
             fp32.append(prefix + s)
 
@@ -91,10 +91,10 @@ def _build_flux2_denoiser_target_tensors(version: str) -> dict[str, list[str]]:
         prefix = f"single_transformer_blocks.{block_idx}."
         if block_idx in single_edge:
             for s in _SINGLE_SUFFIXES:
-                high.append(prefix + s)
+                rank_1.append(prefix + s)
         else:
             for s in _SINGLE_SUFFIXES:
-                low.append(prefix + s)
+                rank_2.append(prefix + s)
         for s in _SINGLE_FP32_SUFFIXES:
             fp32.append(prefix + s)
 
@@ -103,4 +103,4 @@ def _build_flux2_denoiser_target_tensors(version: str) -> dict[str, list[str]]:
     for name in _GLOBAL_FP16:
         fp16.append(name)
 
-    return {"high": high, "low": low, "fp32": fp32, "fp16": fp16}
+    return {"rank_1": rank_1, "rank_2": rank_2, "fp32": fp32, "fp16": fp16}

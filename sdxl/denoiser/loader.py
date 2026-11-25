@@ -11,7 +11,7 @@ from sdxl.denoiser.targets import classify_linear_module
 from sdxl.models._unet import SDXLUNet
 from utils.loaders.single import load_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
-from utils.quant.name import convert_quant_name
+from utils.quant.name import convert_quant_ranks
 from utils.quant.replace import is_targeted_linear
 from utils.quant.streaming import StreamedQuantizedLinear, pin_quantized_buffers
 
@@ -129,25 +129,25 @@ def _cast_float_tensors_to_fp16(module: torch.nn.Module) -> None:
 
 
 def _linear_targets(model: torch.nn.Module) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Split the model linear modules into the high and low target groups.
+    """Split the model linear modules into the rank_1 and rank_2 target groups.
 
     Args:
         model: The UNet.
 
     Returns:
-        The high and low module names. Modules in the `fp16` group are omitted.
+        The rank_1 and rank_2 module names. Modules in the `fp16` group are omitted.
     """
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
     for name, module in model.named_modules():
         if not isinstance(module, torch.nn.Linear):
             continue
         group = classify_linear_module(name)
-        if group == "high":
-            high.append(name)
-        elif group == "low":
-            low.append(name)
-    return tuple(high), tuple(low)
+        if group == "rank_1":
+            rank_1.append(name)
+        elif group == "rank_2":
+            rank_2.append(name)
+    return tuple(rank_1), tuple(rank_2)
 
 
 def _build_model() -> SDXLUNet:
@@ -220,21 +220,21 @@ def load_sdxl_denoiser(
             )
         print(f"    using saved quantized checkpoint: {checkpoint_path.name}", flush=True)
 
-        high_method, low_method = convert_quant_name(quant_method)
+        rank_1_method, rank_2_method = convert_quant_ranks(quant_method, 2)
         checkpoint_keys = _list_checkpoint_keys(checkpoint_path)
-        high_targets, low_targets = _linear_targets(model)
+        rank_1_targets, rank_2_targets = _linear_targets(model)
         linear_cls = StreamedQuantizedLinear if stream_denoiser else RecomputeQuantizedLinear
         _replace_with_recompute_linear(
             model,
-            method=high_method,
-            target_linear_names=high_targets,
+            method=rank_1_method,
+            target_linear_names=rank_1_targets,
             checkpoint_keys=checkpoint_keys,
             linear_cls=linear_cls,
         )
         _replace_with_recompute_linear(
             model,
-            method=low_method,
-            target_linear_names=low_targets,
+            method=rank_2_method,
+            target_linear_names=rank_2_targets,
             checkpoint_keys=checkpoint_keys,
             linear_cls=linear_cls,
         )

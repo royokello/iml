@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from utils.quant.name import convert_quant_name, mixed_quant_methods
+from utils.quant.name import convert_quant_ranks, mixed_quant_methods
 
 _NUM_LANGUAGE_LAYERS = 35
 _NUM_LANGUAGE_KV_PROJECTION_LAYERS = 15
@@ -25,14 +25,14 @@ _LOW_LINEAR_WEIGHT_SUFFIXES = (
 )
 
 def _build_gemma4_quant_config(method: str) -> dict[str, str | dict[str, str]]:
-    high_method, low_method = convert_quant_name(method)
+    rank_1_method, rank_2_method = convert_quant_ranks(method, 2)
 
     return {
-        "token_embed": low_method,
-        "per_layer_token_embed": high_method,
+        "token_embed": rank_2_method,
+        "per_layer_token_embed": rank_1_method,
         "linears": {
-            "high": high_method,
-            "low": low_method,
+            "high": rank_1_method,
+            "low": rank_2_method,
         },
     }
 

@@ -17,7 +17,7 @@ from krea_2.text_encoder.embedding import QuantizedEmbedding
 from krea_2.text_encoder.target import _build_krea2_text_encoder_targets
 from utils.loaders.single import load_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
-from utils.quant.name import convert_quant_name
+from utils.quant.name import convert_quant_ranks
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
 from utils.text import replace_hyphens_with_underscores
 
@@ -161,13 +161,13 @@ def load_krea2_text_encoder(path: str | Path, quant_method: str | None = None) -
 
     if quant_method is not None:
         quant_method_key = replace_hyphens_with_underscores(quant_method)
-        high_method, low_method = convert_quant_name(quant_method)
+        rank_1_method, rank_2_method = convert_quant_ranks(quant_method, 2)
     else:
-        quant_method_key = high_method = low_method = None
+        quant_method_key = rank_1_method = rank_2_method = None
 
     target_tensors = _build_krea2_text_encoder_targets()
-    high_linear = target_tensors_to_linear_names(target_tensors["high"], key_transform=_strip_language_prefix)
-    low_linear = target_tensors_to_linear_names(target_tensors["low"], key_transform=_strip_language_prefix)
+    rank_1_linear = target_tensors_to_linear_names(target_tensors["rank_1"], key_transform=_strip_language_prefix)
+    rank_2_linear = target_tensors_to_linear_names(target_tensors["rank_2"], key_transform=_strip_language_prefix)
 
     config = _build_config(model_dir)
     default_dtype = torch.get_default_dtype()
@@ -193,19 +193,19 @@ def load_krea2_text_encoder(path: str | Path, quant_method: str | None = None) -
     print(f"    using saved quantized checkpoint: {quantized_path.name}")
 
     checkpoint_keys = _list_checkpoint_keys(quantized_path)
-    if high_method not in _PLAIN_METHODS:
+    if rank_1_method not in _PLAIN_METHODS:
         replace_targeted_linear_modules(
             model,
-            method=high_method,
-            target_linear_names=high_linear,
+            method=rank_1_method,
+            target_linear_names=rank_1_linear,
             quantize_weights=False,
             checkpoint_keys=checkpoint_keys,
         )
-    if low_method not in _PLAIN_METHODS:
+    if rank_2_method not in _PLAIN_METHODS:
         replace_targeted_linear_modules(
             model,
-            method=low_method,
-            target_linear_names=low_linear,
+            method=rank_2_method,
+            target_linear_names=rank_2_linear,
             quantize_weights=False,
             checkpoint_keys=checkpoint_keys,
         )

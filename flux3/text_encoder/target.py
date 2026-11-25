@@ -21,14 +21,14 @@ _FLUX3_TEXT_ENCODER_EXCLUSION_PREFIXES = (
 
 
 def _build_flux3_text_encoder_target_tensors() -> dict[str, list[str]]:
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
 
     for layer_idx in range(_NUM_LAYERS):
         layer_prefix = f"{_LAYER_PREFIX}{layer_idx}."
         for suffix in _TEXT_ENCODER_HIGH_SUFFIXES:
-            high.append(layer_prefix + suffix)
+            rank_1.append(layer_prefix + suffix)
         for suffix in _TEXT_ENCODER_LOW_SUFFIXES:
-            low.append(layer_prefix + suffix)
+            rank_2.append(layer_prefix + suffix)
 
-    return {"high": high, "low": low}
+    return {"rank_1": rank_1, "rank_2": rank_2}

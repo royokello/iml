@@ -15,7 +15,7 @@ from utils.loaders.sharded import (
 from utils.loaders.single import load_local_single_checkpoint, stream_local_single_checkpoint
 from torch.nn import RMSNorm
 from utils.quant.linear import QuantizedLinear
-from utils.quant.name import convert_quant_name
+from utils.quant.name import convert_quant_ranks
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
 from utils.quant.streaming import StreamedQuantizedLinear, pin_quantized_buffers
 
@@ -103,14 +103,14 @@ def _load_flux2_denoiser(
     # ---- Parse mixed-precision quantisation ----
     if quant_method is not None:
         quant_method_key = quant_method.replace("-", "_")
-        high_method, low_method = convert_quant_name(quant_method)
+        rank_1_method, rank_2_method = convert_quant_ranks(quant_method, 2)
     else:
-        high_method = low_method = None
+        rank_1_method = rank_2_method = None
 
     # ---- Build target tensor groups ----
     target_tensors: Dict[str, list[str]] = _build_flux2_denoiser_target_tensors(version)
-    high_linear = target_tensors_to_linear_names(target_tensors["high"])
-    low_linear = target_tensors_to_linear_names(target_tensors["low"])
+    rank_1_linear = target_tensors_to_linear_names(target_tensors["rank_1"])
+    rank_2_linear = target_tensors_to_linear_names(target_tensors["rank_2"])
 
     model_dir = Path(path).expanduser().resolve()
     if model_dir.is_file():
@@ -188,20 +188,20 @@ def _load_flux2_denoiser(
         # Load a pre‑quantised checkpoint
         checkpoint_keys = _list_checkpoint_keys(quantized_checkpoint_path)
 
-        # Replace high‑priority modules (they expect weights in high_method quant format)
+        # Replace high‑priority modules (they expect weights in rank_1_method quant format)
         replace_targeted_linear_modules(
             model,
-            method=high_method,
-            target_linear_names=high_linear,
+            method=rank_1_method,
+            target_linear_names=rank_1_linear,
             quantize_weights=False,
             linear_cls=linear_cls,
             checkpoint_keys=checkpoint_keys,
         )
-        # Replace low‑priority modules (low_method quant format)
+        # Replace low‑priority modules (rank_2_method quant format)
         replace_targeted_linear_modules(
             model,
-            method=low_method,
-            target_linear_names=low_linear,
+            method=rank_2_method,
+            target_linear_names=rank_2_linear,
             quantize_weights=False,
             linear_cls=linear_cls,
             checkpoint_keys=checkpoint_keys,
@@ -222,14 +222,14 @@ def _load_flux2_denoiser(
     if quant_method is not None and quantized_checkpoint_path is None:
         replace_targeted_linear_modules(
             model,
-            method=high_method,
-            target_linear_names=high_linear,
+            method=rank_1_method,
+            target_linear_names=rank_1_linear,
             linear_cls=linear_cls,
         )
         replace_targeted_linear_modules(
             model,
-            method=low_method,
-            target_linear_names=low_linear,
+            method=rank_2_method,
+            target_linear_names=rank_2_linear,
             linear_cls=linear_cls,
         )
 

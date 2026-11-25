@@ -16,7 +16,7 @@ from flux3.models.denoiser.transformer import Flux3Transformer2DModel
 from utils.loaders.sharded import load_local_sharded_checkpoint, stream_local_sharded_checkpoint
 from utils.loaders.single import load_local_single_checkpoint, stream_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
-from utils.quant.name import convert_quant_name
+from utils.quant.name import convert_quant_ranks
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
 from utils.quant.streaming import StreamedQuantizedLinear, pin_quantized_buffers
 
@@ -148,13 +148,13 @@ def load_flux3_denoiser(
     # ---- Quantization setup ----
     if quant_method is not None:
         quant_method_key = quant_method.replace("-", "_")
-        high_method, low_method = convert_quant_name(quant_method)
+        rank_1_method, rank_2_method = convert_quant_ranks(quant_method, 2)
     else:
-        quant_method_key = high_method = low_method = None
+        quant_method_key = rank_1_method = rank_2_method = None
 
     target_tensors = _build_flux3_denoiser_target_tensors()
-    high_linear = target_tensors_to_linear_names(target_tensors["high"])
-    low_linear = target_tensors_to_linear_names(target_tensors["low"])
+    rank_1_linear = target_tensors_to_linear_names(target_tensors["rank_1"])
+    rank_2_linear = target_tensors_to_linear_names(target_tensors["rank_2"])
 
     # ---- Resolve folders ----
     model_dir = Path(path).expanduser().resolve()
@@ -236,16 +236,16 @@ def load_flux3_denoiser(
         checkpoint_keys = _list_checkpoint_keys(quantized_checkpoint_path)
         replace_targeted_linear_modules(
             model,
-            method=high_method,
-            target_linear_names=high_linear,
+            method=rank_1_method,
+            target_linear_names=rank_1_linear,
             quantize_weights=False,
             linear_cls=linear_cls,
             checkpoint_keys=checkpoint_keys,
         )
         replace_targeted_linear_modules(
             model,
-            method=low_method,
-            target_linear_names=low_linear,
+            method=rank_2_method,
+            target_linear_names=rank_2_linear,
             quantize_weights=False,
             linear_cls=linear_cls,
             checkpoint_keys=checkpoint_keys,

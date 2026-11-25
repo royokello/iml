@@ -11,7 +11,7 @@ from transformers.models.qwen3.configuration_qwen3 import Qwen3Config
 from flux2.text_encoder.target import _build_target_tensors
 from utils.loaders.sharded import load_local_sharded_checkpoint
 from utils.loaders.single import load_local_single_checkpoint
-from utils.quant.name import convert_quant_name
+from utils.quant.name import convert_quant_ranks
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
 
 from flux2.models.text_encoder.embedding import Qwen3RotaryEmbedding
@@ -71,18 +71,18 @@ def _load_flux2_text_encoder(
     # 2. ---- Parse mixed‑precision quantisation ----
     if quant_method is not None:
         quant_method_key = replace_hyphens_with_underscores(quant_method)   # e.g. "aff_med_max"
-        high_method, low_method = convert_quant_name(quant_method)
+        rank_1_method, rank_2_method = convert_quant_ranks(quant_method, 2)
     else:
         quant_method_key = None
-        high_method = low_method = None
+        rank_1_method = rank_2_method = None
 
-    # 3. ---- Build high/low target linear names ----
-    target_tensors = _build_target_tensors()  # dict with "high" and "low"
-    high_linear = target_tensors_to_linear_names(
-        target_tensors["high"], key_transform=_strip_model_prefix
+    # 3. ---- Build rank_1/rank_2 target linear names ----
+    target_tensors = _build_target_tensors()  # dict with "rank_1" and "rank_2"
+    rank_1_linear = target_tensors_to_linear_names(
+        target_tensors["rank_1"], key_transform=_strip_model_prefix
     )
-    low_linear = target_tensors_to_linear_names(
-        target_tensors["low"], key_transform=_strip_model_prefix
+    rank_2_linear = target_tensors_to_linear_names(
+        target_tensors["rank_2"], key_transform=_strip_model_prefix
     )
 
     # 4. ---- Build model on meta device ----
@@ -136,11 +136,11 @@ def _load_flux2_text_encoder(
         # Load pre‑quantised checkpoint
         checkpoint_keys = _list_checkpoint_keys(quantized_state_path)
         replace_targeted_linear_modules(
-            model, method=high_method, target_linear_names=high_linear,
+            model, method=rank_1_method, target_linear_names=rank_1_linear,
             quantize_weights=False, checkpoint_keys=checkpoint_keys,
         )
         replace_targeted_linear_modules(
-            model, method=low_method, target_linear_names=low_linear,
+            model, method=rank_2_method, target_linear_names=rank_2_linear,
             quantize_weights=False, checkpoint_keys=checkpoint_keys,
         )
         load_local_single_checkpoint(model, quantized_state_path, key_transform=_strip_model_prefix)

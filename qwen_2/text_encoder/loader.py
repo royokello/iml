@@ -21,8 +21,9 @@ from krea_2.text_encoder.embedding import QuantizedEmbedding
 from qwen_2.text_encoder.keys import _strip_model_key, _strip_text_key
 from qwen_2.text_encoder.target import _build_qwen2_text_encoder_targets
 from utils.quant.linear import QuantizedLinear
-from utils.quant.name import convert_quant_name
+from utils.quant.name import convert_quant_ranks
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
+from utils.safetensors_io import TensorFile
 from utils.text import replace_hyphens_with_underscores
 
 __all__ = ["load_qwen2_text_encoder"]
@@ -126,11 +127,11 @@ def _load_weights(
     skip_prefixes: tuple[str, ...],
 ) -> dict[str, list[str]]:
     state_dict: dict[str, torch.Tensor] = {}
-    with safe_open(str(path), framework="pt", device="cpu") as handle:
-        for name in handle.keys():
-            if any(name.startswith(prefix) for prefix in skip_prefixes):
-                continue
-            state_dict[key_transform(name)] = handle.get_tensor(name)
+    handle = TensorFile(path)
+    for name in handle.keys():
+        if any(name.startswith(prefix) for prefix in skip_prefixes):
+            continue
+        state_dict[key_transform(name)] = handle.read(name)
 
     incompatible = model.load_state_dict(state_dict, strict=False, assign=True)
     del state_dict
@@ -191,9 +192,9 @@ def load_qwen2_text_encoder(
 
     if quant_method is not None:
         quant_method_key = replace_hyphens_with_underscores(quant_method)
-        high_method, low_method = convert_quant_name(quant_method)
+        rank_1_method, rank_2_method, rank_3_method = convert_quant_ranks(quant_method, 3)
     else:
-        quant_method_key = high_method = low_method = None
+        quant_method_key = rank_1_method = rank_2_method = rank_3_method = None
 
     model = _build_model(config, include_vision=include_vision)
 
@@ -222,7 +223,11 @@ def load_qwen2_text_encoder(
 
     checkpoint_keys = _checkpoint_keys(quantized_path, key_transform)
     target_tensors = _build_qwen2_text_encoder_targets()
-    for group, method in (("high", high_method), ("low", low_method)):
+    for group, method in (
+        ("rank_1", rank_1_method),
+        ("rank_2", rank_2_method),
+        ("rank_3", rank_3_method),
+    ):
         if method in _PLAIN_METHODS:
             continue
         names = target_tensors_to_linear_names(target_tensors[group], key_transform=key_transform)

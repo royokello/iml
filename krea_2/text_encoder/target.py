@@ -29,24 +29,24 @@ _LM_BF16_SUFFIXES = (
 
 
 def _build_krea2_text_encoder_targets() -> dict[str, list[str]]:
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
     bf16: list[str] = []
 
     for layer_idx in range(_NUM_LM_LAYERS):
         prefix = f"language_model.layers.{layer_idx}."
         for suffix in _LM_HIGH_SUFFIXES:
-            high.append(prefix + suffix)
+            rank_1.append(prefix + suffix)
         for suffix in _LM_LOW_SUFFIXES:
-            low.append(prefix + suffix)
+            rank_2.append(prefix + suffix)
         for suffix in _LM_BF16_SUFFIXES:
             bf16.append(prefix + suffix)
 
     bf16.append("language_model.norm.weight")
 
     return {
-        "high": high,
-        "low": low,
+        "rank_1": rank_1,
+        "rank_2": rank_2,
         "bf16": bf16,
         "sym-high": ["language_model.embed_tokens.weight"],
     }

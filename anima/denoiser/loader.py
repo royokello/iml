@@ -6,7 +6,7 @@ import torch
 from safetensors import safe_open
 
 from utils.loaders.single import load_local_single_checkpoint, stream_local_single_checkpoint
-from utils.quant.name import convert_quant_name
+from utils.quant.name import convert_quant_ranks
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
 from utils.text import replace_hyphens_with_underscores
 
@@ -45,13 +45,13 @@ def _load_anima_denoiser(
 
     if quant_method is not None:
         quant_method_key = replace_hyphens_with_underscores(quant_method)
-        high_method, low_method = convert_quant_name(quant_method)
+        rank_1_method, rank_2_method = convert_quant_ranks(quant_method, 2)
     else:
-        high_method = low_method = None
+        rank_1_method = rank_2_method = None
 
     target_tensors = _build_anima_denoiser_target_tensors()
-    high_linear = target_tensors_to_linear_names(target_tensors["high"], key_transform=_strip_net_prefix)
-    low_linear = target_tensors_to_linear_names(target_tensors["low"], key_transform=_strip_net_prefix)
+    rank_1_linear = target_tensors_to_linear_names(target_tensors["rank_1"], key_transform=_strip_net_prefix)
+    rank_2_linear = target_tensors_to_linear_names(target_tensors["rank_2"], key_transform=_strip_net_prefix)
 
     model = AnimaModel()
 
@@ -73,10 +73,10 @@ def _load_anima_denoiser(
         load_local_single_checkpoint(model, ckpt_path, key_transform=_strip_net_prefix)
         if quant_method is not None and quant_method != "fp16":
             replace_targeted_linear_modules(
-                model, method=high_method, target_linear_names=high_linear,
+                model, method=rank_1_method, target_linear_names=rank_1_linear,
             )
             replace_targeted_linear_modules(
-                model, method=low_method, target_linear_names=low_linear,
+                model, method=rank_2_method, target_linear_names=rank_2_linear,
             )
     else:
         if quant_method == "fp16":
@@ -84,11 +84,11 @@ def _load_anima_denoiser(
         else:
             checkpoint_keys = {_strip_net_prefix(k) for k in _list_keys(quantized_path)}
             replace_targeted_linear_modules(
-                model, method=high_method, target_linear_names=high_linear,
+                model, method=rank_1_method, target_linear_names=rank_1_linear,
                 quantize_weights=False, checkpoint_keys=checkpoint_keys,
             )
             replace_targeted_linear_modules(
-                model, method=low_method, target_linear_names=low_linear,
+                model, method=rank_2_method, target_linear_names=rank_2_linear,
                 quantize_weights=False, checkpoint_keys=checkpoint_keys,
             )
             load_local_single_checkpoint(model, quantized_path, key_transform=_strip_net_prefix)

@@ -7,56 +7,78 @@ QUANT_METHODS_BY_MAIN_BITS = (
     "sym-high",
 )
 MIXED_VARIANT_ORDER = ("nano", "mini", "")
+_VARIANT_DEPTH = {"mini": 1, "nano": 2}
 
 
-def convert_quant_name(name: str) -> tuple[str, str]:
+def split_quant_name(name: str) -> tuple[str, int]:
+    """Split a method name into its base method and its rank depth.
+
+    The depth is the number of ladder rungs the bottom rank drops: none for a
+    plain method, one for `-mini`, two for `-nano`.
+
+    Args:
+        name: A method name such as `sym-med-nano`.
+
+    Returns:
+        The base method and the rank depth.
+
+    Raises:
+        ValueError: If the base method is not in the ladder.
     """
-    Convert a quantization method name like 'sym-high-nano' into
-    a (high, low) tuple based on the defined level hierarchy.
-
-    Rules:
-    - No suffix  → high = low = base
-    - '-mini'    → high = base, low = base - 1 level
-    - '-nano'    → high = base, low = base - 2 levels
-    """
-    order = QUANT_METHODS_BY_MAIN_BITS
-
-    # Special case: fp16 pass-through (no compression)
     if name == "fp16":
-        return ("fp16", "fp16")
+        return "fp16", 0
 
-    # Determine suffix and base name
-    if name.endswith("-mini"):
-        base = name[:-5]   # remove "-mini"
-        suffix = "mini"
-    elif name.endswith("-nano"):
-        base = name[:-5]   # remove "-nano"
-        suffix = "nano"
-    else:
-        base = name
-        suffix = None
+    base = name
+    depth = 0
+    for suffix, suffix_depth in _VARIANT_DEPTH.items():
+        if name.endswith("-" + suffix):
+            base = name[: -len(suffix) - 1]
+            depth = suffix_depth
+            break
 
-    if base not in order:
-        raise ValueError(f"Base quantization '{base}' not in recognized order: {order}")
-
-    base_idx = order.index(base)
-
-    if suffix == "mini":
-        high_idx = base_idx
-        low_idx = base_idx - 1
-    elif suffix == "nano":
-        high_idx = base_idx
-        low_idx = base_idx - 2
-    else:  # no suffix
-        high_idx = low_idx = base_idx
-
-    # Ensure indices remain within bounds
-    if high_idx >= len(order) or low_idx < 0:
+    if base not in QUANT_METHODS_BY_MAIN_BITS:
         raise ValueError(
-            f"Cannot offset '{name}': resulting high={high_idx}, low={low_idx} out of range."
+            f"Base quantization '{base}' not in recognized order: {QUANT_METHODS_BY_MAIN_BITS}"
         )
+    return base, depth
 
-    return (order[high_idx], order[low_idx])
+
+def convert_quant_ranks(name: str, count: int = 2) -> tuple[str, ...]:
+    """Return the method for each precision rank of a target set.
+
+    Rank 1 takes the base method. The bottom rank drops by the depth of the
+    variant. Ranks between rank 1 and the bottom rank drop by one rung.
+
+    Args:
+        name: A method name such as `sym-med-nano`.
+        count: The number of ranks in the target set.
+
+    Returns:
+        One method per rank, most precise first.
+
+    Raises:
+        ValueError: If the base method is not in the ladder, or if a rank would
+            drop below the lowest method.
+    """
+    if count < 1:
+        raise ValueError(f"A target set needs at least one rank, got {count}.")
+
+    base, depth = split_quant_name(name)
+    if base == "fp16":
+        return ("fp16",) * count
+
+    index = QUANT_METHODS_BY_MAIN_BITS.index(base)
+    methods = [base]
+    for rank in range(2, count + 1):
+        step = depth if rank == count else min(depth, 1)
+        target = index - step
+        if target < 0:
+            raise ValueError(
+                f"Cannot offset '{name}' to rank {rank}: "
+                f"'{base}' is the lowest method."
+            )
+        methods.append(QUANT_METHODS_BY_MAIN_BITS[target])
+    return tuple(methods)
 
 
 def mixed_quant_methods() -> tuple[str, ...]:
@@ -65,7 +87,7 @@ def mixed_quant_methods() -> tuple[str, ...]:
         for variant in MIXED_VARIANT_ORDER:
             method = base_method if not variant else f"{base_method}-{variant}"
             try:
-                convert_quant_name(method)
+                convert_quant_ranks(method, 2)
             except ValueError:
                 continue
             methods.append(method)
@@ -97,7 +119,8 @@ def quant_method_sort_key(method: str) -> tuple[int, int, str]:
 __all__ = [
     "MIXED_VARIANT_ORDER",
     "QUANT_METHODS_BY_MAIN_BITS",
-    "convert_quant_name",
+    "convert_quant_ranks",
     "mixed_quant_methods",
     "quant_method_sort_key",
+    "split_quant_name",
 ]

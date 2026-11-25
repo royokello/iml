@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 # The SDXL UNet has 743 rank-2 linear weights. Each one falls into exactly one
-# group. A name that matches no suffix goes to `high`, which is the safe default.
+# group. A name that matches no suffix goes to `rank_1`, which is the safe default.
 #
-# `high`  attention projections and the spatial transformer input/output
-#         projections.
-# `low`   feed-forward layers inside the transformer blocks. These carry most of
-#         the parameters, so a `-mini` or `-nano` variant puts them at the lower
-#         method.
+# `rank_1`  attention projections and the spatial transformer input/output
+#           projections.
+# `rank_2`  feed-forward layers inside the transformer blocks. These carry most of
+#           the parameters, so a `-mini` or `-nano` variant puts them at the lower
+#           method.
 # `fp16`  the time and additive embeddings. They are small and sensitive.
 
 _FP16_MODULE_NAMES = (
@@ -46,17 +46,17 @@ def classify_linear_module(module_name: str) -> str:
             `down_blocks.1.attentions.0.transformer_blocks.0.attn1.to_q`.
 
     Returns:
-        One of `high`, `low`, or `fp16`.
+        One of `rank_1`, `rank_2`, or `fp16`.
     """
     if module_name in _FP16_MODULE_NAMES:
         return "fp16"
     if module_name.endswith(_FP16_MODULE_SUFFIXES):
         return "fp16"
     if module_name.endswith(_LOW_MODULE_SUFFIXES):
-        return "low"
+        return "rank_2"
     if module_name.endswith(_HIGH_MODULE_SUFFIXES):
-        return "high"
-    return "high"
+        return "rank_1"
+    return "rank_1"
 
 
 def build_sdxl_denoiser_target_tensors(
@@ -69,10 +69,10 @@ def build_sdxl_denoiser_target_tensors(
             `down_blocks.0.resnets.0.time_emb_proj.weight`.
 
     Returns:
-        A mapping with the `high`, `low`, and `fp16` groups. Every input name
+        A mapping with the `rank_1`, `rank_2`, and `fp16` groups. Every input name
         appears in exactly one group.
     """
-    groups: dict[str, list[str]] = {"high": [], "low": [], "fp16": []}
+    groups: dict[str, list[str]] = {"rank_1": [], "rank_2": [], "fp16": []}
     for name in linear_weight_names:
         module_name = name.removesuffix(".weight")
         groups[classify_linear_module(module_name)].append(name)

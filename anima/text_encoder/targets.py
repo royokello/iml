@@ -28,21 +28,21 @@ _GLOBAL_FP16 = ("model.embed_tokens.weight",)
 
 
 def _build_anima_text_encoder_targets() -> dict[str, list[str]]:
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
     fp32: list[str] = []
     fp16: list[str] = []
 
     for i in range(_NUM_HIDDEN_LAYERS):
         prefix = f"model.layers.{i}."
         for s in _HIGH_SUFFIXES:
-            high.append(prefix + s)
+            rank_1.append(prefix + s)
         for s in _LOW_SUFFIXES:
-            low.append(prefix + s)
+            rank_2.append(prefix + s)
         for s in _FP32_SUFFIXES:
             fp32.append(prefix + s)
 
     fp32.extend(_GLOBAL_FP32)
     fp16.extend(_GLOBAL_FP16)
 
-    return {"high": high, "low": low, "fp32": fp32, "fp16": fp16}
+    return {"rank_1": rank_1, "rank_2": rank_2, "fp32": fp32, "fp16": fp16}

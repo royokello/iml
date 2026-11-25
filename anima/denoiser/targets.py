@@ -91,17 +91,17 @@ _GLOBAL_FP16 = (
 )
 
 def _build_anima_denoiser_target_tensors() -> dict[str, list[str]]:
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
     fp32: list[str] = []
     fp16: list[str] = []
 
     for i in range(_NUM_MAIN_BLOCKS):
         prefix = f"net.blocks.{i}."
         for s in _HIGH_SUFFIXES:
-            high.append(prefix + s)
+            rank_1.append(prefix + s)
         for s in _LOW_SUFFIXES:
-            low.append(prefix + s)
+            rank_2.append(prefix + s)
         for s in _FP32_SUFFIXES:
             fp32.append(prefix + s)
         for s in _ADALN_SUFFIXES:
@@ -110,21 +110,21 @@ def _build_anima_denoiser_target_tensors() -> dict[str, list[str]]:
     for i in range(_NUM_LLM_ADAPTER_BLOCKS):
         prefix = f"net.llm_adapter.blocks.{i}."
         for s in _LLM_ADAPTER_HIGH_SUFFIXES:
-            high.append(prefix + s)
+            rank_1.append(prefix + s)
         for s in _LLM_ADAPTER_LOW_SUFFIXES:
-            low.append(prefix + s)
+            rank_2.append(prefix + s)
         for s in _LLM_ADAPTER_FP32_SUFFIXES:
             fp32.append(prefix + s)
         for s in _LLM_ADAPTER_FP16_SUFFIXES:
             fp16.append(prefix + s)
 
     for name in _GLOBAL_HIGH:
-        high.append(name)
+        rank_1.append(name)
     for name in _GLOBAL_LOW:
-        low.append(name)
+        rank_2.append(name)
     for name in _GLOBAL_FP32:
         fp32.append(name)
     for name in _GLOBAL_FP16:
         fp16.append(name)
 
-    return {"high": high, "low": low, "fp32": fp32, "fp16": fp16}
+    return {"rank_1": rank_1, "rank_2": rank_2, "fp32": fp32, "fp16": fp16}

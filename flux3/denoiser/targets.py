@@ -50,8 +50,8 @@ _GLOBAL_FP16 = (
 
 
 def _build_flux3_denoiser_target_tensors() -> dict[str, list[str]]:
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
     bf16: list[str] = []
     fp16: list[str] = []
 
@@ -59,14 +59,14 @@ def _build_flux3_denoiser_target_tensors() -> dict[str, list[str]]:
         for block_idx in range(count):
             prefix = f"{group}.{block_idx}."
             for suffix in _HIGH_SUFFIXES:
-                high.append(prefix + suffix)
+                rank_1.append(prefix + suffix)
             for suffix in _LOW_SUFFIXES:
-                low.append(prefix + suffix)
+                rank_2.append(prefix + suffix)
             for suffix in _BF16_SUFFIXES:
                 bf16.append(prefix + suffix)
 
-    low.extend(_GLOBAL_LOW)
+    rank_2.extend(_GLOBAL_LOW)
     bf16.extend(_GLOBAL_BF16)
     fp16.extend(_GLOBAL_FP16)
 
-    return {"high": high, "low": low, "bf16": bf16, "fp16": fp16}
+    return {"rank_1": rank_1, "rank_2": rank_2, "bf16": bf16, "fp16": fp16}

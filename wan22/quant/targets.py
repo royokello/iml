@@ -46,28 +46,28 @@ def _build_block_targets(
 def _build_split_block_targets(
     *,
     block_count: int,
-    high_suffixes: tuple[str, ...],
-    low_suffixes: tuple[str, ...],
+    rank_1_suffixes: tuple[str, ...],
+    rank_2_suffixes: tuple[str, ...],
 ) -> dict[str, list[str]]:
     return {
-        "high": _build_block_targets(block_count=block_count, suffixes=high_suffixes),
-        "low": _build_block_targets(block_count=block_count, suffixes=low_suffixes),
+        "rank_1": _build_block_targets(block_count=block_count, suffixes=rank_1_suffixes),
+        "rank_2": _build_block_targets(block_count=block_count, suffixes=rank_2_suffixes),
     }
 
 
 def _build_wan22_text_encoder_mixed_target_tensors() -> dict[str, list[str]]:
     return _build_split_block_targets(
         block_count=_WAN22_TEXT_ENCODER_BLOCKS,
-        high_suffixes=_WAN22_TEXT_ENCODER_HIGH_SUFFIXES,
-        low_suffixes=_WAN22_TEXT_ENCODER_LOW_SUFFIXES,
+        rank_1_suffixes=_WAN22_TEXT_ENCODER_HIGH_SUFFIXES,
+        rank_2_suffixes=_WAN22_TEXT_ENCODER_LOW_SUFFIXES,
     )
 
 
 def _build_wan22_denoiser_mixed_target_tensors() -> dict[str, list[str]]:
     return _build_split_block_targets(
         block_count=_WAN22_DENOISER_BLOCKS,
-        high_suffixes=_WAN22_DENOISER_HIGH_SUFFIXES,
-        low_suffixes=_WAN22_DENOISER_LOW_SUFFIXES,
+        rank_1_suffixes=_WAN22_DENOISER_HIGH_SUFFIXES,
+        rank_2_suffixes=_WAN22_DENOISER_LOW_SUFFIXES,
     )
 
 

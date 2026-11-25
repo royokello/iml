@@ -20,18 +20,18 @@ _TEXT_ENCODER_LOW_SUFFIXES = (
 
 def _build_target_tensors() -> dict[str, list[str]]:
     """
-    Return {'high': [...], 'low': [...]} weight names for mixed‑precision
+    Return {'rank_1': [...], 'rank_2': [...]} weight names for mixed‑precision
     quantisation of the Qwen3 text encoder.
     Names are prefixed with 'model.' so the loader's _strip_model_prefix can remove it.
     """
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
 
     for layer_idx in range(_NUM_HIDDEN_LAYERS):
         layer_prefix = f"model.layers.{layer_idx}."
         for suffix in _TEXT_ENCODER_HIGH_SUFFIXES:
-            high.append(layer_prefix + suffix)
+            rank_1.append(layer_prefix + suffix)
         for suffix in _TEXT_ENCODER_LOW_SUFFIXES:
-            low.append(layer_prefix + suffix)
+            rank_2.append(layer_prefix + suffix)
 
-    return {"high": high, "low": low}
+    return {"rank_1": rank_1, "rank_2": rank_2}

@@ -27,8 +27,8 @@ _FP32_SUFFIXES = (
 
 
 def _build_ideogram_denoiser_target_tensors() -> dict[str, list[str]]:
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
     fp32: list[str] = []
 
     for layer_idx in range(_NUM_LAYERS):
@@ -39,22 +39,22 @@ def _build_ideogram_denoiser_target_tensors() -> dict[str, list[str]]:
 
         if layer_idx in _EDGE_LAYERS:
             for suffix in _HIGH_SUFFIXES:
-                high.append(prefix + suffix)
+                rank_1.append(prefix + suffix)
             for suffix in _LOW_SUFFIXES:
-                high.append(prefix + suffix)
+                rank_1.append(prefix + suffix)
         else:
             for suffix in _HIGH_SUFFIXES:
-                high.append(prefix + suffix)
+                rank_1.append(prefix + suffix)
             for suffix in _LOW_SUFFIXES:
-                low.append(prefix + suffix)
+                rank_2.append(prefix + suffix)
 
-    high.append("adaln_proj.weight")
-    high.append("final_layer.linear.weight")
-    high.append("final_layer.adaln_modulation.weight")
-    high.append("input_proj.weight")
-    high.append("llm_cond_proj.weight")
-    high.append("t_embedding.mlp_in.weight")
-    high.append("t_embedding.mlp_out.weight")
+    rank_1.append("adaln_proj.weight")
+    rank_1.append("final_layer.linear.weight")
+    rank_1.append("final_layer.adaln_modulation.weight")
+    rank_1.append("input_proj.weight")
+    rank_1.append("llm_cond_proj.weight")
+    rank_1.append("t_embedding.mlp_in.weight")
+    rank_1.append("t_embedding.mlp_out.weight")
 
     fp32.append("llm_cond_norm.weight")
 
@@ -70,4 +70,4 @@ def _build_ideogram_denoiser_target_tensors() -> dict[str, list[str]]:
     fp16.append("t_embedding.mlp_out.bias")
     fp16.append("embed_image_indicator.weight")
 
-    return {"high": high, "low": low, "fp32": fp32, "fp16": fp16}
+    return {"rank_1": rank_1, "rank_2": rank_2, "fp32": fp32, "fp16": fp16}

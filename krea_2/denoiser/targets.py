@@ -54,17 +54,17 @@ _GLOBAL_FP16 = (
 
 
 def _build_krea2_denoiser_target_tensors() -> dict[str, list[str]]:
-    high: list[str] = []
-    low: list[str] = []
+    rank_1: list[str] = []
+    rank_2: list[str] = []
     bf16: list[str] = []
     fp16: list[str] = []
 
     for i in range(_NUM_TRANSFORMER_BLOCKS):
         prefix = f"transformer_blocks.{i}."
         for s in _HIGH_SUFFIXES:
-            high.append(prefix + s)
+            rank_1.append(prefix + s)
         for s in _LOW_SUFFIXES:
-            low.append(prefix + s)
+            rank_2.append(prefix + s)
         for s in _BF16_SUFFIXES:
             bf16.append(prefix + s)
         bf16.append(f"{prefix}scale_shift_table")
@@ -72,26 +72,26 @@ def _build_krea2_denoiser_target_tensors() -> dict[str, list[str]]:
     for i in range(_NUM_LAYERWISE_BLOCKS):
         prefix = f"text_fusion.layerwise_blocks.{i}."
         for s in _HIGH_SUFFIXES:
-            high.append(prefix + s)
+            rank_1.append(prefix + s)
         for s in _LOW_SUFFIXES:
-            low.append(prefix + s)
+            rank_2.append(prefix + s)
         for s in _BF16_SUFFIXES:
             bf16.append(prefix + s)
 
     for i in range(_NUM_REFINER_BLOCKS):
         prefix = f"text_fusion.refiner_blocks.{i}."
         for s in _HIGH_SUFFIXES:
-            high.append(prefix + s)
+            rank_1.append(prefix + s)
         for s in _LOW_SUFFIXES:
-            low.append(prefix + s)
+            rank_2.append(prefix + s)
         for s in _BF16_SUFFIXES:
             bf16.append(prefix + s)
 
     for name in _GLOBAL_HIGH:
-        high.append(name)
+        rank_1.append(name)
     for name in _GLOBAL_BF16:
         bf16.append(name)
     for name in _GLOBAL_FP16:
         fp16.append(name)
 
-    return {"high": high, "low": low, "bf16": bf16, "fp16": fp16}
+    return {"rank_1": rank_1, "rank_2": rank_2, "bf16": bf16, "fp16": fp16}
