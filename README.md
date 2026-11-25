@@ -55,6 +55,11 @@ IML is a toolkit for image, video, and diffusion model workflows. It includes:
     - [`krea2.denoiser.quant`](#krea2denoiserquant)
     - [`krea2.text_encoder.quant`](#krea2text_encoderquant)
     - [`krea2.gen`](#krea2gen)
+  - [Qwen Image 2.1](#qwen-image-21)
+    - [`qwen2.*.copy_files`](#qwen2text_encodercopy_files-qwen2denoisercopy_files-qwen2vaecopy_files)
+    - [`qwen2.denoiser.quant`](#qwen2denoiserquant)
+    - [`qwen2.text_encoder.quant`](#qwen2text_encoderquant)
+    - [`qwen2.gen`](#qwen2gen)
   - [SDXL](#sdxl)
     - [`sdxl.denoiser.quant`](#sdxldenoiserquant)
     - [`sdxl.gen`](#sdxlgen)
@@ -905,6 +910,122 @@ Krea 2 runs the Qwen3-VL-4B language model as the text encoder and the Qwen-Imag
   - `--vae-dtype`
   - `--text-positions`
 
+### Qwen Image 2.1
+
+The `qwen_2` package quantizes and runs the Qwen Image 2.1 model. The model folder is `<root>/qwen_2/model`:
+
+```
+<root>/qwen_2/model/
+  denoiser/
+    config.json
+    diffusion_pytorch_model.safetensors.index.json
+    turbo/                 <method>_quant.safetensors
+    base/                  <method>_quant.safetensors
+  text_encoder/
+    config.json
+    generation_config.json
+    tokenizer.json
+    tokenizer_config.json
+    chat_template.jinja
+    processor_config.json
+    <method>_quant.safetensors
+  vae/
+    config.json
+    diffusion_pytorch_model.safetensors
+```
+
+The quant CLIs write only the quant file. The copy modules below put the config, tokenizer, and VAE files there. A loader never quantizes on the fly. It raises `FileNotFoundError` when the quant file is missing.
+
+Qwen Image 2.1 runs a Qwen3-VL-8B text encoder and a 7.1B parameter denoiser. The text encoder quant file holds the whole vision tower as 351 bf16 tensors, because the edit pipeline reads it. Text-to-image reads the language model only, so the tower costs disk space and no time. `lm_head` stays out of the quant file, because neither path reads logits.
+
+Reference sizes: text encoder 6.85 GB at `sym-med-nano`, denoiser 4.43 GB at `aff-high-nano`.
+
+#### `qwen2.text_encoder.copy_files`, `qwen2.denoiser.copy_files`, `qwen2.vae.copy_files`
+- Features
+  - Copy the small files that `qwen_2.gen` reads, from the source model folders into `<root>/qwen_2/model`
+  - Text encoder: `config.json` and `generation_config.json` from `--input`, and `tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja`, `processor_config.json` from `--processor`
+  - Denoiser: `config.json` and `diffusion_pytorch_model.safetensors.index.json`. `--input` is the `transformer` folder, the parent of `turbo` and `base`
+  - VAE: `config.json` and `diffusion_pytorch_model.safetensors`
+  - Never copy the text encoder or denoiser weight shards
+  - Skip a file that is already in the target with the same size. Raise `FileNotFoundError` if a listed file is missing
+- Examples
+  - `python -m qwen_2.text_encoder.copy_files --root "/iml_root" --input "/models/Qwen Image 2.1/text_encoder" --processor "/models/Qwen Image 2.1/processor"`
+  - `python -m qwen_2.denoiser.copy_files --root "/iml_root" --input "/models/Qwen Image 2.1/transformer"`
+  - `python -m qwen_2.vae.copy_files --root "/iml_root" --input "/models/Qwen Image 2.1/vae"`
+- Useful args
+  - `--root`
+  - `--input`
+  - `--processor` (text encoder only)
+
+#### `qwen2.denoiser.quant`
+- Features
+  - Quantizes the Qwen Image 2.1 denoiser for the `turbo` or `base` variant
+  - Saves `<root>/qwen_2/model/denoiser/<variant>/<method>_quant.safetensors`
+  - `--variant` is required, so a base run cannot overwrite turbo
+  - Splits the block tensors into three ranks: `attn.to_q` and `attn.to_out.0` first, `attn.to_v` and the image MLP second, `attn.to_k` third
+  - Keeps every global at bf16: `modulation.1`, `norm_out.linear`, `txt_in`, and the timestep embedders
+  - Default method: `sym-med-nano`, 5.24 GB. `aff-high-nano` gives 4.43 GB and runs resident at 1024 on a 6 GB card
+  - `--denoiser-quant-method fp16`, `bf16`, or `fp32` skips quantization and reads the original shards from the same folder, cast to that dtype
+- Examples
+  - `python -m qwen_2.denoiser.quant --root "/iml_root" --input "/models/Qwen Image 2.1/transformer/Turbo" --variant turbo --method aff-high-nano`
+- Useful args
+  - `--root`
+  - `--input`
+  - `--variant`
+  - `--method`
+
+#### `qwen2.text_encoder.quant`
+- Features
+  - Quantizes the Qwen3-VL-8B language model (36 layers) and copies the 351 vision tensors at bf16
+  - Quantizes the embedding table with `sym-high`, which the loader reads with a row gather
+  - Splits the language tensors into three ranks: `v_proj` and `down_proj` first, `q_proj`, `k_proj`, `gate_proj`, and `up_proj` second, `o_proj` third
+  - Never writes `lm_head`
+  - Saves `<root>/qwen_2/model/text_encoder/<method>_quant.safetensors`
+  - Default method: `sym-high-mini`, 7.99 GB. `sym-med-nano` gives 6.85 GB and is what the 6 GB commands below use
+  - `--text-quant-method fp16`, `bf16`, or `fp32` skips quantization and reads `model.safetensors` from the same folder, cast to that dtype
+- Examples
+  - `python -m qwen_2.text_encoder.quant --root "/iml_root" --input "/models/Qwen Image 2.1/text_encoder" --method sym-med-nano`
+- Useful args
+  - `--root`
+  - `--input`
+  - `--method`
+
+#### `qwen2.gen`
+- Features
+  - Generates one image from a prompt and saves it to `<root>/qwen_2/outputs`
+  - The file name is a timestamp. The prompt, seed, size, variant, and quant methods go into the PNG text chunk under the key `qwen_2`
+  - CUDA-only runtime; exits if CUDA is unavailable
+  - Turbo is the default: 8 steps, guidance 1.0, and the fixed 8-step sigma list
+  - `--variant base` uses 40 steps, a dynamic shift, and CFG
+  - Turbo and base read `denoiser/turbo/` and `denoiser/base/`
+  - `--text-quant-method` and `--denoiser-quant-method` pick a saved quant file. `fp16`, `bf16`, or `fp32` read the original checkpoint instead
+  - The prefix KV cache is on by default. `--no-kv-cache` runs the text and image tokens together on every step
+  - `--stream-text-encoder` and `--stream-denoiser` keep the quantized weights in pinned host memory and copy one layer at a time
+  - `--vae-dtype {fp32,fp16}` sets the VAE compute dtype. Default: `fp16`
+  - `--rgb` flattens alpha over white. The default keeps RGBA
+  - Width and height round up to a multiple of 32
+- Measured on a 6 GB card with the text encoder at `sym-med-nano` and the denoiser at `aff-high-nano`: at 1024, 47.5 s per step and about 7 minutes in total, with the text encoder streamed and the denoiser resident. At 512, 14.7 s per step. Streaming the denoiser adds about 27% to the step time, so stream it only when the quant file does not fit
+- Examples
+  - `python -m qwen_2.gen --root "/iml_root" --prompt "a red fox in fresh snow, morning light"`
+  - `python -m qwen_2.gen --root "/iml_root" --prompt "a red fox in fresh snow" --width 512 --height 512 --stream-text-encoder --stream-denoiser`
+  - `python -m qwen_2.gen --root "/iml_root" --prompt "a red fox in fresh snow" --variant base --guidance-scale 4.0 --negative-prompt "blurry"`
+- Useful args
+  - `--root`
+  - `--prompt`
+  - `--negative-prompt`
+  - `--width`, `--height`
+  - `--steps`
+  - `--guidance-scale`
+  - `--seed`
+  - `--variant`
+  - `--text-quant-method`
+  - `--denoiser-quant-method`
+  - `--stream-text-encoder`, `--stream-denoiser`
+  - `--no-kv-cache`
+  - `--vae-dtype`
+  - `--rgb`
+  - `--output`
+
 ### SDXL
 
 The `sdxl` package prepares, quantizes, and runs SDXL checkpoints. The model folder is `<root>/sdxl/<name>`:
@@ -1098,6 +1219,7 @@ The loader never quantizes on the fly. It raises `FileNotFoundError` when the `<
     - `flux2_4b_denoiser`, `flux2_9b_denoiser`
     - `gemma4_2b`
     - `wan22_5b_text_encoder`, `wan22_5b_denoiser`
+    - `qwen_2_text_encoder`, `qwen_2_denoiser`
   - Prints estimates for every supported quantization method, ordered by the main quantization method bit width
 - Examples
   - `python -m utils.quant.estimator.main --model flux2_4b_text_encoder --source "/models/flux/flux_2_klein_4b/model/text_encoder"`

@@ -13,7 +13,7 @@ from diffusers.models.transformers.transformer_qwenimage21 import (
 )
 from safetensors import safe_open
 
-from qwen_2.config import VARIANTS
+from qwen_2.config import VARIANTS, parse_quant_method
 from qwen_2.denoiser.targets import _build_qwen2_denoiser_target_tensors
 from utils.loaders.sharded import load_local_sharded_checkpoint, stream_local_sharded_checkpoint
 from utils.loaders.single import load_local_single_checkpoint, stream_local_single_checkpoint
@@ -27,6 +27,11 @@ __all__ = ["load_qwen2_denoiser"]
 
 _SHARD_PATTERN = "diffusion_pytorch_model-*.safetensors"
 _PLAIN_METHODS = ("fp16", "fp32", "bf16")
+_TORCH_DTYPES = {
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+    "fp32": torch.float32,
+}
 
 
 def _build_model_from_config(model_dir: Path, *, device: str = "meta") -> QwenImage21Transformer2DModel:
@@ -121,7 +126,9 @@ def load_qwen2_denoiser(
 
     Args:
         path: The `denoiser` folder, or a `denoiser/<variant>` folder.
-        quant_method: A quantization method name, or None for plain weights.
+        quant_method: A quantization method name, one of `fp16`, `bf16`, or
+            `fp32` for the unquantized checkpoint, or None for the same with
+            fp16 weights.
         variant: `turbo` or `base`.
         offloading: Build and keep the weights in host memory.
         stream_load: Copy tensors into the model one at a time. Defaults to
@@ -142,6 +149,8 @@ def load_qwen2_denoiser(
     """
     if variant not in VARIANTS:
         raise ValueError(f"Unknown denoiser variant {variant!r}. Expected one of {VARIANTS}.")
+    quant_method, weight_dtype = parse_quant_method(quant_method)
+    dtype = _TORCH_DTYPES[weight_dtype]
     if stream_denoiser and quant_method is None:
         raise ValueError(
             "stream_denoiser needs a quantized checkpoint. "
@@ -257,7 +266,7 @@ def load_qwen2_denoiser(
             f"Missing keys: {', '.join(sorted(missing)) or 'none'}."
         )
 
-    _cast_float_tensors_except_quantized(model, torch.float16)
+    _cast_float_tensors_except_quantized(model, dtype)
 
     if stream_denoiser:
         pin_quantized_buffers(model)

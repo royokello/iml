@@ -81,8 +81,8 @@ def generate_image(
     guidance_scale: float = 1.0,
     seed: int = DEFAULT_SEED,
     variant: str = "turbo",
-    text_quant_method: str | None = DEFAULT_TEXT_QUANT_METHOD,
-    denoiser_quant_method: str | None = DEFAULT_DENOISER_QUANT_METHOD,
+    text_quant_method: str,
+    denoiser_quant_method: str,
     stream_denoiser: bool = False,
     kv_cache: bool = True,
     stream_text_encoder: bool = False,
@@ -104,8 +104,13 @@ def generate_image(
         guidance_scale: Classifier-free guidance scale. Turbo uses 1.0.
         seed: Noise seed.
         variant: `turbo` or `base`.
-        text_quant_method: Text encoder quant method, or None for plain.
-        denoiser_quant_method: Denoiser quant method, or None for plain.
+        text_quant_method: Text encoder quant method, or `fp16`, `bf16`, or
+            `fp32` for the unquantized checkpoint. Required: a name must be
+            given, and `DEFAULT_TEXT_QUANT_METHOD` holds the CLI value. The
+            loader never quantizes on the fly.
+        denoiser_quant_method: Denoiser quant method, or `fp16`, `bf16`, or
+            `fp32` for the unquantized checkpoint. Required for the same
+            reason. `DEFAULT_DENOISER_QUANT_METHOD` holds the CLI value.
         stream_denoiser: Keep the quantized weights in pinned host memory and
             copy each layer to the GPU for its own multiply.
         kv_cache: Reuse the text prefix keys and values across steps.
@@ -122,7 +127,7 @@ def generate_image(
     Raises:
         RuntimeError: If CUDA is not available, or if denoise produces inf or
             NaN values.
-        ValueError: If the variant or a size is invalid.
+        ValueError: If the variant, a size, or a quant method is invalid.
     """
     import torch
     from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21KVCache
@@ -139,6 +144,10 @@ def generate_image(
 
     if variant not in VARIANTS:
         raise ValueError(f"Unknown variant {variant!r}. Expected one of {VARIANTS}.")
+    if not text_quant_method:
+        raise ValueError("text_quant_method is required.")
+    if not denoiser_quant_method:
+        raise ValueError("denoiser_quant_method is required.")
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is not available in this environment.")
 
@@ -343,8 +352,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--guidance-scale", type=float, default=1.0, help="CFG scale. Turbo uses 1.0.")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Noise seed.")
     parser.add_argument("--variant", choices=VARIANTS, default="turbo", help="Checkpoint variant.")
-    parser.add_argument("--text-quant-method", default=DEFAULT_TEXT_QUANT_METHOD, help="Text encoder quant method.")
-    parser.add_argument("--denoiser-quant-method", default=DEFAULT_DENOISER_QUANT_METHOD, help="Denoiser quant method.")
+    parser.add_argument("--text-quant-method", default=DEFAULT_TEXT_QUANT_METHOD, help='Text encoder quant method, or fp16/bf16/fp32 for the unquantized checkpoint.')
+    parser.add_argument("--denoiser-quant-method", default=DEFAULT_DENOISER_QUANT_METHOD, help='Denoiser quant method, or fp16/bf16/fp32 for the unquantized checkpoint.')
     parser.add_argument("--stream-denoiser", action="store_true", help="Stream the denoiser weights from host memory.")
     parser.add_argument("--no-kv-cache", action="store_true", help="Disable the prefix KV cache.")
     parser.add_argument("--stream-text-encoder", action="store_true", help="Stream the text-encoder weights from host memory.")
@@ -366,8 +375,8 @@ def main() -> None:
         guidance_scale=args.guidance_scale,
         seed=args.seed,
         variant=args.variant,
-        text_quant_method=args.text_quant_method or None,
-        denoiser_quant_method=args.denoiser_quant_method or None,
+        text_quant_method=args.text_quant_method,
+        denoiser_quant_method=args.denoiser_quant_method,
         stream_denoiser=args.stream_denoiser,
         kv_cache=not args.no_kv_cache,
         stream_text_encoder=args.stream_text_encoder,

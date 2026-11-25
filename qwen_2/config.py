@@ -45,6 +45,29 @@ TEXT_TEMPLATE_T2I = (
 DEFAULT_TEXT_QUANT_METHOD = "sym-med-nano"
 DEFAULT_DENOISER_QUANT_METHOD = "aff-high-nano"
 DEFAULT_SEED = 19930625
+UNQUANTIZED_DTYPES = ("fp16", "bf16", "fp32")
+DEFAULT_WEIGHT_DTYPE = "fp16"
+
+
+def parse_quant_method(method: str | None) -> tuple[str | None, str]:
+    """Split a method name into a quant method and an unquantized dtype.
+
+    Args:
+        method: A quantization method name, one of `UNQUANTIZED_DTYPES`, or
+            None.
+
+    Returns:
+        A `(quant_method, weight_dtype)` pair. A dtype name selects the
+        unquantized checkpoint, so the first item is None and the second is
+        that dtype. A quant method returns the method and
+        `DEFAULT_WEIGHT_DTYPE`. None returns `(None, DEFAULT_WEIGHT_DTYPE)`.
+    """
+    if method is None:
+        return None, DEFAULT_WEIGHT_DTYPE
+    lowered = method.lower()
+    if lowered in UNQUANTIZED_DTYPES:
+        return None, lowered
+    return method, DEFAULT_WEIGHT_DTYPE
 
 
 def resolve_model_root(root: str | Path) -> Path:

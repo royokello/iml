@@ -18,6 +18,7 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import (
 )
 
 from krea_2.text_encoder.embedding import QuantizedEmbedding
+from qwen_2.config import parse_quant_method
 from qwen_2.text_encoder.keys import _strip_model_key, _strip_text_key
 from qwen_2.text_encoder.target import _build_qwen2_text_encoder_targets
 from utils.quant.linear import QuantizedLinear
@@ -29,6 +30,11 @@ from utils.text import replace_hyphens_with_underscores
 __all__ = ["load_qwen2_text_encoder"]
 
 _PLAIN_METHODS = ("fp16", "fp32", "bf16")
+_TORCH_DTYPES = {
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+    "fp32": torch.float32,
+}
 _SKIP_TEXT = ("model.visual.", "lm_head.")
 _SKIP_FULL = ("lm_head.",)
 
@@ -171,7 +177,9 @@ def load_qwen2_text_encoder(
 
     Args:
         path: The `text_encoder` folder, or a file inside it.
-        quant_method: A quantization method name, or None for plain weights.
+        quant_method: A quantization method name, one of `fp16`, `bf16`, or
+            `fp32` for the unquantized `model.safetensors`, or None for the
+            same with fp16 weights.
         include_vision: Build the vision tower too. Text-to-image passes False;
             image editing passes True.
 
@@ -185,6 +193,8 @@ def load_qwen2_text_encoder(
     """
     model_path = Path(path).expanduser()
     model_dir = model_path.parent if model_path.is_file() else model_path
+    quant_method, weight_dtype = parse_quant_method(quant_method)
+    dtype = _TORCH_DTYPES[weight_dtype]
 
     config = _build_config(model_dir, include_vision=include_vision)
     key_transform = _strip_model_key if include_vision else _strip_text_key
@@ -210,7 +220,7 @@ def load_qwen2_text_encoder(
         )
         _check_incompatible(incompatible)
         _materialize_meta_tensors(model)
-        _cast_float_tensors_except_quantized(model, torch.float16)
+        _cast_float_tensors_except_quantized(model, dtype)
         model.eval()
         return model
 
@@ -249,7 +259,7 @@ def load_qwen2_text_encoder(
     )
     _check_incompatible(incompatible)
     _materialize_meta_tensors(model)
-    _cast_float_tensors_except_quantized(model, torch.float16)
+    _cast_float_tensors_except_quantized(model, dtype)
     model.eval()
     return model
 
