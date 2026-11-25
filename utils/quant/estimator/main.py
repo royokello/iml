@@ -38,6 +38,12 @@ from wan22.quant.targets import (
     _build_wan22_denoiser_mixed_target_tensors,
     _build_wan22_text_encoder_mixed_target_tensors,
 )
+from qwen_2.denoiser.targets import _build_qwen2_denoiser_target_tensors
+from qwen_2.text_encoder.target import (
+    TEXT_ENCODER_EXCLUSION_PREFIX as _QWEN2_TEXT_ENCODER_EXCLUSION_PREFIX,
+    TEXT_ENCODER_INCLUSION_PREFIX as _QWEN2_TEXT_ENCODER_INCLUSION_PREFIX,
+    _build_qwen2_text_encoder_targets,
+)
 
 _AUDIO_PREFIXES = (
     "model.audio_tower.",
@@ -234,6 +240,25 @@ def _anima_text_target_configs() -> dict[str, dict[str, list[str]]]:
     return _mixed_target_configs(_build_anima_text_encoder_targets)
 
 
+def _qwen2_text_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(_build_qwen2_text_encoder_targets)
+
+
+def _qwen2_denoiser_target_configs() -> dict[str, dict[str, list[str]]]:
+    return _mixed_target_configs(_build_qwen2_denoiser_target_tensors)
+
+
+def _build_qwen2_text_encoder_files(source: Path) -> list[Path]:
+    return [source / "model.safetensors"]
+
+
+def _build_qwen2_denoiser_files(source: Path) -> list[Path]:
+    return [
+        source / "diffusion_pytorch_model-00001-of-00002.safetensors",
+        source / "diffusion_pytorch_model-00002-of-00002.safetensors",
+    ]
+
+
 def _model_specs() -> dict[str, dict[str, object]]:
     flux2_4b_text = {
         "files": lambda source: _build_flux2_text_encoder_files(source, "4b"),
@@ -303,6 +328,16 @@ def _model_specs() -> dict[str, dict[str, object]]:
         "wan22_5b_denoiser": {
             "files": _build_wan22_denoiser_files,
             "target_configs": _wan22_denoiser_target_configs,
+        },
+        "qwen_2_text_encoder": {
+            "files": _build_qwen2_text_encoder_files,
+            "target_configs": _qwen2_text_target_configs,
+            "inclusion_prefix": _QWEN2_TEXT_ENCODER_INCLUSION_PREFIX,
+            "exclusion_prefix": _QWEN2_TEXT_ENCODER_EXCLUSION_PREFIX,
+        },
+        "qwen_2_denoiser": {
+            "files": _build_qwen2_denoiser_files,
+            "target_configs": _qwen2_denoiser_target_configs,
         },
     }
 
