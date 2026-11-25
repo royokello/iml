@@ -196,7 +196,7 @@ def _estimate_output_tensors(
         return [(name, "F32", shape)]
 
     if method == "bf16":
-        return [(name, dtype, shape)]
+        return [(name, "BF16", shape)]
 
     if method is None:
         return [(name, "F16", shape)]

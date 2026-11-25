@@ -17,7 +17,10 @@ from flux3.text_encoder.target import (
 )
 from ideogram.text_encoder.target import _build_ideogram_text_encoder_targets
 from ideogram.denoiser.targets import _build_ideogram_denoiser_target_tensors
-from krea_2.text_encoder.target import _build_krea2_text_encoder_targets
+from krea_2.text_encoder.target import (
+    _KREA2_TEXT_ENCODER_INCLUSION_PREFIX,
+    _build_krea2_text_encoder_targets,
+)
 from krea_2.denoiser.targets import _build_krea2_denoiser_target_tensors
 from anima.denoiser.targets import _build_anima_denoiser_target_tensors
 from anima.text_encoder.targets import _build_anima_text_encoder_targets
@@ -285,6 +288,7 @@ def _model_specs() -> dict[str, dict[str, object]]:
         "krea2_text_encoder": {
             "files": _build_krea2_text_encoder_files,
             "target_configs": _krea2_text_target_configs,
+            "inclusion_prefix": _KREA2_TEXT_ENCODER_INCLUSION_PREFIX,
         },
         "krea2_denoiser": {
             "files": _build_krea2_denoiser_files,
