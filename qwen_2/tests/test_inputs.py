@@ -56,6 +56,11 @@ class InputTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_img_mask(7, 4096, torch.zeros(1, 6, dtype=torch.bool))
 
+    def test_img_mask_follows_the_pad_mask_device(self):
+        pad_mask = torch.zeros(1, 7, dtype=torch.bool, device="meta")
+        mask = build_img_mask(7, 4096, pad_mask)
+        self.assertEqual(mask.device.type, "meta")
+
     def test_latent_roundtrip(self):
         latents = torch.randn(1, 64, 1, 64, 64)
         packed = pack_latents(latents)

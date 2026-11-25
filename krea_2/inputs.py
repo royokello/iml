@@ -219,6 +219,47 @@ def unpack_latents(latents: torch.Tensor, height: int, width: int) -> torch.Tens
     return latents.unsqueeze(2)
 
 
+def encode_latents(
+    vae,
+    image: "Image.Image",
+    *,
+    device: torch.device,
+    dtype: torch.dtype = torch.float16,
+) -> tuple[torch.Tensor, int, int]:
+    """Encode an image into normalized latent tokens.
+
+    The image sides must be multiples of 16. The result is the inverse of
+    `decode_latents`, so a cached token can go straight into the denoiser.
+
+    Args:
+        vae: The Qwen-Image VAE, on `device`.
+        image: The RGB image to encode.
+        device: The device that runs the VAE.
+        dtype: The VAE compute dtype.
+
+    Returns:
+        A tuple of the tokens with shape `(h * w, 64)`, `h`, and `w`, where `h`
+        and `w` are the token grid size.
+    """
+    import numpy as np
+
+    array = np.asarray(image.convert("RGB"), dtype=np.float32) / 127.5 - 1.0
+    pixels = torch.from_numpy(array).permute(2, 0, 1).unsqueeze(0).unsqueeze(2)
+    pixels = pixels.to(device=device, dtype=dtype)
+
+    with torch.inference_mode():
+        posterior = vae.encode(pixels).latent_dist
+        latent = posterior.mode()
+    latent = latent[:, :, 0].to(torch.float32)
+    mean = torch.tensor(LATENTS_MEAN, device=device, dtype=torch.float32).view(1, LATENT_CHANNELS, 1, 1)
+    std = torch.tensor(LATENTS_STD, device=device, dtype=torch.float32).view(1, LATENT_CHANNELS, 1, 1)
+    latent = (latent - mean) / std
+    tokens = pack_latents(latent.to(dtype))[0]
+    grid_h = latent.shape[-2] // PATCH_SIZE
+    grid_w = latent.shape[-1] // PATCH_SIZE
+    return tokens, grid_h, grid_w
+
+
 def decode_latents(
     vae,
     latents: torch.Tensor,
@@ -271,6 +312,7 @@ __all__ = [
     "build_sigmas",
     "calculate_shift",
     "decode_latents",
+    "encode_latents",
     "encode_prompt",
     "pack_latents",
     "prepare_position_ids",

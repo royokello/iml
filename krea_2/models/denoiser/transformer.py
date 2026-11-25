@@ -30,6 +30,8 @@ class Krea2Transformer2DModel(nn.Module):
     quantized file loads with no key remap.
     """
 
+    _supports_gradient_checkpointing = True
+
     def __init__(
         self,
         in_channels: int = 64,
@@ -93,6 +95,18 @@ class Krea2Transformer2DModel(nn.Module):
 
         self.final_layer = Krea2FinalLayer(hidden_size, out_channels=in_channels, eps=norm_eps)
 
+        self.gradient_checkpointing = False
+
+    def _run_block(
+        self,
+        block: nn.Module,
+        *args: torch.Tensor | tuple[torch.Tensor, torch.Tensor] | None,
+    ) -> torch.Tensor:
+        """Run one block, recomputing its activations when checkpointing is on."""
+        if torch.is_grad_enabled() and self.gradient_checkpointing:
+            return self._gradient_checkpointing_func(block, *args)
+        return block(*args)
+
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -128,7 +142,7 @@ class Krea2Transformer2DModel(nn.Module):
         rotary_emb = self.rotary_emb(position_ids)
 
         for block in self.transformer_blocks:
-            hidden_states = block(hidden_states, temb_mod, rotary_emb, attention_mask)
+            hidden_states = self._run_block(block, hidden_states, temb_mod, rotary_emb, attention_mask)
 
         hidden_states = hidden_states[:, text_seq_len:]
         output = self.final_layer(hidden_states, temb)

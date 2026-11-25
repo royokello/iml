@@ -22,10 +22,13 @@ from krea_2.config import (
     resolve_outputs_dir,
 )
 
+
 if TYPE_CHECKING:
     from PIL import Image
 
     from krea_2.models.denoiser.transformer import Krea2Transformer2DModel
+
+from flux2.gen import _parse_loras_arg
 
 DEFAULT_SEED = 19930625
 _PIXEL_TO_TOKEN = 16
@@ -66,6 +69,32 @@ def _vae_dtype(name: str):
     if name == "fp16":
         return torch.float16
     raise ValueError(f"Unknown vae dtype {name!r}. Expected one of: {_VAE_DTYPES}.")
+
+
+def _inject_loras(denoiser, loras: dict[str, float]) -> int:
+    """Inject the LoRA wrappers that a checkpoint list needs."""
+    from flux2.lora.model import inject_trainable_lora_modules
+    from krea_2.lora.config import KREA2_LORA_TARGETS
+    from safetensors import safe_open
+
+    lora_rank = None
+    lora_alpha = None
+    for lora_path in loras:
+        with safe_open(str(lora_path), framework="pt") as handle:
+            metadata = handle.metadata() or {}
+        lora_rank = int(metadata["rank"])
+        lora_alpha = int(metadata["alpha"])
+        break
+    if lora_rank is None or lora_alpha is None:
+        raise RuntimeError("Could not read rank/alpha metadata from LoRA checkpoint.")
+    return len(
+        inject_trainable_lora_modules(
+            denoiser,
+            target_linear_names=KREA2_LORA_TARGETS,
+            rank=lora_rank,
+            alpha=lora_alpha,
+        )
+    )
 
 
 @contextlib.contextmanager
@@ -214,6 +243,7 @@ def generate_image(
     tokenizer=None,
     text_encoder=None,
     denoiser: "Krea2Transformer2DModel | None" = None,
+    loras: dict[str, float] | None = None,
     vae=None,
     num_images: int = 1,
 ) -> list["Image.Image"]:
@@ -247,6 +277,9 @@ def generate_image(
         tokenizer: Pre-loaded tokenizer. Defaults to None.
         text_encoder: Pre-loaded text encoder. Defaults to None.
         denoiser: Pre-loaded denoiser. Defaults to None.
+        loras: Map of LoRA checkpoint path to strength. The checkpoint metadata
+            supplies the rank and the alpha. Only valid with a denoiser that
+            this call loads.
         vae: Pre-loaded VAE. Defaults to None.
         num_images: Number of images to generate.
 
@@ -368,6 +401,24 @@ def generate_image(
         print("  * using caller-provided transformer")
         transformer = denoiser
 
+    if loras:
+        if not owns_denoiser:
+            raise ValueError("loras needs a denoiser loaded by this call, not a caller-provided one.")
+        from flux2.lora.loader import load_checkpoint as load_lora_checkpoint
+        from flux2.lora.model import TrainableLoraLinear
+
+        print("  * applying loras ...")
+        print(f"    injected lora modules: {_inject_loras(transformer, loras)}")
+        for lora_path, strength in loras.items():
+            print(f"    {lora_path} [{strength:.2f}]")
+            load_lora_checkpoint(transformer, lora_path)
+            if strength != 1.0:
+                scale = strength ** 0.5
+                for module in transformer.modules():
+                    if isinstance(module, TrainableLoraLinear):
+                        module.lora_A.data.mul_(scale)
+                        module.lora_B.data.mul_(scale)
+
     if owns_denoiser:
         if stream_denoiser:
             if enable_streaming(transformer):
@@ -447,6 +498,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--negative-prompt", default="", help="Negative prompt for --raw. Default: empty.")
     parser.add_argument(
+        "--loras",
+        help='Optional comma-separated LoRA list in the form "path:strength, path2:strength2".',
+    )
+    parser.add_argument(
         "--text-quant-method",
         default="q8-mini",
         help='Text encoder quantization method. "fp16" reads the fp16 quant file.',
@@ -505,6 +560,7 @@ def main() -> None:
         text_positions=args.text_positions,
         vae_dtype=args.vae_dtype,
         num_images=args.num_images,
+        loras=_parse_loras_arg(args.loras),
     )
 
     output_dir = resolve_outputs_dir(args.root)
@@ -525,6 +581,7 @@ def main() -> None:
         "height": aligned_height,
         "text_positions": args.text_positions,
         "vae_dtype": args.vae_dtype,
+        "loras": args.loras or "",
     }
     for index, image in enumerate(images):
         suffix = "" if len(images) == 1 else f"-{index + 1}"

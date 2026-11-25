@@ -85,7 +85,7 @@ def build_img_mask(
                 f"sequence_length={sequence_length}."
             )
         prompt = image_pad_mask.bool()
-    target = torch.ones(1, target_tokens // 4, dtype=torch.bool)
+    target = torch.ones(1, target_tokens // 4, dtype=torch.bool, device=prompt.device)
     return torch.cat([prompt, target], dim=1)
 
 
