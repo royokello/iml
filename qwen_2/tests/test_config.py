@@ -2,15 +2,20 @@ import unittest
 
 from qwen_2.config import (
     BASE_SHIFT,
+    DEFAULT_REF_SIZE,
     DEFAULT_WEIGHT_DTYPE,
     MAX_SHIFT,
+    TEXT_SYSTEM_PROMPT,
     TEXT_TEMPLATE_T2I,
     TURBO_SIGMAS,
+    build_edit_text,
+    calculate_dimensions,
     calculate_shift,
     image_token_count,
     parse_quant_method,
     resolve_model_root,
     resolve_outputs_dir,
+    resolve_sizes,
     round_to_multiple,
 )
 
@@ -55,6 +60,41 @@ class ConfigTest(unittest.TestCase):
                 self.assertEqual(
                     parse_quant_method(method), (method, DEFAULT_WEIGHT_DTYPE)
                 )
+
+    def test_none_means_the_unquantized_checkpoint(self):
+        self.assertEqual(parse_quant_method(None), (None, DEFAULT_WEIGHT_DTYPE))
+
+    def test_edit_text_repeats_one_slot_per_image(self):
+        text = build_edit_text("make it red", 2)
+        self.assertEqual(text.count("<|image_pad|>"), 2)
+        self.assertEqual(text.count("<image1>"), 1)
+        self.assertEqual(text.count("<image2>"), 1)
+        self.assertIn("make it red", text)
+        self.assertIn(TEXT_SYSTEM_PROMPT, text)
+
+    def test_edit_text_requires_a_reference(self):
+        with self.assertRaises(ValueError):
+            build_edit_text("make it red", 0)
+
+    def test_calculate_dimensions_uses_the_area_and_the_aspect(self):
+        self.assertEqual(calculate_dimensions(512 * 512, 1.0), (512, 512))
+        self.assertEqual(calculate_dimensions(512 * 512, 2.0), (736, 384))
+        self.assertEqual(calculate_dimensions(512 * 512, 16 / 9), (672, 384))
+
+    def test_resolve_sizes_without_references(self):
+        sizes, output = resolve_sizes(None, None, None, DEFAULT_REF_SIZE)
+        self.assertEqual(sizes, [])
+        self.assertEqual(output, (1024, 1024))
+
+    def test_resolve_sizes_uses_the_last_reference(self):
+        sizes, output = resolve_sizes([(1024, 512), (512, 512)], None, None, 512)
+        self.assertEqual(sizes, [(736, 384), (512, 512)])
+        self.assertEqual(output, (512, 512))
+
+    def test_resolve_sizes_keeps_an_explicit_axis(self):
+        sizes, output = resolve_sizes([(1024, 512)], 640, None, 512)
+        self.assertEqual(sizes, [(736, 384)])
+        self.assertEqual(output, (640, 384))
 
     def test_none_means_the_unquantized_checkpoint(self):
         self.assertEqual(parse_quant_method(None), (None, DEFAULT_WEIGHT_DTYPE))

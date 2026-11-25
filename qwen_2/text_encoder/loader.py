@@ -85,7 +85,10 @@ def _build_model(config: Qwen3VLConfig | Qwen3VLTextConfig, *, include_vision: b
     replacement = Qwen3VLTextRotaryEmbedding(config=text_config)
     if include_vision:
         model.language_model.rotary_emb = replacement
-        head_dim = config.vision_config.head_dim
+        # The vision config has no `head_dim` field: the model derives it from
+        # `hidden_size // num_heads`, so the rebuild must derive it the same way.
+        vision_config = config.vision_config
+        head_dim = vision_config.hidden_size // vision_config.num_heads
         model.visual.rotary_pos_emb = Qwen3VLVisionRotaryEmbedding(head_dim // 2)
     else:
         model.rotary_emb = replacement

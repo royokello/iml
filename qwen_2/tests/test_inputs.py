@@ -37,6 +37,25 @@ class InputTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_img_mask(7, 4095)
 
+    def test_img_shapes_lists_references_before_the_target(self):
+        shapes = build_img_shapes(1024, 1024, [(512, 512), (736, 384)])
+        self.assertEqual(
+            shapes, [[(1, 32, 32), (1, 24, 46), (1, 64, 64)]]
+        )
+
+    def test_img_mask_keeps_the_reference_slots(self):
+        pad_mask = torch.zeros(1, 7, dtype=torch.bool)
+        pad_mask[0, 2:4] = True
+        mask = build_img_mask(7, 4096, pad_mask)
+        self.assertEqual(mask.shape, (1, 7 + 1024))
+        self.assertTrue(bool(mask[0, 2:4].all()))
+        self.assertFalse(bool(mask[0, 4:7].any()))
+        self.assertTrue(bool(mask[0, 7:].all()))
+
+    def test_img_mask_rejects_a_pad_mask_of_the_wrong_length(self):
+        with self.assertRaises(ValueError):
+            build_img_mask(7, 4096, torch.zeros(1, 6, dtype=torch.bool))
+
     def test_latent_roundtrip(self):
         latents = torch.randn(1, 64, 1, 64, 64)
         packed = pack_latents(latents)

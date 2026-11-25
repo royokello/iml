@@ -184,11 +184,11 @@ def generate_image(
     torch.cuda.synchronize(device)
     encode_start = time.perf_counter()
     with torch.inference_mode():
-        embeds, text_mask = encode_prompt(processor, text_encoder, prompt, device=device)
+        embeds, text_mask, _ = encode_prompt(processor, text_encoder, prompt, device=device)
         negative_embeds = None
         negative_text_mask = None
         if use_cfg:
-            negative_embeds, negative_text_mask = encode_prompt(
+            negative_embeds, negative_text_mask, _ = encode_prompt(
                 processor, text_encoder, negative_prompt, device=device
             )
     torch.cuda.synchronize(device)
