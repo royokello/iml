@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from qwen_2.denoiser.targets import _build_qwen2_denoiser_target_tensors
+from utils.quant.targets import build_mixed_target_config
 
 
 class DenoiserTargetTest(unittest.TestCase):
@@ -31,3 +32,11 @@ class DenoiserTargetTest(unittest.TestCase):
             self.assertIn(prefix + "img_mlp.gate_layer.weight", targets["rank_2"])
             self.assertIn(prefix + "img_mlp.out.weight", targets["rank_2"])
             self.assertIn(prefix + "attn.to_k.weight", targets["rank_3"])
+
+    def test_quantized_split_matches_the_written_checkpoint(self):
+        targets = _build_qwen2_denoiser_target_tensors()
+        config = build_mixed_target_config("sym-med-nano", targets)
+        self.assertEqual(
+            {method: len(names) for method, names in config.items()},
+            {"sym-med": 64, "aff-high": 128, "aff-med": 32, "bf16": 73},
+        )

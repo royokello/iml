@@ -39,7 +39,5 @@ def load_qwen2_vae(path: str | Path, *, dtype: torch.dtype | None = None) -> Aut
     if dtype is not None:
         kwargs["torch_dtype"] = dtype
     vae = AutoencoderKLQwenImage21.from_pretrained(str(folder), **kwargs)
-    if dtype is not None:
-        vae = vae.to(dtype=dtype)
     vae.eval()
     return vae

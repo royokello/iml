@@ -3,6 +3,7 @@ import unittest
 from qwen_2.config import (
     BASE_SHIFT,
     MAX_SHIFT,
+    TEXT_TEMPLATE_T2I,
     TURBO_SIGMAS,
     calculate_shift,
     image_token_count,
@@ -13,6 +14,11 @@ from qwen_2.config import (
 
 
 class ConfigTest(unittest.TestCase):
+    def test_text_template_takes_the_prompt_keyword(self):
+        text = TEXT_TEMPLATE_T2I.format(prompt="a red fox")
+        self.assertIn("a red fox", text)
+        self.assertNotIn("{prompt}", text)
+
     def test_turbo_sigmas_are_exact(self):
         self.assertEqual(
             TURBO_SIGMAS,

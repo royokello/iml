@@ -6,7 +6,11 @@ from pathlib import Path
 
 import torch
 from diffusers import QwenImage21Transformer2DModel
-from diffusers.models.transformers.transformer_qwenimage21 import QwenImage21Rope
+from diffusers.models.transformers.transformer_qwenimage21 import (
+    QwenImage21Rope,
+    QwenImage21TemporalTimesteps,
+    QwenImage21TimestepProjEmbeddings,
+)
 from safetensors import safe_open
 
 from qwen_2.config import VARIANTS
@@ -14,8 +18,8 @@ from qwen_2.denoiser.targets import _build_qwen2_denoiser_target_tensors
 from utils.loaders.sharded import load_local_sharded_checkpoint, stream_local_sharded_checkpoint
 from utils.loaders.single import load_local_single_checkpoint, stream_local_single_checkpoint
 from utils.quant.linear import QuantizedLinear
-from utils.quant.name import convert_quant_ranks
 from utils.quant.replace import replace_targeted_linear_modules, target_tensors_to_linear_names
+from utils.quant.targets import build_mixed_target_config
 from utils.quant.streaming import StreamedQuantizedLinear, pin_quantized_buffers
 from utils.text import replace_hyphens_with_underscores
 
@@ -40,15 +44,22 @@ def _build_model_from_config(model_dir: Path, *, device: str = "meta") -> QwenIm
     finally:
         torch.set_default_dtype(default_dtype)
 
-    # The RoPE table is a plain Python list built by tensor factories in
-    # `__init__`, so a meta build leaves it on meta and `.to(device)` fails.
+    # The RoPE table and the sinusoidal timestep table are non-persistent
+    # buffers built in `__init__`, so a meta build leaves them on meta and
+    # `.to(device)` fails. Rebuild both on CPU; the persistent weights arrive
+    # from the checkpoint.
     axes_dims_rope = tuple(config.get("axes_dims_rope", (16, 56, 56)))
     model.pos_embed = QwenImage21Rope(theta=10000, axes_dim=list(axes_dims_rope))
+    model.time_text_embed = QwenImage21TimestepProjEmbeddings(embedding_dim=model.inner_dim)
     return model
 
 
 def _cast_float_tensors_except_quantized(module: torch.nn.Module, dtype: torch.dtype) -> None:
-    if isinstance(module, QuantizedLinear):
+    # The derived tables stay float32: their values lose precision in float16.
+    if isinstance(
+        module,
+        (QuantizedLinear, QwenImage21Rope, QwenImage21TemporalTimesteps),
+    ):
         return
 
     for parameter_name, parameter in module.named_parameters(recurse=False):
@@ -76,10 +87,11 @@ def _materialize_meta_parameters(model: torch.nn.Module) -> None:
                 )
 
 
-def _check_meta_parameters(model: torch.nn.Module) -> None:
+def _check_meta_tensors(model: torch.nn.Module) -> None:
     unresolved = [name for name, parameter in model.named_parameters() if parameter.is_meta]
+    unresolved += [name for name, buffer in model.named_buffers() if buffer.is_meta]
     if unresolved:
-        raise RuntimeError("Denoiser load left parameters on meta: " + ", ".join(unresolved))
+        raise RuntimeError("Denoiser load left tensors on meta: " + ", ".join(unresolved))
 
 
 def _checkpoint_keys(path: Path) -> set[str]:
@@ -139,13 +151,15 @@ def load_qwen2_denoiser(
 
     if quant_method is not None:
         quant_method_key = replace_hyphens_with_underscores(quant_method)
-        rank_1_method, rank_2_method = convert_quant_ranks(quant_method, 2)
     else:
-        quant_method_key = rank_1_method = rank_2_method = None
+        quant_method_key = None
 
     target_tensors = _build_qwen2_denoiser_target_tensors()
-    rank_1_linear = target_tensors_to_linear_names(target_tensors["rank_1"])
-    rank_2_linear = target_tensors_to_linear_names(target_tensors["rank_2"])
+    targets = (
+        build_mixed_target_config(quant_method, target_tensors)
+        if quant_method is not None
+        else {}
+    )
 
     model_dir = Path(path).expanduser().resolve()
     if model_dir.is_file():
@@ -209,20 +223,13 @@ def load_qwen2_denoiser(
             incompatible = {"unexpected_keys": [], "missing_keys": []}
     else:
         checkpoint_keys = _checkpoint_keys(quantized_checkpoint_path)
-        if rank_1_method not in _PLAIN_METHODS:
+        for target_method, target_names in targets.items():
+            if target_method in _PLAIN_METHODS:
+                continue
             replace_targeted_linear_modules(
                 model,
-                method=rank_1_method,
-                target_linear_names=rank_1_linear,
-                quantize_weights=False,
-                linear_cls=linear_cls,
-                checkpoint_keys=checkpoint_keys,
-            )
-        if rank_2_method not in _PLAIN_METHODS:
-            replace_targeted_linear_modules(
-                model,
-                method=rank_2_method,
-                target_linear_names=rank_2_linear,
+                method=target_method,
+                target_linear_names=target_tensors_to_linear_names(target_names),
                 quantize_weights=False,
                 linear_cls=linear_cls,
                 checkpoint_keys=checkpoint_keys,
@@ -239,7 +246,7 @@ def load_qwen2_denoiser(
             incompatible = load_local_single_checkpoint(model, quantized_checkpoint_path)
 
     if not offloading:
-        _check_meta_parameters(model)
+        _check_meta_tensors(model)
 
     unexpected = incompatible.get("unexpected_keys") or []
     missing = incompatible.get("missing_keys") or []

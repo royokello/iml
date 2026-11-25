@@ -7,7 +7,7 @@ scikit-learn
 ultralytics
 diffusers>=0.41.0
 matplotlib
-huggingface_hub==1.21.0
+huggingface_hub>=1.32.0,<2.0
 tensorflow
 numpy
 scikit-image

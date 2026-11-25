@@ -187,7 +187,7 @@ def encode_prompt(
         A tuple of `(embeds, attention_mask)`. The embeds have shape
         `(1, tokens, 4096)`; the mask has shape `(1, tokens)` and is bool.
     """
-    text = TEXT_TEMPLATE_T2I.format(prompt or " ")
+    text = TEXT_TEMPLATE_T2I.format(prompt=prompt or " ")
     inputs = processor(
         text=[text],
         padding=True,
@@ -246,8 +246,9 @@ def decode_latents(
     std = torch.tensor(vae.config.latents_std[:channels], device=unpacked.device, dtype=target_dtype)
     unpacked = unpacked * std.view(1, channels, 1, 1, 1) + mean.view(1, channels, 1, 1, 1)
 
-    image = vae.decode(unpacked, return_dict=False)[0][:, :, 0]
-    image = (image / 2 + 0.5).clamp(0, 1)
-    array = image.cpu().permute(0, 2, 3, 1).float().numpy()
+    with torch.inference_mode():
+        image = vae.decode(unpacked, return_dict=False)[0][:, :, 0]
+        image = (image / 2 + 0.5).clamp(0, 1)
+        array = image.cpu().permute(0, 2, 3, 1).float().numpy()
     array = (array * 255).round().astype("uint8")
     return Image.fromarray(array[0])

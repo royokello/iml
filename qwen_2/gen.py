@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import gc
+import json
 import time
 from pathlib import Path
 
@@ -46,11 +48,6 @@ def _vae_dtype(name: str):
     raise ValueError(f"Unknown VAE dtype {name!r}. Expected one of {_VAE_DTYPES}.")
 
 
-def _slug(prompt: str) -> str:
-    cleaned = "".join(character if character.isalnum() or character in " -_" else "" for character in prompt)
-    return cleaned.strip().replace(" ", "_")[:40] or "image"
-
-
 def _build_scheduler(variant: str):
     from diffusers import FlowMatchEulerDiscreteScheduler
 
@@ -91,7 +88,6 @@ def generate_image(
     stream_text_encoder: bool = False,
     vae_dtype: str = "fp16",
     rgba: bool = True,
-    num_images: int = 1,
     output_dir: str | Path | None = None,
 ):
     """Generate images from a prompt.
@@ -106,7 +102,7 @@ def generate_image(
         num_inference_steps: Denoising steps. Defaults to 8 (turbo) or 40
             (base).
         guidance_scale: Classifier-free guidance scale. Turbo uses 1.0.
-        seed: Base noise seed. Image `i` uses `seed + i`.
+        seed: Noise seed.
         variant: `turbo` or `base`.
         text_quant_method: Text encoder quant method, or None for plain.
         denoiser_quant_method: Denoiser quant method, or None for plain.
@@ -117,12 +113,11 @@ def generate_image(
             host memory and copy each layer to the GPU for its own multiply.
         vae_dtype: `fp16` or `fp32`.
         rgba: Keep 4 channels. False flattens alpha over white.
-        num_images: Number of images to generate.
         output_dir: Folder for the PNG files. Defaults to
             `<root>/qwen_2/outputs`.
 
     Returns:
-        The generated images.
+        The generated image.
 
     Raises:
         RuntimeError: If CUDA is not available, or if denoise produces inf or
@@ -160,11 +155,15 @@ def generate_image(
         print(f"  * rounding size {width}x{height} to {aligned_width}x{aligned_height}")
     width, height = aligned_width, aligned_height
 
-    print("1. Text encoding")
+    print("1. Text Encoding")
     text_start = time.perf_counter()
+    print("  * loading processor ...")
     processor = Qwen3VLProcessor.from_pretrained(
         str(model_root / "text_encoder"), local_files_only=True
     )
+    print("  * loading text encoder ...")
+    print(f"    quantization: {text_quant_method or 'none'}")
+    torch.cuda.empty_cache()
     text_encoder = load_qwen2_text_encoder(model_root / "text_encoder", text_quant_method)
     if stream_text_encoder:
         if enable_streaming(text_encoder):
@@ -172,6 +171,9 @@ def generate_image(
         move_unstreamed_modules_to(text_encoder, device)
     else:
         text_encoder = text_encoder.to(device)
+    print("  * text encoding ...")
+    torch.cuda.synchronize(device)
+    encode_start = time.perf_counter()
     with torch.inference_mode():
         embeds, text_mask = encode_prompt(processor, text_encoder, prompt, device=device)
         negative_embeds = None
@@ -180,14 +182,18 @@ def generate_image(
             negative_embeds, negative_text_mask = encode_prompt(
                 processor, text_encoder, negative_prompt, device=device
             )
+    torch.cuda.synchronize(device)
+    print(f"    encode time: {time.perf_counter() - encode_start:.3f}s")
     embeds = embeds.to(device)
     text_mask = text_mask.to(device).bool()
     if negative_embeds is not None:
         negative_embeds = negative_embeds.to(device)
         negative_text_mask = negative_text_mask.to(device).bool()
+    print(f"    text tokens: {embeds.shape[1]}")
+    print("  * clearing encoder ...")
     del text_encoder, processor
+    gc.collect()
     torch.cuda.empty_cache()
-    print(f"  * text tokens: {embeds.shape[1]}")
     print(f"  * done in {time.perf_counter() - text_start:.3f}s")
 
     tokens = image_token_count(width, height)
@@ -195,11 +201,15 @@ def generate_image(
     img_shapes = build_img_shapes(height, width)
     img_mask = build_img_mask(embeds.shape[1], tokens).to(device)
 
+    print(f"  * output size: {width}x{height}")
     print("2. Denoise")
     denoise_start = time.perf_counter()
-    print(f"  * variant: {variant}, steps: {steps}, cfg: {guidance_scale}")
-    print(f"  * quantization: {denoiser_quant_method or 'none'}")
-    print(f"  * stream denoiser: {'on' if stream_denoiser else 'off'}")
+    print("  * loading transformer ...")
+    print(f"    variant: {variant}")
+    print(f"    quantization: {denoiser_quant_method or 'none'}")
+    print(f"    steps: {steps}")
+    print(f"    cfg: {guidance_scale}")
+    print(f"    stream denoiser: {'on' if stream_denoiser else 'off'}")
     torch.cuda.empty_cache()
     transformer = load_qwen2_denoiser(
         model_root / "denoiser",
@@ -214,6 +224,7 @@ def generate_image(
         move_unstreamed_modules_to(transformer, device)
     else:
         transformer = transformer.to(device)
+    torch.cuda.synchronize(device)
 
     scheduler = _build_scheduler(variant)
     mu = calculate_shift(tokens)
@@ -224,83 +235,101 @@ def generate_image(
     cache_enabled = kv_cache and transformer.config.causal_condition
     model_dtype = next(transformer.parameters()).dtype
 
-    latents_list = []
-    with torch.inference_mode():
-        for image_index in range(num_images):
-            image_seed = seed + image_index
-            print(f"  * image {image_index + 1}/{num_images} (seed {image_seed})")
-            latents = make_noise(
-                image_seed, height, width, device=device, dtype=torch.float32
-            )
-            cond_cache = QwenImage21KVCache(num_blocks) if cache_enabled else None
-            neg_cache = QwenImage21KVCache(num_blocks) if cache_enabled and use_cfg else None
+    latents = make_noise(seed, height, width, device=device, dtype=torch.float32)
+    cond_cache = QwenImage21KVCache(num_blocks) if cache_enabled else None
+    neg_cache = QwenImage21KVCache(num_blocks) if cache_enabled and use_cfg else None
 
-            for index, t in enumerate(scheduler.timesteps):
-                kv_mode = "extract" if (cache_enabled and index == 0) else ("cached" if cache_enabled else None)
-                timestep = t.expand(latents.shape[0]).to(latents.dtype) / 1000
-                noise_pred = transformer(
+    with torch.inference_mode():
+        for index, t in enumerate(scheduler.timesteps):
+            print(f"  * {index + 1}/{steps} steps", flush=True)
+            step_start = time.perf_counter()
+            kv_mode = "extract" if (cache_enabled and index == 0) else ("cached" if cache_enabled else None)
+            timestep = t.expand(latents.shape[0]).to(latents.dtype) / 1000
+            noise_pred = transformer(
+                hidden_states=latents.to(model_dtype),
+                timestep=timestep,
+                encoder_hidden_states=embeds.to(model_dtype),
+                encoder_hidden_states_mask=text_mask,
+                img_shapes=img_shapes,
+                img_mask=img_mask,
+                kv_cache=cond_cache,
+                kv_cache_mode=kv_mode,
+                return_dict=False,
+            )[0]
+            noise_pred = noise_pred[:, -latents.size(1):]
+
+            if use_cfg:
+                neg_noise_pred = transformer(
                     hidden_states=latents.to(model_dtype),
                     timestep=timestep,
-                    encoder_hidden_states=embeds.to(model_dtype),
-                    encoder_hidden_states_mask=text_mask,
+                    encoder_hidden_states=negative_embeds.to(model_dtype),
+                    encoder_hidden_states_mask=negative_text_mask,
                     img_shapes=img_shapes,
                     img_mask=img_mask,
-                    kv_cache=cond_cache,
+                    kv_cache=neg_cache,
                     kv_cache_mode=kv_mode,
                     return_dict=False,
                 )[0]
-                noise_pred = noise_pred[:, -latents.size(1):]
+                neg_noise_pred = neg_noise_pred[:, -latents.size(1):]
+                noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
 
-                if use_cfg:
-                    neg_noise_pred = transformer(
-                        hidden_states=latents.to(model_dtype),
-                        timestep=timestep,
-                        encoder_hidden_states=negative_embeds.to(model_dtype),
-                        encoder_hidden_states_mask=negative_text_mask,
-                        img_shapes=img_shapes,
-                        img_mask=img_mask,
-                        kv_cache=neg_cache,
-                        kv_cache_mode=kv_mode,
-                        return_dict=False,
-                    )[0]
-                    neg_noise_pred = neg_noise_pred[:, -latents.size(1):]
-                    noise_pred = neg_noise_pred + guidance_scale * (noise_pred - neg_noise_pred)
+            latents = scheduler.step(noise_pred.float(), t, latents, return_dict=False)[0]
+            if not torch.isfinite(latents).all():
+                raise RuntimeError(f"Latents are not finite at step {index + 1}.")
+            torch.cuda.synchronize(device)
+            print(f"    * done in {time.perf_counter() - step_start:.3f}s", flush=True)
 
-                latents = scheduler.step(noise_pred.float(), t, latents, return_dict=False)[0]
-                if not torch.isfinite(latents).all():
-                    raise RuntimeError(f"Latents are not finite at step {index + 1}.")
-                print(f"    step {index + 1}/{len(scheduler.timesteps)}")
+    latents = latents.float().cpu()
 
-            latents_list.append(latents.float().cpu())
-
+    torch.cuda.synchronize(device)
+    print("  * clearing transformer ...")
     del transformer
+    gc.collect()
     torch.cuda.empty_cache()
     print(f"  * done in {time.perf_counter() - denoise_start:.3f}s")
 
-    print("3. Decode")
+    print("3. VAE")
     vae_start = time.perf_counter()
+    print("  * loading vae ...")
     vae = load_qwen2_vae(model_root / "vae", dtype=_vae_dtype(vae_dtype)).to(device)
+    torch.cuda.synchronize(device)
     output_folder = Path(output_dir) if output_dir else resolve_outputs_dir(root)
     output_folder.mkdir(parents=True, exist_ok=True)
 
-    images = []
-    for image_index, latents in enumerate(latents_list):
-        image = decode_latents(
-            vae,
-            latents.to(device),
-            height,
-            width,
-            dtype=_vae_dtype(vae_dtype),
-        )
-        if not rgba:
-            white = image.convert("RGB")
-            image = white
-        output_path = output_folder / f"{_slug(prompt)}_{image_index:02d}.png"
-        image.save(output_path)
-        print(f"  * saved {output_path}")
-        images.append(image)
+    from PIL.PngImagePlugin import PngInfo
+
+    metadata = {
+        "seed": seed,
+        "steps": steps,
+        "width": width,
+        "height": height,
+        "variant": variant,
+        "guidance_scale": guidance_scale,
+        "text_encoder_quant": text_quant_method or "none",
+        "denoiser_quant": denoiser_quant_method or "none",
+        "prompt": prompt,
+        "negative_prompt": negative_prompt,
+        "vae_dtype": vae_dtype,
+    }
+    timestamp = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+
+    image = decode_latents(
+        vae,
+        latents.to(device),
+        height,
+        width,
+        dtype=_vae_dtype(vae_dtype),
+    )
+    if not rgba:
+        image = image.convert("RGB")
+    output_path = output_folder / f"{timestamp}.png"
+    pnginfo = PngInfo()
+    pnginfo.add_text("qwen_2", json.dumps(metadata))
+    image.save(output_path, pnginfo=pnginfo)
+    print(f"Saved {output_path}")
+    torch.cuda.synchronize(device)
     print(f"  * done in {time.perf_counter() - vae_start:.3f}s")
-    return images
+    return image
 
 
 def parse_args() -> argparse.Namespace:
@@ -312,8 +341,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=DEFAULT_HEIGHT, help="Output height (multiple of 32).")
     parser.add_argument("--steps", type=int, default=None, help="Denoising steps. Defaults to 8 (turbo) or 40 (base).")
     parser.add_argument("--guidance-scale", type=float, default=1.0, help="CFG scale. Turbo uses 1.0.")
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Base noise seed.")
-    parser.add_argument("--num-images", type=int, default=1, help="Number of images.")
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Noise seed.")
     parser.add_argument("--variant", choices=VARIANTS, default="turbo", help="Checkpoint variant.")
     parser.add_argument("--text-quant-method", default=DEFAULT_TEXT_QUANT_METHOD, help="Text encoder quant method.")
     parser.add_argument("--denoiser-quant-method", default=DEFAULT_DENOISER_QUANT_METHOD, help="Denoiser quant method.")
@@ -345,7 +373,6 @@ def main() -> None:
         stream_text_encoder=args.stream_text_encoder,
         vae_dtype=args.vae_dtype,
         rgba=not args.rgb,
-        num_images=args.num_images,
         output_dir=args.output,
     )
 

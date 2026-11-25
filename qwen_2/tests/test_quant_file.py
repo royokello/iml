@@ -4,6 +4,9 @@ from pathlib import Path
 
 from safetensors import safe_open
 
+from qwen_2.config import DEFAULT_DENOISER_QUANT_METHOD, DEFAULT_TEXT_QUANT_METHOD
+from utils.text import replace_hyphens_with_underscores
+
 
 def quant_path(*parts: str) -> str:
     """Return a path under the model root.
@@ -15,10 +18,15 @@ def quant_path(*parts: str) -> str:
     return str(root.joinpath("qwen_2", "model", *parts))
 
 
+def quant_file(method: str) -> str:
+    """Return the quantized file name that the loaders expect for `method`."""
+    return f"{replace_hyphens_with_underscores(method)}_quant.safetensors"
+
+
 class QuantFileTest(unittest.TestCase):
     def test_text_encoder_quant_file(self):
         with safe_open(
-            quant_path("text_encoder", "sym_med_nano_quant.safetensors"),
+            quant_path("text_encoder", quant_file(DEFAULT_TEXT_QUANT_METHOD)),
             framework="numpy",
         ) as handle:
             keys = set(handle.keys())
@@ -33,7 +41,7 @@ class QuantFileTest(unittest.TestCase):
 
     def test_denoiser_quant_file(self):
         with safe_open(
-            quant_path("denoiser", "turbo", "sym_med_nano_quant.safetensors"),
+            quant_path("denoiser", "turbo", quant_file(DEFAULT_DENOISER_QUANT_METHOD)),
             framework="numpy",
         ) as handle:
             keys = set(handle.keys())
